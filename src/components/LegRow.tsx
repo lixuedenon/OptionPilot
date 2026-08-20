@@ -7,9 +7,9 @@ import {
   CalendarClock,
   Shield,
   Layers,
-  GripVertical,
-  RefreshCw,
   ChevronDown,
+  ChevronUp,
+  RefreshCw,
 } from "lucide-react";
 import type { Leg } from "@/lib/types";
 import { dateFromDte, dteFromDate } from "@/lib/dateUtils";
@@ -28,11 +28,22 @@ interface Props {
   onRoll: () => void;
   onHedge: () => void;
   onProtect: () => void;
-  onDragStart: () => void;
-  onDragEnter: () => void;
-  onDragEnd: () => void;
-  isDragging: boolean;
-  isDragOver: boolean;
+  // Reordering — buttons in the "..." menu rather than drag-and-drop.
+  // (An earlier version tried making the selection checkbox double as a
+  // drag handle to save row width, but browsers treat a mousedown inside a
+  // draggable ancestor as the start of a drag gesture even when it lands on
+  // a checkbox, which silently ate the click and made the checkbox
+  // unselectable. Buttons avoid that conflict entirely.)
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+  canMoveUp?: boolean;
+  canMoveDown?: boolean;
+  // Batch selection. `selectable` hides the checkbox for rows that
+  // shouldn't be selectable (e.g. the read-only "today's combo" in
+  // tracking mode), defaulting to true.
+  selected?: boolean;
+  onToggleSelect?: () => void;
+  selectable?: boolean;
 }
 
 const inp =
@@ -125,12 +136,14 @@ function MenuItem({
   hint,
   onClick,
   tone = "default",
+  disabled = false,
 }: {
   icon: React.ReactNode;
   label: string;
   hint: string;
   onClick: () => void;
   tone?: "default" | "amber" | "rose" | "emerald" | "sky" | "violet";
+  disabled?: boolean;
 }) {
   const toneCls = {
     default: "text-slate-300 hover:bg-slate-800",
@@ -144,7 +157,8 @@ function MenuItem({
   return (
     <button
       onClick={onClick}
-      className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-[11px] transition ${toneCls}`}
+      disabled={disabled}
+      className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent ${toneCls}`}
     >
       <span className="flex items-center gap-2">
         {icon}
@@ -163,6 +177,10 @@ function LegMenu({
   onRoll,
   onHedge,
   onProtect,
+  onMoveUp,
+  onMoveDown,
+  canMoveUp,
+  canMoveDown,
 }: {
   disabled: boolean;
   onToggleDisable: () => void;
@@ -171,6 +189,10 @@ function LegMenu({
   onRoll: () => void;
   onHedge: () => void;
   onProtect: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+  canMoveUp?: boolean;
+  canMoveDown?: boolean;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -190,6 +212,8 @@ function LegMenu({
     fn();
   };
 
+  const showMove = onMoveUp !== undefined || onMoveDown !== undefined;
+
   return (
     <div ref={ref} className="relative ml-1 shrink-0">
       <button
@@ -201,6 +225,13 @@ function LegMenu({
       </button>
       {open && (
         <div className="absolute right-0 top-full z-50 mt-1 w-36 rounded-lg border border-slate-700 bg-slate-900 py-1 shadow-2xl">
+          {showMove && (
+            <>
+              <MenuItem icon={<ChevronUp size={12} />} label={t("leg.moveUp")} hint={t("leg.single")} onClick={() => onMoveUp && run(onMoveUp)} disabled={!canMoveUp} />
+              <MenuItem icon={<ChevronDown size={12} />} label={t("leg.moveDown")} hint={t("leg.single")} onClick={() => onMoveDown && run(onMoveDown)} disabled={!canMoveDown} />
+              <div className="my-0.5 border-t border-slate-800" />
+            </>
+          )}
           <MenuItem icon={<BookmarkPlus size={12} />} label={t("leg.addToPreset")} hint={t("leg.all")} onClick={() => run(onAddToPreset)} tone="emerald" />
           <div className="my-0.5 border-t border-slate-800" />
           <MenuItem icon={<Ban size={12} />} label={disabled ? t("leg.unblock") : t("leg.block")} hint={t("leg.single")} onClick={() => run(onToggleDisable)} tone="amber" />
@@ -227,11 +258,13 @@ export default function LegRow({
   onRoll,
   onHedge,
   onProtect,
-  onDragStart,
-  onDragEnter,
-  onDragEnd,
-  isDragging,
-  isDragOver,
+  onMoveUp,
+  onMoveDown,
+  canMoveUp,
+  canMoveDown,
+  selected = false,
+  onToggleSelect,
+  selectable = true,
 }: Props) {
   const { t } = useI18n();
   const disabled = leg.disabled === true;
@@ -381,18 +414,27 @@ export default function LegRow({
     if (d >= 0) onChange({ dte: d, premium: 0 });
   };
 
-  const dragHandle = (
-    <span
-      draggable
-      onDragStart={onDragStart}
-      onDragEnter={onDragEnter}
-      onDragEnd={onDragEnd}
-      onDragOver={(e) => e.preventDefault()}
-      title={t("leg.dragSort")}
-      className="cursor-grab text-slate-600 transition hover:text-slate-400 active:cursor-grabbing"
-    >
-      <GripVertical size={14} />
+  // The drag-to-reorder handle and the selection checkbox share one slot:
+  // Selection checkbox. Reordering now lives in the "..." menu (move
+  // up/down) instead of drag-and-drop — an earlier version tried making
+  // this checkbox double as a drag handle to save space, but a mousedown
+  // inside a `draggable` ancestor gets claimed by the browser's native drag
+  // gesture even when it lands on a checkbox, which silently swallowed the
+  // click and made selection unusable. Rows that opt out of selection
+  // (selectable={false}) render nothing here — there's no drag affordance
+  // to show any more, so an empty slot keeps columns aligned.
+  const selectHandle = selectable ? (
+    <span className="flex w-4 shrink-0 items-center justify-center">
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={() => onToggleSelect?.()}
+        title={t("leg.selectLeg")}
+        className="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500"
+      />
     </span>
+  ) : (
+    <span className="w-4 shrink-0" />
   );
 
   const menu = (
@@ -404,10 +446,12 @@ export default function LegRow({
       onRoll={onRoll}
       onHedge={onHedge}
       onProtect={onProtect}
+      onMoveUp={onMoveUp}
+      onMoveDown={onMoveDown}
+      canMoveUp={canMoveUp}
+      canMoveDown={canMoveDown}
     />
   );
-
-  const dragOverCls = isDragOver ? "border-t-2 border-t-sky-500" : "";
 
   // Stock leg — compact row showing entry price and shares
   if (leg.kind === "stock") {
@@ -417,11 +461,9 @@ export default function LegRow({
           disabled
             ? "border-slate-700/50 bg-slate-900/40"
             : "border-amber-700/40 bg-amber-950/20"
-        } ${isDragging ? "opacity-40" : ""} ${dragOverCls}`}
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={onDragEnd}
+        }`}
       >
-        {dragHandle}
+        {selectHandle}
         <span className="w-4 shrink-0 text-center text-[10px] font-semibold text-slate-500">{index + 1}</span>
         <div className="flex shrink-0 flex-col gap-0.5">
           <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{t("leg.type")}</span>
@@ -459,11 +501,9 @@ export default function LegRow({
         disabled
           ? "border-slate-700/50 bg-slate-900/40"
           : "border-slate-800 bg-slate-900/60"
-      } ${isDragging ? "opacity-40" : ""} ${dragOverCls}`}
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={onDragEnd}
+      }`}
     >
-      {dragHandle}
+      {selectHandle}
       <span className="w-4 shrink-0 text-center text-[10px] font-semibold text-slate-500">{index + 1}</span>
 
       <div className={`flex shrink-0 flex-col gap-0.5 ${disabled ? "opacity-40" : ""}`}>

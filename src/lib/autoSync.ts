@@ -127,12 +127,20 @@ export async function requestSyncPermission(): Promise<boolean> {
 export async function autoSyncWrite(): Promise<void> {
   if (!fileHandle || !permissionGranted) return;
   try {
+    // Mirrors dataTransfer.ts's exportAllData — kept as a second copy rather
+    // than importing it because this write is triggered by a lighter,
+    // higher-frequency effect (see App.tsx's autoSyncName effect) and the
+    // two intentionally serialize the exact same shape so a linked backup
+    // file and a manual "export data" file stay interchangeable.
     const data = {
-      version: 1,
+      version: 2,
       exportedAt: Date.now(),
       savedStrategies: JSON.parse(localStorage.getItem("optionpilot_saved_strategies") ?? "[]"),
       customPresets: JSON.parse(localStorage.getItem("optionpilot_custom_presets") ?? "[]"),
       recentSymbols: JSON.parse(localStorage.getItem("optionpilot_recent_symbols") ?? "[]"),
+      simAccount: JSON.parse(localStorage.getItem("optionpilot_sim_account") ?? "null"),
+      simPositions: JSON.parse(localStorage.getItem("optionpilot_sim_positions") ?? "[]"),
+      simSnapshots: JSON.parse(localStorage.getItem("optionpilot_sim_snapshots") ?? "[]"),
     };
     const writable = await fileHandle.createWritable();
     await writable.write(JSON.stringify(data, null, 2));

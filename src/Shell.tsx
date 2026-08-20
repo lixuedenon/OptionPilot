@@ -4,7 +4,7 @@ import App from "./App";
 import HomePage, { type ModuleId } from "./HomePage";
 import ComingSoonPage from "./ComingSoonPage";
 import SimulatorPage from "./SimulatorPage";
-import { openSimPosition } from "@/lib/simAccount";
+import { openSimPosition, loadSimAccount } from "@/lib/simAccount";
 import type { Leg } from "@/lib/types";
 import { useI18n } from "@/i18n/I18nContext";
 
@@ -40,12 +40,28 @@ export default function Shell() {
     goSimulator();
   };
 
+  // Shortcut used from ordinary analysis mode (not the simOrigin flow) to
+  // paper-trade the combo that's already built, without leaving to rebuild
+  // it a second time from the simulator's "New Position" screen. If there's
+  // no simulated account yet, send the person to the simulator instead of
+  // silently failing — its own onboarding screen handles setting one up.
+  const handleAddToSimAccount = async (payload: { symbol: string; legs: Leg[]; spot: number }) => {
+    const account = await loadSimAccount();
+    if (!account) {
+      goSimulator();
+      return { ok: false, needsSetup: true };
+    }
+    await openSimPosition(payload);
+    goSimulator();
+    return { ok: true };
+  };
+
   if (view === "home") {
     return <HomePage onSelectModule={handleSelectModule} />;
   }
 
   if (view === "workspace") {
-    return <App onBackHome={goHome} autoOpenManage={autoOpenManage} />;
+    return <App onBackHome={goHome} autoOpenManage={autoOpenManage} onAddToSimAccount={handleAddToSimAccount} />;
   }
 
   if (view === "simOrigin") {

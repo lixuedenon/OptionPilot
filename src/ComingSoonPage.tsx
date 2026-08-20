@@ -12,6 +12,17 @@ export default function ComingSoonPage({ title, icon, onBack }: Props) {
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-slate-950 px-4 text-slate-200">
+      <button
+        onClick={onBack}
+        title={t("home.backToHome")}
+        className="mb-5 flex items-center rounded transition hover:opacity-80"
+      >
+        <img
+          src="/image copy 2.png"
+          alt="OptionPilot"
+          className="h-12 w-auto shrink-0 object-contain"
+        />
+      </button>
       <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-900 text-slate-500">
         {icon}
       </div>

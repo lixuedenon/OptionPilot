@@ -250,6 +250,9 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
   const [hedgeTarget, setHedgeTarget] = useState<{ pos: SimPosition; legs: Leg[]; spot: number } | null>(null);
   const [legActionLoading, setLegActionLoading] = useState<string | null>(null); // leg id currently fetching a live price for a dialog
   const [symbolFilter, setSymbolFilter] = useState("");
+  const [selectedLegKeys, setSelectedLegKeys] = useState<Set<string>>(new Set());
+  const [confirmBulkCloseOpen, setConfirmBulkCloseOpen] = useState(false);
+  const [bulkCloseLoading, setBulkCloseLoading] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -321,6 +324,11 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
 
   const handleDelete = async (id: string) => {
     setPositions(await deleteSimPosition(id));
+    setSelectedLegKeys((prev) => {
+      const prefix = `${id}:`;
+      const next = new Set([...prev].filter((k) => !k.startsWith(prefix)));
+      return next;
+    });
   };
 
   const toggleTimeline = useCallback(async (posId: string) => {
@@ -402,6 +410,13 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
       setAccount(a);
       setPositions(p);
       setMarks((prev) => { const next = { ...prev }; delete next[pos.id]; return next; });
+      setSelectedLegKeys((prev) => {
+        const key = legKey(pos.id, leg.id);
+        if (!prev.has(key)) return prev;
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
     } catch (e) {
       window.alert(e instanceof Error ? e.message : t("sim.refreshFailed"));
     } finally {
@@ -476,6 +491,106 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
     return Array.from(groups.entries());
   }, [openPositions]);
 
+  // ── Batch selection across leg tables ──
+  // Keyed by "positionId:legId" rather than just legId, since the table
+  // groups by symbol and can show legs from several different open
+  // positions side by side — a bare legId could theoretically collide
+  // across positions.
+  const legKey = (positionId: string, legId: string) => `${positionId}:${legId}`;
+
+  const toggleLegSelection = (positionId: string, legId: string) => {
+    const key = legKey(positionId, legId);
+    setSelectedLegKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+  const clearLegSelection = () => setSelectedLegKeys(new Set());
+
+  // Only option legs are individually closable (stock legs have no per-leg
+  // menu today — see the `l.kind !== "stock"` guard in the table below), so
+  // "select all" only picks those up.
+  const allClosableLegKeys = useMemo(() => {
+    const keys: string[] = [];
+    for (const p of openPositions) {
+      for (const l of p.legs) {
+        if (l.kind !== "stock" && !l.disabled) keys.push(legKey(p.id, l.id));
+      }
+    }
+    return keys;
+  }, [openPositions]);
+  const selectedCount = selectedLegKeys.size;
+  const allSelected = selectedCount > 0 && allClosableLegKeys.every((k) => selectedLegKeys.has(k));
+  const toggleSelectAll = () => {
+    setSelectedLegKeys(allSelected ? new Set() : new Set(allClosableLegKeys));
+  };
+
+  // Batch version of closeSingleLeg: groups the selection by position (a
+  // single adjustSimPosition call can close several legs from the same
+  // position at once), fetches each leg's live price, then applies one
+  // adjustSimPosition call per affected position — sequentially, since each
+  // call reads/writes localStorage and running them in parallel could race.
+  const bulkCloseSelected = async () => {
+    if (selectedLegKeys.size === 0) return;
+    setBulkCloseLoading(true);
+    try {
+      const byPosition = new Map<string, string[]>();
+      for (const key of selectedLegKeys) {
+        const sep = key.indexOf(":");
+        const posId = key.slice(0, sep);
+        const legId = key.slice(sep + 1);
+        const arr = byPosition.get(posId) ?? [];
+        arr.push(legId);
+        byPosition.set(posId, arr);
+      }
+
+      for (const [posId, legIds] of byPosition) {
+        const pos = positions.find((p) => p.id === posId);
+        if (!pos) continue;
+        const legsToClose = pos.legs.filter((l) => legIds.includes(l.id));
+        if (legsToClose.length === 0) continue;
+
+        const spot = await fetchSpotPrice(pos.symbol);
+        const liveLegs: Leg[] = [];
+        for (const l of legsToClose) {
+          if (l.kind === "stock") {
+            liveLegs.push(l);
+            continue;
+          }
+          const currentDte = Math.max(0, Math.round(l.dte - daysSince(pos.openedAt)));
+          try {
+            const result = await fetchLegPremium(pos.symbol, l.type, l.strike, currentDte, true);
+            liveLegs.push({ ...l, premium: result.premium, dte: result.actualDte });
+          } catch {
+            liveLegs.push(l);
+          }
+        }
+
+        const { account: a, positions: p } = await adjustSimPosition(posId, {
+          removeLegIds: legIds,
+          removedLegsMarket: liveLegs,
+          addLegs: [],
+          currentSpot: spot,
+        });
+        setAccount(a);
+        setPositions(p);
+        setMarks((prev) => {
+          const next = { ...prev };
+          delete next[posId];
+          return next;
+        });
+      }
+      clearLegSelection();
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : t("sim.refreshFailed"));
+    } finally {
+      setBulkCloseLoading(false);
+      setConfirmBulkCloseOpen(false);
+    }
+  };
+
   const allOpenForTotals = positions.filter((p) => p.status === "open");
   const totalMarkValue = allOpenForTotals.reduce((acc, p) => {
     const mark = marks[p.id];
@@ -497,9 +612,14 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
         <header className="mb-6 flex items-center gap-3">
           <button
             onClick={onBack}
-            className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-400 transition hover:border-emerald-500/50 hover:text-emerald-300"
+            title={t("home.backToHome")}
+            className="flex items-center rounded transition hover:opacity-80"
           >
-            <ArrowLeft size={14} />
+            <img
+              src="/image copy 2.png"
+              alt="OptionPilot"
+              className="h-10 w-auto shrink-0 object-contain"
+            />
           </button>
           <h1 className="text-sm font-bold text-slate-100">{t("sim.title")}</h1>
         </header>
@@ -595,6 +715,35 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
               </div>
             </div>
 
+            {allClosableLegKeys.length > 0 && (
+              <div className="mb-3 flex items-center gap-2 rounded border border-slate-800 bg-slate-900/40 px-2 py-1.5">
+                <label className="flex shrink-0 items-center gap-1.5 text-[10px] text-slate-400">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = selectedCount > 0 && !allSelected;
+                    }}
+                    onChange={toggleSelectAll}
+                    className="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500"
+                  />
+                  {selectedCount > 0 ? t("leg.selectedCount", { count: selectedCount }) : t("leg.selectAll")}
+                </label>
+                {selectedCount > 0 && (
+                  <div className="ml-auto flex items-center gap-1.5">
+                    <button
+                      onClick={() => setConfirmBulkCloseOpen(true)}
+                      disabled={bulkCloseLoading}
+                      className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-rose-400 transition hover:border-rose-500/50 hover:bg-rose-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {bulkCloseLoading ? <RefreshCw size={11} className="animate-spin" /> : <Ban size={11} />}
+                      {t("sim.bulkCloseLeg")}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {groupedOpen.length === 0 ? (
               <div className="mb-6 rounded-lg border border-dashed border-slate-800 p-6 text-center text-[11px] text-slate-600">
                 {t("sim.noOpenPositions")}
@@ -624,6 +773,7 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
                       <table className="w-full border-collapse text-[10px]">
                         <thead>
                           <tr className="bg-slate-900/60 text-slate-500">
+                            <th className="px-1 py-1"></th>
                             <th className="px-2 py-1 text-left font-medium">{t("sim.colExp")}</th>
                             <th className="px-2 py-1 text-left font-medium">{t("sim.colStrike")}</th>
                             <th className="px-2 py-1 text-left font-medium">{t("sim.colType")}</th>
@@ -651,6 +801,16 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
                               const legPnl = legMarkValue !== null ? legMarkValue - legCost : null;
                               return (
                                 <tr key={l.id} className="border-t border-slate-800/60 text-slate-300 hover:bg-slate-900/40">
+                                  <td className="px-1 py-1 text-center">
+                                    {l.kind !== "stock" && !l.disabled && (
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedLegKeys.has(legKey(p.id, l.id))}
+                                        onChange={() => toggleLegSelection(p.id, l.id)}
+                                        className="h-3 w-3 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500"
+                                      />
+                                    )}
+                                  </td>
                                   <td className="px-2 py-1 tabular-nums">{l.kind === "stock" ? "—" : dateFromDte(l.dte)}</td>
                                   <td className="px-2 py-1 tabular-nums">{l.kind === "stock" ? t("sim.stockRow") : l.strike}</td>
                                   <td className="px-2 py-1 uppercase text-slate-500">{l.kind === "stock" ? "STK" : l.type}</td>
@@ -875,6 +1035,36 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
           onClose={() => setHedgeTarget(null)}
           onConfirm={handleHedgeConfirm}
         />
+      )}
+      {confirmBulkCloseOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-72 rounded-xl border border-rose-500/30 bg-slate-900 p-5 shadow-2xl">
+            <div className="mb-3 flex items-center gap-2">
+              <Ban size={18} className="text-rose-400" />
+              <h3 className="text-sm font-bold text-rose-200">{t("sim.bulkCloseConfirmTitle")}</h3>
+            </div>
+            <p className="mb-5 text-[12px] leading-relaxed text-slate-300">
+              {t("sim.bulkCloseConfirmDesc", { count: selectedCount })}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmBulkCloseOpen(false)}
+                disabled={bulkCloseLoading}
+                className="rounded-md border border-slate-600 px-3 py-1.5 text-[11px] font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={bulkCloseSelected}
+                disabled={bulkCloseLoading}
+                className="flex items-center gap-1.5 rounded-md bg-rose-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {bulkCloseLoading && <RefreshCw size={11} className="animate-spin" />}
+                {t("sim.bulkCloseLeg")}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

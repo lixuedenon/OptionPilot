@@ -1,8 +1,7 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Layers, Save, Settings2, RefreshCw, TrendingUp, TrendingDown, ChevronDown, Trash2, AlertTriangle, History, Clock, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle, DollarSign, ArrowLeft } from "lucide-react";
+import { Plus, Layers, Save, Settings2, RefreshCw, TrendingUp, TrendingDown, ChevronDown, Trash2, History, Clock, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle, DollarSign, Ban, Wallet } from "lucide-react";
 import type { Leg, Shifts } from "@/lib/types";
 import { priceCombo, probabilityOfProfit, weightedAvgIV, impliedSpotFromPremiums } from "@/lib/pricing";
-import { loadCustomPresets, addCustomPreset, deleteCustomPreset, type CustomPreset } from "@/lib/customPresets";
 import { PRESET_GROUPS } from "@/lib/presets";
 import { matchStrategy } from "@/lib/matchStrategy";
 import LegRow from "@/components/LegRow";
@@ -13,7 +12,7 @@ import SavePresetDialog from "@/components/SavePresetDialog";
 import StrategyBadge from "@/components/StrategyBadge";
 import { useStockQuote } from "@/lib/useStockQuote";
 import { loadRecentSymbols, addRecentSymbol } from "@/lib/recentSymbols";
-import { loadSavedStrategies, saveStrategy, overwriteStrategy, deleteSavedStrategy, renameSavedStrategy, reorderSavedStrategies, toggleStarStrategy, addTrackedSnapshot, updateSnapshotTime, deleteTrackedSnapshot, type SavedStrategy, type TrackedSnapshot } from "@/lib/savedStrategies";
+import { saveStrategy, overwriteStrategy, addTrackedSnapshot, updateSnapshotTime, deleteTrackedSnapshot, type SavedStrategy, type TrackedSnapshot } from "@/lib/savedStrategies";
 import SaveStrategyDialog from "@/components/SaveStrategyDialog";
 import ManageStrategiesDialog from "@/components/ManageStrategiesDialog";
 import DropdownMenu from "@/components/DropdownMenu";
@@ -21,12 +20,14 @@ import RollDialog from "@/components/RollDialog";
 import ProtectDialog from "@/components/ProtectDialog";
 import HedgeDialog from "@/components/HedgeDialog";
 import { exportAllData, importAllData } from "@/lib/dataTransfer";
-import { isAutoSyncSupported, linkBackupFile, unlinkBackupFile, restoreHandle, requestSyncPermission, autoSyncWrite, getSyncedFileName } from "@/lib/autoSync";
-import type { LinkResult } from "@/lib/autoSync";
+import { useAutoSync } from "@/hooks/useAutoSync";
+import { useCustomPresets } from "@/hooks/useCustomPresets";
+import { useSavedStrategies } from "@/hooks/useSavedStrategies";
 import { nearestFridayDte } from "@/lib/dateUtils";
 import { getOptionChain, peekResolvedChain, nearestStrikeToSpot, resolveFromCache } from "@/lib/optionChain";
 import { useI18n } from "@/i18n/I18nContext";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
+import { AlertCard, ConfirmBulkDeleteDialog, ConfirmClearDialog, ConfirmReplacePresetDialog, ConfirmSaveTrackedDialog, ConfirmSnapshotDialog, HelpPanel, ImpliedSpotInfoPanel } from "@/components/dialogs";
 
 let idc = 0;
 const uid = () => `leg-${Date.now()}-${idc++}`;
@@ -79,15 +80,29 @@ interface AppProps {
   simOrigin?: boolean;
   onConfirmSimOpen?: (payload: { symbol: string; legs: Leg[]; spot: number }) => void;
   onCancelSimOrigin?: () => void;
+  // Lets analysis mode push the current combo straight into a new simulated
+  // position without first routing through the simulator's "New Position"
+  // flow (that flow is the reverse direction: simulator → analysis → back).
+  // Returns needsSetup when there's no simulated account yet, so the caller
+  // (Shell.tsx) can send the person to set one up instead of silently
+  // failing.
+  onAddToSimAccount?: (payload: { symbol: string; legs: Leg[]; spot: number }) => Promise<{ ok: boolean; needsSetup?: boolean }>;
 }
 
-export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSimOpen, onCancelSimOrigin }: AppProps = {}) {
+export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSimOpen, onCancelSimOrigin, onAddToSimAccount }: AppProps = {}) {
   const [symbol, setSymbol] = useState("");
   const [spot, setSpot] = useState(0);
   const [legs, setLegs] = useState<Leg[]>([]);
   const [shifts, setShifts] = useState<Shifts>({ dS: 0, dT: 0, dV: 0 });
-  const [customPresets, setCustomPresets] = useState<CustomPreset[]>([]);
-  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const {
+    customPresets,
+    setCustomPresets,
+    saveDialogOpen,
+    setSaveDialogOpen,
+    reload: reloadCustomPresets,
+    addPreset: addCustomPresetToLibrary,
+    removePreset: handleDeleteCustom,
+  } = useCustomPresets();
   const [recentSymbols, setRecentSymbols] = useState<string[]>([]);
   const [symbolDropdownOpen, setSymbolDropdownOpen] = useState(false);
   const [alert, setAlert] = useState<AlertInfo>({ zone: null, pnl: 0, netCredit: 0, capturedPct: 0, days: 0, stock: false, maxProfit: 0, maxLoss: 0 });
@@ -95,10 +110,23 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const [showImpliedInfo, setShowImpliedInfo] = useState(false);
   const [correctedSpot, setCorrectedSpot] = useState<number | null>(null);
   const [correcting, setCorrecting] = useState(false);
-  const [saveStrategyOpen, setSaveStrategyOpen] = useState(false);
-  const [manageStrategyOpen, setManageStrategyOpen] = useState(false);
-  const [manageMode, setManageMode] = useState<"open" | "track">("open");
-  const [savedStrategies, setSavedStrategies] = useState<SavedStrategy[]>([]);
+  const {
+    savedStrategies,
+    setSavedStrategies,
+    saveStrategyOpen,
+    setSaveStrategyOpen,
+    manageStrategyOpen,
+    setManageStrategyOpen,
+    manageMode,
+    setManageMode,
+    strategyBaseline,
+    setStrategyBaseline,
+    reload: reloadSavedStrategies,
+    handleDeleteStrategy,
+    handleRenameStrategy,
+    handleReorderStrategies,
+    handleToggleStar,
+  } = useSavedStrategies();
   const [trackedLegs, setTrackedLegs] = useState<Leg[] | null>(null);
   const [trackedSpot, setTrackedSpot] = useState<number | null>(null);
   const [trackedDaysElapsed, setTrackedDaysElapsed] = useState<number>(0);
@@ -107,18 +135,23 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const [trackedDirty, setTrackedDirty] = useState(false);
   const [confirmSaveTrackedOpen, setConfirmSaveTrackedOpen] = useState(false);
   const [openingAt, setOpeningAt] = useState<number>(() => Date.now());
-  const [strategyBaseline, setStrategyBaseline] = useState<string | null>(null);
-  const [autoSyncName, setAutoSyncName] = useState<string | null>(null);
-  const [autoSyncSupported] = useState(() => isAutoSyncSupported());
+  const {
+    autoSyncName,
+    autoSyncSupported,
+    autoSyncError,
+    setAutoSyncError,
+    syncNow,
+    unlinkBackup,
+    linkBackup,
+  } = useAutoSync({ savedStrategies, customPresets, recentSymbols });
   const { t } = useI18n();
 
-  const [autoSyncError, setAutoSyncError] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [rollTarget, setRollTarget] = useState<Leg | null>(null);
   const [protectTarget, setProtectTarget] = useState<Leg | null>(null);
   const [hedgeOpen, setHedgeOpen] = useState(false);
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [selectedLegIds, setSelectedLegIds] = useState<Set<string>>(new Set());
+  const [confirmBulkDeleteOpen, setConfirmBulkDeleteOpen] = useState(false);
   const pendingPresetAction = useRef<{ name: string; rawLegs: Leg[] } | null>(null);
   const [confirmPresetOpen, setConfirmPresetOpen] = useState(false);
   const pendingPresetReplace = useRef<Leg[] | null>(null);
@@ -136,22 +169,16 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const { quote, loading: quoteLoading, error: quoteError, refetch } = useStockQuote(symbol);
 
   const reloadData = useCallback(async () => {
-    const [p, s, r] = await Promise.all([
-      loadCustomPresets(),
-      loadSavedStrategies(),
+    const [, , r] = await Promise.all([
+      reloadCustomPresets(),
+      reloadSavedStrategies(),
       loadRecentSymbols(),
     ]);
-    setCustomPresets(p);
-    setSavedStrategies(s);
     setRecentSymbols(r);
-  }, []);
+  }, [reloadCustomPresets, reloadSavedStrategies]);
 
   useEffect(() => {
     reloadData();
-    // Restore auto-sync file handle on mount
-    restoreHandle().then(async () => {
-      setAutoSyncName(await getSyncedFileName());
-    });
   }, [reloadData]);
 
   // Arrived here via the "Tracking" module card on the home page — jump
@@ -164,11 +191,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Auto-write to linked backup file whenever data changes
-  useEffect(() => {
-    if (autoSyncName) autoSyncWrite();
-  }, [savedStrategies, customPresets, recentSymbols, autoSyncName]);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -371,14 +393,27 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         premium: Math.round((l.premium / norm) * 100) / 100,
       };
     });
-    const updated = await addCustomPreset({ ...data, legs: normalizedLegs });
-    setCustomPresets(updated);
-    setSaveDialogOpen(false);
-  }, [legs, spot]);
+    await addCustomPresetToLibrary(data, normalizedLegs);
+  }, [legs, spot, activeLegs, addCustomPresetToLibrary]);
 
-  const handleDeleteCustom = useCallback(async (id: string) => {
-    setCustomPresets(await deleteCustomPreset(id));
-  }, []);
+  // Push the current analysis-mode combo straight into a new simulated
+  // position. Distinct from the simOrigin flow (which starts FROM the
+  // simulator and builds a combo here) — this is the reverse shortcut for
+  // when someone already has a combo built in ordinary analysis mode and
+  // wants to paper-trade it without rebuilding it a second time.
+  const [addingToSim, setAddingToSim] = useState(false);
+  const handleAddToSimAccount = useCallback(async () => {
+    if (!onAddToSimAccount || activeLegs.length === 0 || spot <= 0) return;
+    setAddingToSim(true);
+    try {
+      const result = await onAddToSimAccount({ symbol: symbol.trim(), legs: activeLegs, spot });
+      if (!result.ok && result.needsSetup) {
+        window.alert(t("sim.needSetupFirst"));
+      }
+    } finally {
+      setAddingToSim(false);
+    }
+  }, [onAddToSimAccount, activeLegs, spot, symbol, t]);
 
   const updateLeg = (id: string, patch: Partial<Leg>) =>
     setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
@@ -387,6 +422,51 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   };
   const deleteLeg = (id: string) => {
     setLegs((prev) => prev.filter((l) => l.id !== id));
+    setSelectedLegIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  };
+
+  // ── Batch selection (analysis + tracking's shared open-combo list) ──
+  const toggleLegSelection = (id: string) => {
+    setSelectedLegIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const clearLegSelection = () => setSelectedLegIds(new Set());
+  const selectAllLegs = () => setSelectedLegIds(new Set(legs.map((l) => l.id)));
+
+  const selectedLegsList = useMemo(
+    () => legs.filter((l) => selectedLegIds.has(l.id)),
+    [legs, selectedLegIds],
+  );
+  const selectedCount = selectedLegsList.length;
+  const allSelectedDisabled = selectedCount > 0 && selectedLegsList.every((l) => l.disabled);
+
+  // Toggle disable for every currently-selected leg in one go. Mirrors the
+  // per-row block/unblock: if every selected leg is already blocked, this
+  // unblocks them all; otherwise it blocks them all (so a mixed selection
+  // always resolves to "block everything selected" rather than a confusing
+  // per-leg flip).
+  const bulkToggleDisable = () => {
+    if (selectedCount === 0) return;
+    setLegs((prev) => prev.map((l) => (selectedLegIds.has(l.id) ? { ...l, disabled: !allSelectedDisabled } : l)));
+  };
+
+  const requestBulkDelete = () => {
+    if (selectedCount === 0) return;
+    setConfirmBulkDeleteOpen(true);
+  };
+  const confirmBulkDelete = () => {
+    setLegs((prev) => prev.filter((l) => !selectedLegIds.has(l.id)));
+    setConfirmBulkDeleteOpen(false);
+    clearLegSelection();
   };
 
   const handleRoll = (legId: string) => {
@@ -415,19 +495,24 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     setHedgeOpen(false);
   };
 
-  const handleDragStart = (index: number) => setDragIndex(index);
-  const handleDragEnter = (index: number) => setDragOverIndex(index);
-  const handleDragEnd = () => {
-    if (dragIndex !== null && dragOverIndex !== null && dragIndex !== dragOverIndex) {
-      setLegs((prev) => {
-        const arr = [...prev];
-        const [moved] = arr.splice(dragIndex, 1);
-        arr.splice(dragOverIndex, 0, moved);
-        return arr;
-      });
-    }
-    setDragIndex(null);
-    setDragOverIndex(null);
+  const moveLeg = (index: number, direction: -1 | 1) => {
+    setLegs((prev) => {
+      const target = index + direction;
+      if (target < 0 || target >= prev.length) return prev;
+      const arr = [...prev];
+      [arr[index], arr[target]] = [arr[target], arr[index]];
+      return arr;
+    });
+  };
+  const moveTrackedLeg = (index: number, direction: -1 | 1) => {
+    setTrackedLegs((prev) => {
+      if (!prev) return prev;
+      const target = index + direction;
+      if (target < 0 || target >= prev.length) return prev;
+      const arr = [...prev];
+      [arr[index], arr[target]] = [arr[target], arr[index]];
+      return arr;
+    });
   };
   const addLeg = () => {
     let strikeHint = spot > 0 ? Math.round(spot * 2) / 2 : 0;
@@ -498,6 +583,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     setOpeningAt(Date.now());
     setStrategyBaseline(null);
     setCorrectedSpot(null);
+    clearLegSelection();
   };
 
   const doClearAll = () => {
@@ -513,6 +599,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     legBaseSpot.current = 0;
     legBaseSymbol.current = "";
     setStrategyBaseline(null);
+    clearLegSelection();
   };
 
   const updateTrackedLeg = (id: string, patch: Partial<Leg>) => {
@@ -573,22 +660,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     }
   }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset]);
 
-  const handleDeleteStrategy = useCallback(async (id: string) => {
-    setSavedStrategies(await deleteSavedStrategy(id));
-  }, []);
-
-  const handleRenameStrategy = useCallback(async (id: string, filename: string) => {
-    setSavedStrategies(await renameSavedStrategy(id, filename));
-  }, []);
-
-  const handleReorderStrategies = useCallback(async (all: SavedStrategy[]) => {
-    setSavedStrategies(await reorderSavedStrategies(all));
-  }, []);
-
-  const handleToggleStar = useCallback(async (id: string) => {
-    setSavedStrategies(await toggleStarStrategy(id));
-  }, []);
-
   const handleTrack = useCallback(async (s: SavedStrategy) => {
     setSymbol(s.symbol);
     setLegs(s.legs.map((l) => ({ ...l, id: uid() })));
@@ -615,6 +686,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     setTrackedDirty(false);
     setManageStrategyOpen(false);
     setStrategyBaseline(serializeStrategyState(s.symbol, s.legs, { dS: 0, dT: 0, dV: 0 }, s.openingAt ?? s.createdAt));
+    clearLegSelection();
   }, []);
 
   const handleSaveTracked = useCallback(async () => {
@@ -691,6 +763,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     setCorrectedSpot(null);
     setManageStrategyOpen(false);
     setStrategyBaseline(serializeStrategyState(s.symbol, s.legs, s.shifts, s.openingAt ?? s.createdAt));
+    clearLegSelection();
   }, [quote]);
 
   const legToolbar = (
@@ -742,6 +815,17 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           </>
         )}
       </DropdownMenu>
+      {!isCompareMode && !simOrigin && onAddToSimAccount && (
+        <button
+          onClick={handleAddToSimAccount}
+          disabled={activeLegs.length === 0 || spot <= 0 || addingToSim}
+          title={t("toolbar.addToSim")}
+          className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-slate-400 transition hover:border-emerald-500/50 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {addingToSim ? <RefreshCw size={12} className="animate-spin" /> : <Wallet size={12} />}
+          {t("toolbar.addToSim")}
+        </button>
+      )}
     </>
   );
 
@@ -750,20 +834,18 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       {/* ── Header ── */}
       <header className="flex shrink-0 items-center justify-between border-b border-slate-800 px-4 py-2">
         <div className="flex items-center gap-3">
-          {(onBackHome || onCancelSimOrigin) && (
-            <button
-              onClick={simOrigin ? onCancelSimOrigin : onBackHome}
-              title={simOrigin ? t("sim.cancelOrigin") : t("home.backToHome")}
-              className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1.5 text-slate-400 transition hover:border-emerald-500/50 hover:text-emerald-300"
-            >
-              <ArrowLeft size={14} />
-            </button>
-          )}
-          <img
-            src="/image copy 2.png"
-            alt="OptionPilot"
-            className="h-12 w-auto shrink-0 object-contain"
-          />
+          <button
+            onClick={simOrigin ? onCancelSimOrigin : onBackHome}
+            disabled={!onBackHome && !onCancelSimOrigin}
+            title={simOrigin ? t("sim.cancelOrigin") : t("home.backToHome")}
+            className="flex items-center rounded transition enabled:hover:opacity-80 disabled:cursor-default"
+          >
+            <img
+              src="/image copy 2.png"
+              alt="OptionPilot"
+              className="h-12 w-auto shrink-0 object-contain"
+            />
+          </button>
 
           <PresetPicker
             customPresets={customPresets}
@@ -875,23 +957,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                           <FileSymlink size={10} className="mr-1 inline" />{autoSyncName}
                         </div>
                         <button
-                          onClick={async () => {
-                            const ok = await requestSyncPermission();
-                            if (ok) {
-                              setAutoSyncError(null);
-                            } else {
-                              setAutoSyncError(t("toolbar.noWritePerm"));
-                            }
-                          }}
+                          onClick={syncNow}
                           className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
                         >
                           <RefreshCw size={12} className="text-sky-400" /> {t("toolbar.syncNow")}
                         </button>
                         <button
-                          onClick={async () => {
-                            await unlinkBackupFile();
-                            setAutoSyncName(null);
-                          }}
+                          onClick={unlinkBackup}
                           className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-rose-400 transition hover:bg-rose-950/40"
                         >
                           <Unlink size={12} /> {t("toolbar.unlink")}
@@ -899,15 +971,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                       </>
                     ) : (
                       <button
-                        onClick={async () => {
-                          const result: LinkResult = await linkBackupFile();
-                          if (result.ok) {
-                            setAutoSyncName(await getSyncedFileName());
-                            setAutoSyncError(null);
-                          } else if (result.error) {
-                            setAutoSyncError(result.error);
-                          }
-                        }}
+                        onClick={linkBackup}
                         className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
                       >
                         <FileSymlink size={12} className="text-emerald-400" /> {t("toolbar.linkBackup")}
@@ -1130,6 +1194,40 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 </div>
               );
             })()}
+            {legs.length > 0 && (
+              <div className="mb-1 flex items-center gap-2 rounded border border-slate-800 bg-slate-900/40 px-2 py-1">
+                <label className="flex shrink-0 items-center gap-1.5 text-[10px] text-slate-400">
+                  <input
+                    type="checkbox"
+                    checked={selectedCount > 0 && selectedCount === legs.length}
+                    ref={(el) => {
+                      if (el) el.indeterminate = selectedCount > 0 && selectedCount < legs.length;
+                    }}
+                    onChange={() => (selectedCount === legs.length ? clearLegSelection() : selectAllLegs())}
+                    className="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500"
+                  />
+                  {selectedCount > 0 ? t("leg.selectedCount", { count: selectedCount }) : t("leg.selectAll")}
+                </label>
+                {selectedCount > 0 && (
+                  <div className="ml-auto flex items-center gap-1.5">
+                    <button
+                      onClick={bulkToggleDisable}
+                      className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-amber-400 transition hover:border-amber-500/50 hover:bg-amber-950/30"
+                    >
+                      <Ban size={11} />
+                      {allSelectedDisabled ? t("leg.bulkUnblock") : t("leg.bulkBlock")}
+                    </button>
+                    <button
+                      onClick={requestBulkDelete}
+                      className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-rose-400 transition hover:border-rose-500/50 hover:bg-rose-950/30"
+                    >
+                      <Trash2 size={11} />
+                      {t("leg.bulkDelete")}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
             {legs.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 text-slate-600">
                 <span className="text-sm">{t("leg.noLegs")}</span>
@@ -1150,11 +1248,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   onRoll={() => handleRoll(leg.id)}
                   onHedge={() => handleHedge()}
                   onProtect={() => handleProtect(leg.id)}
-                  onDragStart={() => handleDragStart(i)}
-                  onDragEnter={() => handleDragEnter(i)}
-                  onDragEnd={handleDragEnd}
-                  isDragging={dragIndex === i}
-                  isDragOver={dragOverIndex === i && dragIndex !== null && dragIndex !== i}
+                  onMoveUp={() => moveLeg(i, -1)}
+                  onMoveDown={() => moveLeg(i, 1)}
+                  canMoveUp={i > 0}
+                  canMoveDown={i < legs.length - 1}
+                  selected={selectedLegIds.has(leg.id)}
+                  onToggleSelect={() => toggleLegSelection(leg.id)}
                 />
               ))
             )}
@@ -1262,11 +1361,11 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                     onRoll={() => handleRoll(leg.id)}
                     onHedge={() => handleHedge()}
                     onProtect={() => handleProtect(leg.id)}
-                    onDragStart={() => handleDragStart(i)}
-                    onDragEnter={() => handleDragEnter(i)}
-                    onDragEnd={handleDragEnd}
-                    isDragging={dragIndex === i}
-                    isDragOver={dragOverIndex === i && dragIndex !== null && dragIndex !== i}
+                    onMoveUp={() => moveTrackedLeg(i, -1)}
+                    onMoveDown={() => moveTrackedLeg(i, 1)}
+                    canMoveUp={i > 0}
+                    canMoveDown={i < trackedLegs.length - 1}
+                    selectable={false}
                   />
                 ))}
               </div>
@@ -1329,122 +1428,33 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       />
 
       {confirmPresetOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="w-72 rounded-xl border border-sky-500/30 bg-slate-900 p-5 shadow-2xl">
-            <div className="mb-3 flex items-center gap-2">
-              <AlertTriangle size={18} className="text-sky-400" />
-              <h3 className="text-sm font-bold text-sky-200">{t("confirm.saveSnapshot")}</h3>
-            </div>
-            <p className="mb-5 text-[12px] leading-relaxed text-slate-300">
-              {t("confirm.snapshotDesc")}
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => { setConfirmPresetOpen(false); pendingPresetAction.current = null; }}
-                className="rounded-md border border-slate-600 px-3 py-1.5 text-[11px] font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white"
-              >
-                {t("common.cancel")}
-              </button>
-              <button
-                onClick={() => { setConfirmPresetOpen(false); if (pendingPresetAction.current) { applyPreset(pendingPresetAction.current.rawLegs); pendingPresetAction.current = null; } }}
-                className="rounded-md border border-slate-600 px-3 py-1.5 text-[11px] font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white"
-              >
-                {t("confirm.dontSave")}
-              </button>
-              <button
-                onClick={async () => {
-                  setConfirmPresetOpen(false);
-                  await handleSaveTracked();
-                  if (pendingPresetAction.current) { applyPreset(pendingPresetAction.current.rawLegs); pendingPresetAction.current = null; }
-                }}
-                className="rounded-md bg-sky-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-500"
-              >
-                {t("confirm.saveSnap")}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmSnapshotDialog
+          onCancel={() => { setConfirmPresetOpen(false); pendingPresetAction.current = null; }}
+          onDontSave={() => { setConfirmPresetOpen(false); if (pendingPresetAction.current) { applyPreset(pendingPresetAction.current.rawLegs); pendingPresetAction.current = null; } }}
+          onSaveSnapshot={async () => {
+            setConfirmPresetOpen(false);
+            await handleSaveTracked();
+            if (pendingPresetAction.current) { applyPreset(pendingPresetAction.current.rawLegs); pendingPresetAction.current = null; }
+          }}
+        />
       )}
 
       {confirmReplaceOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="w-72 rounded-xl border border-sky-500/30 bg-slate-900 p-5 shadow-2xl">
-            <div className="mb-3 flex items-center gap-2">
-              <AlertTriangle size={18} className="text-sky-400" />
-              <h3 className="text-sm font-bold text-sky-200">{t("confirm.replaceTitle")}</h3>
-            </div>
-            <p className="mb-5 text-[12px] leading-relaxed text-slate-300">
-              {t("confirm.replaceDesc")}
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => { setConfirmReplaceOpen(false); pendingPresetReplace.current = null; }}
-                className="rounded-md border border-slate-600 px-3 py-1.5 text-[11px] font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white"
-              >
-                {t("common.cancel")}
-              </button>
-              <button
-                onClick={() => {
-                  setConfirmReplaceOpen(false);
-                  if (pendingPresetReplace.current) { applyPreset(pendingPresetReplace.current); pendingPresetReplace.current = null; }
-                }}
-                className="rounded-md border border-slate-600 px-3 py-1.5 text-[11px] font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white"
-              >
-                {t("confirm.dontSave")}
-              </button>
-              <button
-                onClick={() => {
-                  setConfirmReplaceOpen(false);
-                  setSaveStrategyOpen(true);
-                  // pendingPresetReplace stays set — applied once the save succeeds
-                }}
-                className="rounded-md bg-sky-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-500"
-              >
-                {t("confirm.saveFirst")}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmReplacePresetDialog
+          onCancel={() => { setConfirmReplaceOpen(false); pendingPresetReplace.current = null; }}
+          onDontSave={() => {
+            setConfirmReplaceOpen(false);
+            if (pendingPresetReplace.current) { applyPreset(pendingPresetReplace.current); pendingPresetReplace.current = null; }
+          }}
+          onSaveFirst={() => {
+            setConfirmReplaceOpen(false);
+            setSaveStrategyOpen(true);
+            // pendingPresetReplace stays set — applied once the save succeeds
+          }}
+        />
       )}
 
-      {helpOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setHelpOpen(false)}>
-          <div className="max-h-[80vh] w-[600px] max-w-[90vw] overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-base font-bold text-emerald-400">{t("help.title")}</h2>
-              <button onClick={() => setHelpOpen(false)} className="text-slate-500 hover:text-slate-300">
-                <X size={18} />
-              </button>
-            </div>
-            <div className="space-y-4 text-[12px] leading-relaxed text-slate-300">
-              <section>
-                <h3 className="mb-1 text-[13px] font-bold text-sky-300">{t("help.build")}</h3>
-                <p>{t("help.buildDesc")}</p>
-              </section>
-              <section>
-                <h3 className="mb-1 text-[13px] font-bold text-sky-300">{t("help.scenario")}</h3>
-                <p>{t("help.scenarioDesc")}</p>
-              </section>
-              <section>
-                <h3 className="mb-1 text-[13px] font-bold text-sky-300">{t("help.preset")}</h3>
-                <p>{t("help.presetDesc")}</p>
-              </section>
-              <section>
-                <h3 className="mb-1 text-[13px] font-bold text-sky-300">{t("help.tracking")}</h3>
-                <p>{t("help.trackingDesc")}</p>
-              </section>
-              <section>
-                <h3 className="mb-1 text-[13px] font-bold text-sky-300">{t("help.chart")}</h3>
-                <p>{t("help.chartDesc")}</p>
-              </section>
-              <section>
-                <h3 className="mb-1 text-[13px] font-bold text-sky-300">{t("help.data")}</h3>
-                <p>{t("help.dataDesc")}</p>
-              </section>
-            </div>
-          </div>
-        </div>
-      )}
+      {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
 
       {confirmClearOpen && (
         <ConfirmClearDialog
@@ -1453,36 +1463,23 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         />
       )}
 
+      {confirmBulkDeleteOpen && (
+        <ConfirmBulkDeleteDialog
+          count={selectedCount}
+          onConfirm={confirmBulkDelete}
+          onCancel={() => setConfirmBulkDeleteOpen(false)}
+        />
+      )}
+
       {confirmSaveTrackedOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="w-72 rounded-xl border border-sky-500/30 bg-slate-900 p-5 shadow-2xl">
-            <div className="mb-3 flex items-center gap-2">
-              <Save size={18} className="text-sky-400" />
-              <h3 className="text-sm font-bold text-sky-200">{t("confirm.saveSnapshot")}</h3>
-            </div>
-            <p className="mb-5 text-[12px] leading-relaxed text-slate-300">
-              {t("confirm.snapshotDesc2")}
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => { setConfirmSaveTrackedOpen(false); doClearAll(); }}
-                className="rounded-md border border-slate-600 px-3 py-1.5 text-[11px] font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white"
-              >
-                {t("confirm.dontSave")}
-              </button>
-              <button
-                onClick={async () => {
-                  setConfirmSaveTrackedOpen(false);
-                  await handleSaveTracked();
-                  doClearAll();
-                }}
-                className="rounded-md bg-sky-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-500"
-              >
-                {t("confirm.saveSnap")}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmSaveTrackedDialog
+          onDontSave={() => { setConfirmSaveTrackedOpen(false); doClearAll(); }}
+          onSaveSnapshot={async () => {
+            setConfirmSaveTrackedOpen(false);
+            await handleSaveTracked();
+            doClearAll();
+          }}
+        />
       )}
 
       <SaveStrategyDialog
@@ -1542,133 +1539,15 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       )}
 
       {showImpliedInfo && isCompareMode && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowImpliedInfo(false)}>
-          <div className="w-80 rounded-xl border border-sky-500/40 bg-slate-900 p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm font-bold text-sky-300">{t("implied.title")}</span>
-              <button onClick={() => setShowImpliedInfo(false)} className="text-slate-500 transition hover:text-slate-300">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
-              </button>
-            </div>
-            <p className="text-[12px] leading-relaxed text-slate-300">
-              {t("implied.desc", { spot: effectiveTrackedSpot.toFixed(2) })}
-            </p>
-            <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
-              {t("implied.example")}
-            </p>
-            <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-900/20 px-2.5 py-2">
-              <p className="text-[11px] leading-relaxed text-amber-200">
-                {t("implied.warning")}
-              </p>
-            </div>
-            {correctedSpot !== null && (
-              <p className="mt-2 text-[11px] leading-relaxed text-emerald-300">
-                {t("implied.corrected", { spot: correctedSpot.toFixed(2) })}
-              </p>
-            )}
-            <div className="mt-3 flex justify-end gap-2">
-              <button
-                onClick={() => { handleCorrectSpot(); setShowImpliedInfo(false); }}
-                disabled={correcting || !symbol.trim()}
-                className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {correcting ? (
-                  <RefreshCw size={12} className="animate-spin" />
-                ) : (
-                  <RefreshCw size={12} />
-                )}
-                {correcting ? t("implied.fetching") : t("implied.correct")}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ImpliedSpotInfoPanel
+          trackedSpot={effectiveTrackedSpot}
+          correctedSpot={correctedSpot}
+          correcting={correcting}
+          canCorrect={!!symbol.trim()}
+          onClose={() => setShowImpliedInfo(false)}
+          onCorrect={() => { handleCorrectSpot(); setShowImpliedInfo(false); }}
+        />
       )}
-    </div>
-  );
-}
-
-function AlertCard({ alert }: { alert: AlertInfo }) {
-  const { t } = useI18n();
-  if (!alert.zone) return null;
-
-  if (alert.stock) {
-    if (alert.zone === "golden") {
-      return (
-        <div className="mb-2 flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-900/20 px-3 py-2">
-          <span className="mt-0.5 text-sm leading-none">💡</span>
-          <p className="text-[11px] leading-relaxed text-emerald-200">
-            <span className="font-bold text-emerald-300">{t("alert.goldenStock")}</span>
-            {t("alert.goldenStockDesc", { pnl: alert.pnl.toFixed(2), max: alert.maxProfit.toFixed(2), pct: alert.capturedPct.toFixed(0) })}
-          </p>
-        </div>
-      );
-    }
-    const lossPct = alert.maxLoss < 0 ? (alert.pnl / alert.maxLoss) * 100 : 0;
-    return (
-      <div className="mb-2 flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-900/20 px-3 py-2">
-        <span className="mt-0.5 text-sm leading-none">⚠️</span>
-        <p className="text-[11px] leading-relaxed text-rose-200">
-          <span className="font-bold text-rose-300">{t("alert.stopStock")}</span>
-          {t("alert.stopStockDesc", { pnl: Math.abs(alert.pnl).toFixed(2), max: Math.abs(alert.maxLoss).toFixed(2), pct: Math.abs(lossPct).toFixed(0) })}
-          {alert.zone === "stop" ? t("alert.stopStockNear") : t("alert.stopStockFar")}
-        </p>
-      </div>
-    );
-  }
-
-  if (alert.zone === "golden") {
-    return (
-      <div className="mb-2 flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-900/20 px-3 py-2">
-        <span className="mt-0.5 text-sm leading-none">💡</span>
-        <p className="text-[11px] leading-relaxed text-emerald-200">
-          <span className="font-bold text-emerald-300">{t("alert.golden")}</span>
-          {t("alert.goldenDesc", { days: alert.days > 0 ? ` ${alert.days} ${t("compare.days")}` : "", pct: alert.capturedPct.toFixed(0), pnl: alert.pnl.toFixed(0) })}
-        </p>
-      </div>
-    );
-  }
-
-  const lossRatio = alert.netCredit > 0 ? (-alert.pnl / alert.netCredit) : 0;
-  return (
-    <div className="mb-2 flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-900/20 px-3 py-2">
-      <span className="mt-0.5 text-sm leading-none">⚠️</span>
-      <p className="text-[11px] leading-relaxed text-rose-200">
-        <span className="font-bold text-rose-300">{t("alert.stop")}</span>
-        {t("alert.stopDesc", { pnl: Math.abs(alert.pnl).toFixed(0) })}
-        {alert.netCredit > 0 ? t("alert.stopCredit", { ratio: lossRatio.toFixed(1) }) : ""}
-        {t("alert.stopAction")}
-      </p>
-    </div>
-  );
-}
-
-function ConfirmClearDialog({ onConfirm, onCancel }: { onConfirm: () => void; onCancel: () => void }) {
-  const { t } = useI18n();
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-72 rounded-xl border border-rose-500/30 bg-slate-900 p-5 shadow-2xl">
-        <div className="mb-3 flex items-center gap-2">
-          <AlertTriangle size={18} className="text-rose-400" />
-          <h3 className="text-sm font-bold text-rose-200">{t("confirm.clearTitle")}</h3>
-        </div>
-        <p className="mb-5 text-[12px] leading-relaxed text-slate-300">
-          {t("confirm.clearDesc")}
-        </p>
-        <div className="flex justify-end gap-2">
-          <button
-            onClick={onCancel}
-            className="rounded-md border border-slate-600 px-3 py-1.5 text-[11px] font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white"
-          >
-            {t("common.cancel")}
-          </button>
-          <button
-            onClick={onConfirm}
-            className="rounded-md bg-rose-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-rose-500"
-          >
-            {t("confirm.clear")}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
