@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronUp,
   RefreshCw,
+  GitCompare,
 } from "lucide-react";
 import type { Leg } from "@/lib/types";
 import { dateFromDte, dteFromDate } from "@/lib/dateUtils";
@@ -28,6 +29,7 @@ interface Props {
   onRoll: () => void;
   onHedge: () => void;
   onProtect: () => void;
+  onCompare?: () => void;
   // Reordering — buttons in the "..." menu rather than drag-and-drop.
   // (An earlier version tried making the selection checkbox double as a
   // drag handle to save row width, but browsers treat a mousedown inside a
@@ -177,6 +179,7 @@ function LegMenu({
   onRoll,
   onHedge,
   onProtect,
+  onCompare,
   onMoveUp,
   onMoveDown,
   canMoveUp,
@@ -189,6 +192,7 @@ function LegMenu({
   onRoll: () => void;
   onHedge: () => void;
   onProtect: () => void;
+  onCompare?: () => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
   canMoveUp?: boolean;
@@ -240,6 +244,12 @@ function LegMenu({
           <MenuItem icon={<CalendarClock size={12} />} label={t("leg.roll")} hint={t("leg.single")} onClick={() => run(onRoll)} tone="sky" />
           <MenuItem icon={<Layers size={12} />} label={t("leg.hedge")} hint={t("leg.combo")} onClick={() => run(onHedge)} tone="violet" />
           <MenuItem icon={<Shield size={12} />} label={t("leg.protect")} hint={t("leg.single")} onClick={() => run(onProtect)} tone="sky" />
+          {onCompare && (
+            <>
+              <div className="my-0.5 border-t border-slate-800" />
+              <MenuItem icon={<GitCompare size={12} />} label={t("compare2.menuItem")} hint={t("leg.single")} onClick={() => run(onCompare)} tone="violet" />
+            </>
+          )}
         </div>
       )}
     </div>
@@ -258,6 +268,7 @@ export default function LegRow({
   onRoll,
   onHedge,
   onProtect,
+  onCompare,
   onMoveUp,
   onMoveDown,
   canMoveUp,
@@ -446,6 +457,7 @@ export default function LegRow({
       onRoll={onRoll}
       onHedge={onHedge}
       onProtect={onProtect}
+      onCompare={onCompare}
       onMoveUp={onMoveUp}
       onMoveDown={onMoveDown}
       canMoveUp={canMoveUp}
