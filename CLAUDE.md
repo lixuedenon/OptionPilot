@@ -1,98 +1,216 @@
-# Option Lab - 项目说明
+# OptionPilot — 项目交接文档
 
-## 概述
-期权策略实验室：可视化工具有期权策略的盈亏、希腊值和持仓追踪。面向中文用户。
+**这份文档写给下一个 Claude 会话（新窗口），目的是让你不用重新问一遍就能直接接着干活。仔细读完再动手，尤其是"关键约定与教训"那一节——里面全是踩过的坑，不看会重蹈覆辙。**
 
-## 技术栈
-- Vite + React 18 + TypeScript
-- Tailwind CSS + lucide-react（图标）
-- Supabase（已配置，目前未使用数据库功能）
-- 无路由、无后端框架；纯前端 SPA
+---
 
-## 关键约定
-- 路径别名 `@/` 映射到 `src/`
-- 所有用户可见文本使用中文
-- 数据持久化使用 localStorage（策略库、自定义预设、最近股票）
-- 颜色主题：深色背景（slate-900/sky-950），sky 蓝色为强调色，禁止紫色
+## 1. 这个项目是什么
 
-## 核心数据结构
-- `Leg`：期权/股票腿（action, type, strike, dte, premium, kind?, shares?, disabled?）
-- `Shifts`：情景偏移（dS=股价, dT=时间, dV=波动率）
-- `SavedStrategy`：保存的策略，含 `trackedSnapshots[]` 持仓快照时间线，`openingAt?` 开仓时间
-- `TrackedSnapshot`：单次保存的持仓快照（id, legs, spot, savedAt）
+OptionPilot 是一个期权策略可视化 + 模拟交易 + AI 策略推荐的 Web 应用，面向中文用户（Xue，项目所有者，本人是有实战经验的期权交易者）。核心定位：不只是"分析当下的期权组合长什么样"，还要"理解盈亏是怎么来的、比较不同操作的结果"。
 
-## 文件结构
-- `src/App.tsx` — 主界面，所有状态管理和交互逻辑
-- `src/lib/types.ts` — 核心类型定义
-- `src/lib/bs.ts` — Black-Scholes 定价和希腊值计算
-- `src/lib/presets.ts` — 预设策略模板（中文，按组分类）
-- `src/lib/customPresets.ts` — 用户自定义预设
-- `src/lib/savedStrategies.ts` — 策略库存储（localStorage）
-- `src/lib/pricing.ts` — 价格计算（含股息收益率的 BS 变体）
-- `src/lib/matchStrategy.ts` — 策略匹配识别
-- `src/lib/useStockQuote.ts` — 股价实时报价 hook
-- `src/lib/recentSymbols.ts` — 最近股票代码
-- `src/components/` — UI 组件（PayoffChart, LegRow, ShiftSliders 等）
-- `supabase/functions/stock-quote/` — 股价代理 Edge Function
+**技术栈**：React + TypeScript + Vite + Tailwind CSS，后端是 Supabase（Edge Functions 做数据代理和计算，Postgres 存少量结构化数据），部署走 Supabase CLI 手动 `deploy`，没有 CI/CD。
 
-## 主要功能
-1. **策略构建**：添加/编辑期权腿，实时计算盈亏曲线和希腊值；普通模式可设置开仓时间
-2. **预设策略**：30+ 中文预设策略模板，支持自定义保存
-3. **情景分析**：股价/时间/波动率滑块，查看策略在不同条件下的表现
-4. **策略库**：保存/加载/重命名/删除策略，支持星标和拖拽排序，保存时记录开仓时间
-5. **持仓追踪**：对比模式，保存持仓快照时间线，追踪策略实际表现；剩余天数四舍五入显示，IV 变化精确到 0.01pp
-6. **实时报价**：输入股票代码自动获取当前股价
+**开发环境**：Xue 本地 Windows 电脑，VS Code + PowerShell，`C:\Users\lixue\projects\optionpilote`。已经不用 Bolt 了——Bolt 的浏览器内文件系统反复出现"改动没保存住、刷新就丢"的问题（这是 Bolt 平台本身的已知缺陷，不是操作问题），所以中途整个搬到了本地开发。GitHub 仓库 `github.com/lixuedenon/OptionPilot` 是 public 的，是唯一可信的"当前状态"来源（不要相信 Bolt 里的内容，Bolt 已经不用了）。
 
-## 构建命令
-- `npm run build` — 生产构建
-- `npm run typecheck` — 类型检查
-- `npm run lint` — 代码检查
+---
 
-## UI 结构
-- **策略库下拉菜单**：保存策略组合、管理策略、保存追踪快照（仅对比模式显示）
-- **数据下拉菜单**：整合文件链接、导入、导出三个功能于一个下拉菜单中（右上角，Database 图标）
-- **使用说明按钮**：OptionPilot 标题旁的 HelpCircle 图标按钮，点击弹出使用说明模态框
-- **腿位编辑按钮**：添加（+）、清空（垃圾桶）内联在腿位标题旁，不再藏在菜单里
-- 已取消"当前策略"下拉菜单，追踪操作统一归入策略库菜单
-- 左右窗口比例固定为 3.8:6.2（width: 38%），不可拖动调节
+## 2. 四个模块，目前完成度
 
-## 当前状态
-- 快照时间线功能完成（trackedSnapshots 替代旧的单一 trackedLegs）
-- 旧数据自动迁移到快照格式
-- 对比模式支持快照选择器切换历史持仓记录
-- "当前策略"下拉已移除，清空/添加改为内联按钮，保存追踪移入策略库菜单
-- 普通模式新增开仓时间选择器，保存策略时一并保存
-- 对比模式剩余天数改为四舍五入整数显示，IV 变化精度提升至 0.01pp
-- 进入对比模式不再自动追加快照；仅在用户修改持仓内容后退出时提示是否保存快照
-- 持仓组合区域新增实时变化信息面板：股价变化、时间流逝、IV 变化、持仓盈亏
-- 图表盈亏标记点修正为沿持仓曲线定位（calcTrackedPnL），不再固定在抛物线顶端
-- PayoffChart 中 trackedLegs 即为持仓腿，无 activeTrackedLegs 变量；hasTracked 为存在性判断（非 hasTrackedData）
-- 对比模式 currentPnL（右上角盈亏数字）使用 netChange（实际权利金差额），不再用 calcTrackedPnL 重新定价；BS 曲线仅用于不同股价下的盈亏投影
-- trackedResult（App.tsx）中 shifted=当前权利金×sign、base=开仓权利金×sign、change=shifted-base；netChange=Σshifted-Σbase
-- 持仓曲线（红色虚线）以实际权利金盈亏为锚点：先算 BS 模型在当前股价的值，再用 netChange - 模型值 作为偏移量平移整条曲线，确保曲线在当前股价处经过实际盈亏点
-- 当前股价竖线与持仓曲线交点处新增盈亏数值标签（绿/红色圆角矩形），图上可直接读出当前盈亏
-- 对比模式当前股价通过权利金反推（impliedSpotFromPremiums），不使用实时行情价；用户输入的持仓权利金隐含了股价变化信息（如 short straddle 的 call 权利金下降+put 权利金上升→股价下跌），反推得到的隐含股价用于图表盈亏标记、信息面板股价变化、滑块打点；仅当反推失败（如只有正腿）时回退到实时行情价
-- 右上角数据按钮（链接文件、导入、导出）已整合为单个下拉菜单（Database 图标）
-- 选择预设策略时清空所有内容（包括对比模式），若对比模式有未保存修改则提示保存快照
-- 左上角副标题文字已删除，改为使用说明按钮
-- "保存策略组合"按钮带脏检测：保存或加载策略后记录基线快照（symbol/spot/legs/shifts/openingAt），当前状态与基线一致时按钮禁用；修改任一字段后按钮重新可用。应用预设或清空时基线置 null（按钮可用，因为未保存）。非对比模式下加载策略后，实时报价更新股价时会自动同步基线（pendingBaselineSync），避免报价覆盖保存价导致按钮误启用
-- 已移除顶部"保存策略"按钮（与"保存策略组合"易混淆）；原功能改为通过每条腿的三点菜单中"添加到预设（全部）"触发，打开保存预设对话框
-- LegRow 三点菜单结构：添加到预设（全部）、屏蔽（单腿）、删除（单腿）、对冲（单腿）、展期（单腿）、保护（单腿）
-- **展期功能**：RollDialog 组件，点击三点菜单→展期，弹出对话框显示原腿信息，预设 +7d/+14d/+30d 快捷按钮，行权价默认沿用原腿（可改），权利金参考估算（同 IV Black-Scholes），确认后原腿标记 disabled 保留可见，新腿添加到列表末尾；裸卖 call 展期、行权价下移、新到期日更近时显示风险警告，勾选"持有正股"取消裸 call 警告
-- **保护功能**：ProtectDialog 组件，点击三点菜单→保护，根据原腿自动建议保护腿方向（short call→buy call 更高行权价，short put→buy put 更低行权价），行权价/到期日/权利金预填建议值，确认后保护腿加入组合
-- **对冲功能**：HedgeDialog 组件，点击三点菜单→对冲，显示组合实时总 Delta，提供正股对冲（自动算股数）和期权对冲（建议行权价/到期日/参考权利金）两种方式，确认后对冲腿加入组合
-- **拖拽排序**：LegRow 左侧拖拽手柄（GripVertical 图标），支持拖拽重新排序，分析和对比模式均支持；App.tsx 中 dragIndex/dragOverIndex 状态管理，handleDragStart/handleDragEnter/handleDragEnd 处理排序逻辑
-- "保存追踪快照"按钮带脏检测（trackedDirty）：保存快照后或加载快照后重置为 false，修改持仓腿时置为 true；按钮在未修改时禁用（disabled={!trackedDirty}）
-- 快照删除：快照选择器旁有删除按钮（Trash2 图标），调用 deleteTrackedSnapshot；至少保留一条快照，删除最后一条时按钮禁用；删除后自动切换到最后一条快照，无快照时清空 activeSnapshotId
-- **顶部信息栏布局**：固定两行 CSS Grid（grid-cols-[auto_minmax(0,1fr)] grid-rows-[auto_auto]），不使用 flex-wrap 自动换行
-  - 第一行：左侧策略信息（期权腿位、策略名称、N/总数），右侧到期盈利、盈亏平衡、策略库按钮（whitespace-nowrap 防止换行）
-  - 第二行：开仓价、开仓日期（col-span-2）
-  - 指标块用 border-r 分隔，gap-2 间距
-- **开仓价输入**：type="number" step="0.01"，onChange 用 `v >= 0`（不是 `v > 0`）允许输入 0 开头的小数；onWheel 调用 `e.currentTarget.blur()` 阻止滚轮改值（浏览器原生行为会在聚焦时按 step 增减）
-- **开仓日期输入**：type="date" 原生日历控件，value 通过 `formatDateInput(ts)` 转为 `YYYY-MM-DD`（本地时区，不用 `toLocaleDateString("en-CA")` 避免时区偏移），onChange 通过 `parseDateInput(value)` 解析为时间戳；用户可直接输入数字或点击日历选择
-- **开仓数据持久化**：开仓价（spot）和开仓日期（openingAt）在保存策略组合时一并写入 SavedStrategy；加载策略时回填到顶部信息栏；对比模式以保存的 openingAt 作为基础数据计算时间流逝（daysSince）。保存确认框（SaveStrategyDialog）显示开仓价和开仓日期供用户确认
+| 模块 | 状态 | 说明 |
+|---|---|---|
+| 分析模式 | 成熟，持续在加功能 | 搭建期权组合，三滑块（价格/时间/IV）推演盈亏 |
+| 跟踪对比 | 成熟，持续在加功能 | 对比开仓 vs 当前，反推股价/IV变化 |
+| 模拟账户 | 基础功能完整 | 虚拟开平仓，悔棋模式A（已平仓仓位事后对比）+ B（时间线快照回放） |
+| AI推荐策略 | 开发中，核心链路已打通但未完全生产化 | 见第5节详细说明 |
 
-## 多语言待办（尚未实现）
-- **按钮/标签文字自适应**：多语言切换时，按钮和标签内的文字应通过缩小字号自适应按钮/标签的自身尺寸，确保所有文字完整显示在按钮或标签当中。**禁止使用 truncate 截断 + 鼠标悬停显示全部的方式**，必须缩小字号让所有文字可见。按钮和标签的尺寸保持固定，不因文字长度变化而撑开。
-- **翻译范围**：仅按钮文字、标签文字、说明文字需要多语言；期权术语（Call/Put/Straddle/Greek 等）保持英文不翻译，减少不必要的翻译量。
-- **隐含股价说明同步**：对比模式下"权利金反推股价"的说明文字出现在两处——(1) 顶部信息栏旁的说明弹窗，(2) 图表底端的说明区域。这两处说明内容必须完全一致，包括警告文字（权利金偏差大则股价偏差大）和"修正"按钮。点击任一处的"修正"按钮后，获取实时真实股价替换当前反推值，同时关闭说明弹窗。用户再次修改任意权利金后，修正值清除，恢复反推模式。
+---
+
+## 3. 核心数据模型（src/lib/types.ts）
+
+```
+interface Leg {
+  id, action("buy"|"sell"), type("call"|"put"), strike, dte, premium,
+  kind?("stock"), shares?, qty?（份数，默认1）, disabled?
+}
+interface Shifts { dS, dT, dV } // 价格/天数/波动率百分点的情景偏移
+```
+
+关键约定，改动前必须知道：
+- 正股腿（kind:"stock"）盈亏按每股算，不乘 shares（shares 只是显示用）
+- 到期日全项目统一 snap 到最近周五，用 nearestFridayDte()（src/lib/dateUtils.ts），但这个函数只在特定路径调用（新建腿位、展期、对冲、保护、套预设），跟踪模式加载已存策略时不会重新 snap（如果旧数据本身不是周五，会一直显示错的日期，这是已知的历史遗留问题，不是当前代码的 bug）
+- 期权链数据（Yahoo）不直接提供 IV，全项目统一用"权利金反推 IV"（impliedVol()，src/lib/pricing.ts，bisection 法），不要假设有现成的 IV 字段
+- RSI/ATR 的计算实际是简单移动平均，尽管变量名/注释像是在说"标准 Wilder 平滑"——这是故意保留的行为（对齐 Python 原脚本的实际实现），不要"纠正"成教科书算法
+- SimAccount 公式：realizedPnl = markValue - costBasis
+
+---
+
+## 4. 文件结构（当前实际状态，2026-08-22）
+
+```
+src/
+  App.tsx              — 分析/跟踪对比模式主界面（约1580行，还在持续加功能）
+  Shell.tsx            — 四个模块的路由壳
+  HomePage.tsx          — 首页模块选择
+  SimulatorPage.tsx     — 模拟账户
+  AIStrategyPage.tsx    — AI推荐策略页面（临时预览版，见第5节）
+  ComingSoonPage.tsx    — 占位页组件（当前没被任何路由使用，但保留）
+  main.tsx              — 入口，包了一层最外层 ErrorBoundary
+
+  hooks/
+    useSavedStrategies.ts / useCustomPresets.ts / useAutoSync.ts
+    — 从 App.tsx 拆出来的三撮独立状态（已存策略/自定义预设/自动同步文件链接）
+    — 腿位组合 + 跟踪对比这两撮状态还没拆，耦合太深（applyPreset/doClearAll等
+      好几个函数会一次性跨好几撮状态重置），下次要拆记得先设计"每个hook自己提供
+      reset()方法"，不要直接搬
+
+  lib/
+    types.ts / bs.ts（Black-Scholes）/ pricing.ts（定价+PoP+归因+决策比较用的
+      maxProfitLoss）/ dateUtils.ts / matchStrategy.ts / presets.ts /
+      customPresets.ts / savedStrategies.ts / simAccount.ts / recentSymbols.ts /
+      useStockQuote.ts / dataTransfer.ts（导出导入备份，已包含模拟账户数据）/
+      autoSync.ts（本地文件自动同步备份）
+    optionChain.ts       — 前端期权链客户端，带 Promise 级去重缓存（无过期时间，
+                            改进空间见第7节）
+    decisionCompare.ts   — 决策比较（不动/平掉/展期），展期用真实期权链数据
+    miniMarkdown.tsx     — 手写的轻量 markdown→JSX 渲染器（AI策略结果展示用，
+                            没引入第三方依赖）
+
+  components/
+    LegRow.tsx           — 腿位行组件，分析/跟踪对比模式共用；"..."菜单里有
+                            屏蔽/删除/展期/对冲/保护/比较方案/上移下移
+    PayoffChart.tsx / ShiftSliders.tsx / PresetPicker.tsx / StrategyBadge.tsx
+    RollDialog.tsx / HedgeDialog.tsx / ProtectDialog.tsx — 单腿调整对话框
+    DecisionCompareDialog.tsx — 决策比较弹窗
+    PnlAttributionPanel.tsx   — 盈亏归因面板（跟踪对比模式）
+    ErrorBoundary.tsx    — 通用错误边界（class component）
+    ManageStrategiesDialog.tsx / SaveStrategyDialog.tsx / SavePresetDialog.tsx
+    LanguageSwitcher.tsx / DropdownMenu.tsx
+    dialogs/             — 从App.tsx拆出的内联弹窗（AlertCard, ConfirmClearDialog,
+                            ConfirmBulkDeleteDialog, ConfirmReplacePresetDialog,
+                            ConfirmSnapshotDialog, ConfirmSaveTrackedDialog,
+                            HelpPanel, ImpliedSpotInfoPanel），index.ts统一导出
+
+  i18n/
+    I18nContext.tsx
+    translations.ts      — 纯组装文件，import locales/*，加新语言只需要新建
+                            一个 locales/<code>.ts + 改这里两行
+    locales/zh.ts / en.ts — 实际词条
+
+supabase/
+  functions/
+    stock-quote/         — 单只股票实时报价代理（Yahoo v8/finance/chart，不需要
+                            cookie/crumb）
+    option-chain/        — 期权链代理（Yahoo v7/finance/options，需要cookie+crumb
+                            握手）。已接入服务器端共享缓存（Postgres表
+                            option_chain_cache，15分钟TTL，见第7节）
+    market-context/       — AI策略用：恐贪指数(CNN+VIX兜底)/宏观指标/经济日历
+                            (Finnhub，免费版可能无权限)/新闻(Finnhub分类+6个RSS源，
+                            实测4/6源能用，2个403)。支持?debug=true查看诊断信息
+    strategy-analysis/    — AI策略主流程：拉QQQ数据→算指标→期权→市场环境→拼
+                            prompt→并行调用Claude+GPT-4o+Grok+Gemini四个模型→
+                            返回。见第5节，这是当前唯一还没做完的大块
+    _shared/
+      bs.ts / deltaMatch.ts / technicalIndicators.ts / buildPrompt.ts
+      — 这几个是前端同名文件（src/lib/）的手动同步副本，不是真正共享
+        （Deno边缘函数和Vite前端是两个独立运行环境，模块系统不通），改动
+        逻辑要两边都改，文件头部注释里都写了这个提醒
+  migrations/
+    20260806061713_create_user_data_tables.sql — saved_strategies/custom_presets/
+      recent_symbols 三张表（当前实际未使用，前端仍是localStorage，这是早期
+      规划的云同步基建，没接上）
+    20260822010000_create_option_chain_cache.sql — 期权链共享缓存表
+```
+
+---
+
+## 5. AI推荐策略模块——当前最活跃、最没做完的部分
+
+背景：Xue 原来有一套本地跑的 Python 脚本（daily_strategy.py + qqq_data_fetcher.py + data_fetcher.py），每天调用 Claude/GPT-4o/Grok/Gemini 四个模型给 QQQ/TQQQ 出期权策略建议。这次是把这套逻辑移植到 Web 应用里。
+
+策略逻辑（STRATEGY_REQUIREMENTS常量，在 supabase/functions/_shared/buildPrompt.ts）是逐字从 Python 脚本搬过来的，Xue 明确说过"不要随意修改策略方向定义"，改动前必须跟他确认。
+
+### 已经做完、验证过的部分
+
+1. 技术指标计算（MA/EMA/MACD/RSI/布林带/ATR等）——用合成数据交叉验证过，跟Python原版逐字段完全一致
+2. Delta反推与匹配（_shared/deltaMatch.ts）——从权利金反推IV再算Delta，验证过已知性质（ATM约0.5、深度实值/虚值趋近1/0、单调性）
+3. 市场环境数据（market-context）——已部署，实测CNN恐贪指数、宏观数据、大部分新闻源都能连通
+4. prompt拼装（_shared/buildPrompt.ts）——生成的prompt跟Python原版格式对得上，已用真实数据验证过输出
+5. 四模型并行调用（strategy-analysis）——已经真实调用成功过，拿到过四个模型的真实返回结果，前端AIStrategyPage.tsx能正确渲染（包括处理不同模型markdown风格不一致的问题，见miniMarkdown.tsx）
+6. 期权链共享缓存——已上线，减少对Yahoo的请求压力
+
+### 还没做的部分（按原计划顺序）
+
+1. TQQQ参数匹配——已经想清楚方案但没写代码：TQQQ不单独调用AI（避免和QQQ策略类型不一致的风险，也省一次模型调用成本），而是用deltaMatch.ts已经验证过的逻辑，从QQQ的AI建议里提取"目标Delta"，在TQQQ自己的期权链里找Delta最接近的合约，代码上直接复用现有的findContractByTargetDelta函数即可，这个是最快能补上的一块
+2. 数据库持久化——现在strategy-analysis是"调用即返回"，没有存数据库。需要建一张新表（类似option_chain_cache的模式）存每天的分析结果
+3. Supabase Cron定时任务——极其重要的架构决定，不要跳过或改变：AI模型调用必须是"每天收盘后自动触发一次"，不能做成"用户点按钮就调用"——后者会导致成本随用户数增长（当前AIStrategyPage.tsx的按钮是临时开发预览用，点了会真实花钱调用四个模型，页面上有明确的橙色警告条说明这一点，正式上线前必须换成"读数据库里已有结果"）
+4. 前端改造——AIStrategyPage.tsx现在的"生成"按钮要换成"读取当天缓存结果"的只读展示，不再现场调用
+
+### 更远期、已讨论但还没定案的功能
+
+- "AI管理的另类模拟账户"——挂在AI推荐模块内部（不是模拟账户模块），全应用共享、纯只读，用户能做的只是把某个槽位的策略"加入到自己的模拟账户"。30个账户槽位滚动，每个策略最多持有30天。平仓机制Xue自己还没最终决定（AI主动判断平仓 vs 固定指标触发平仓，两条路径成本/复杂度差很多），下次做到这一步前必须先跟他确认选哪条路，不要自己替他决定
+- 历史记录必须留档，不能被下一轮覆盖
+
+---
+
+## 6. 最近做完的功能（分析模式完善方向）
+
+Xue的产品思路：不只是"看当下"，还要"理解盈亏来源、比较不同决策"。已完成两项：
+
+1. 盈亏归因（P/L Attribution，PnlAttributionPanel.tsx + pricing.ts里的attributePnl）——跟踪对比模式下，把观察到的盈亏变化拆解成价格贡献/时间贡献/IV贡献三项，加一个"交叉项"（因为期权定价不是线性可加的，三项加起来对不上真实总变化是正常的数学现象，不是bug）。布局踩过坑：这个面板一开始塞进了一个高度受限的容器（max-h-[40%]），把腿位编辑列表挤没了，后来挪到不受高度限制的位置才解决；顺带把整个左侧栏从"每个小区块各自内部滚动"改成了"整体一起滚动，顶部工具栏sticky"
+
+2. 决策比较（Decision Comparison，decisionCompare.ts + DecisionCompareDialog.tsx）——每条腿的"..."菜单新增"比较方案"，对比不动/平掉/展期+30天三种情况下整个组合的最大盈利/最大亏损/到期概率。展期这一档用真实期权链数据（不是理论估算），因为Xue明确要求"尽量真实地模拟实际情况"，这也是这次做服务器端期权链共享缓存的直接触发原因（不然每次点开弹窗都要连Yahoo，用户多了会有峰值风险）
+
+还没做的两项（Xue的原始建议清单里排在后面）：
+- Position Health（组合健康度评分，小组件，可以随时插入任何页面）
+- Leg Purpose（每条腿的"角色"标签，比如"收租中"vs"已变方向性"，改动集中在LegRow.tsx）
+
+---
+
+## 7. 已知问题 / 技术债 / 值得做但没做的
+
+1. option-chain前端客户端缓存（src/lib/optionChain.ts）没有过期时间——只在页面刷新时清空，讨论过要不要加15分钟TTL但没有最终拍板，可以问Xue要不要做
+2. 没有排队限速机制——服务器端共享缓存能挡住"同一时刻查同一标的"的重复请求，但挡不住"同一时刻查很多不同标的"的峰值。讨论过用排队限速兜底（比如一秒处理一个），没有实现，Xue倾向于等真的有用户量再做
+3. App.tsx腿位组合+跟踪对比状态没拆分成hook——见第4节
+4. 没有单元测试——Xue自己说"可以先看计算结果是否正确"，暂缓
+5. supabase/migrations/20260806061713_create_user_data_tables.sql那三张表没接上——前端仍是localStorage，这是早期规划但没执行的云同步
+6. 移动端适配几乎没做
+
+---
+
+## 8. 反复出现、必须知道的"操作层面"教训
+
+这些不是代码问题，是这次开发过程中反复踩过的坑，写出来避免下一个会话重蹈覆辙：
+
+1. Bolt已经不用了，如果Xue的消息里提到"Bolt"，大概率是在回忆旧事或者问怎么彻底断开，不代表还在用它开发
+2. Xue在本地用VS Code + PowerShell + npm run dev，每次改完文件要提醒他保存、确认dev server还在跑（npm run dev异常容易被误操作中断，建议固定用一个窗口跑它，Supabase CLI相关命令用另一个窗口）
+3. 一定要按文件路径给完整文件内容（不是diff），Xue会自己复制粘贴替换整个文件。反复发生过"粘贴到错误文件"的情况（比如把Edge Function的内容粘进了前端组件），每次交付多个文件时，建议提醒他核对文件名再粘贴
+4. 反复发生过"文件之前建过，但后来发现本地没有"的情况——这是历史上Bolt不稳定阶段的遗留问题，不是每次都需要惊慌，但每次改动前如果依赖某个之前做过的文件，最好先确认它真的存在（可以让Xue用Select-String或Get-Content搜关键词确认），不要假设"之前做过的东西现在肯定还在"
+5. 代码交付前，永远先用esbuild做语法检查（这个沙盒装了esbuild，node_modules/.bin/esbuild <file> --bundle=false --outfile=/dev/null），能用真实数据交叉验证的（比如Python原脚本的计算逻辑），一定要验证，不要空口保证"这样应该对"
+6. 部署流程：改完前端文件 → 保存 → npm run dev本地过一遍 → 涉及Edge Function的要额外supabase functions deploy <name> → 涉及数据库改动的要额外supabase secrets set（新key）或supabase db push（新迁移）→ 全部确认没问题后 → git add . && git commit && git push固化到GitHub
+7. Supabase项目本身当初是从Bolt认领过来的（bolt-native-database-70052271，已认领到Xue自己的Supabase账号lixuedenon's Org，项目ref是oyotvdhlffxodyfzqfxt），认领时Bolt保留了对整个Supabase组织的大范围API权限，Xue还没去检查/收回这个权限，如果他问起这个事，可以提醒他去Supabase后台的组织设置里看一下
+
+---
+
+## 9. 环境变量 / Secrets 清单
+
+前端 .env（本地文件，从没推送到GitHub）：
+```
+VITE_SUPABASE_URL=https://oyotvdhlffxodyfzqfxt.supabase.co
+VITE_SUPABASE_ANON_KEY=<已知，需要时Xue可以直接给，这个key设计上可以公开>
+```
+
+Supabase Secrets（supabase secrets set设置，已确认配置完成）：
+```
+ANTHROPIC_API_KEY / OPENAI_API_KEY / XAI_API_KEY / GEMINI_API_KEY  — 四个AI模型
+FINNHUB_API_KEY  — market-context用
+```
+以上都已经设置好，不需要重新问Xue要。SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY等是Supabase自动提供给每个Edge Function的，不需要手动设置。
+
+---
+
+## 10. 建议的下一步（按优先级）
+
+1. TQQQ参数匹配——AI策略模块里最快能补上的一块，逻辑已经想清楚，复用现有代码
+2. 数据库持久化 + Cron定时任务——把AI策略从"临时按钮调用"变成真正的生产架构，这是上线前必须做的
+3. Position Health / Leg Purpose——分析模式完善方向剩下的两项，工作量都不大
+4. 其他的看Xue想先做哪个，他是那种会主动说清楚需求、也会主动纠正理解偏差的人，不确定的地方直接问他，不要自己瞎猜着往下做——这份文档里能讲清楚的都讲了，讲不清楚的地方（比如AI账户的平仓机制）就是因为他自己也还没想好，遇到这种情况提醒他而不是替他做决定。
