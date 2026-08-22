@@ -1,4 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "npm:@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -7,6 +8,56 @@ const corsHeaders = {
 };
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+
+// Shared server-side cache — every user's browser hits THIS function, and
+// this function shares one cached copy per (symbol, requested date) across
+// all of them, instead of each user's request independently reaching
+// Yahoo. This is what actually protects against Yahoo rate-limiting/
+// blocking as usage grows; the client-side cache in src/lib/optionChain.ts
+// only prevents one browser tab from re-asking, which does nothing once
+// there's more than one user. See the shared-cache design discussion.
+const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+
+function getSupabaseClient() {
+  const url = Deno.env.get("SUPABASE_URL")!;
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  return createClient(url, serviceKey);
+}
+
+async function readCache(cacheKey: string): Promise<ChainResult | null> {
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("option_chain_cache")
+      .select("data, fetched_at")
+      .eq("cache_key", cacheKey)
+      .maybeSingle();
+    if (error || !data) return null;
+    const fetchedAt = new Date(data.fetched_at as string).getTime();
+    if (Date.now() - fetchedAt > CACHE_TTL_MS) return null; // stale — treat as a miss
+    return data.data as ChainResult;
+  } catch {
+    // A cache read failure should never block the real fetch — fall
+    // through and hit Yahoo directly, same as a cache miss.
+    return null;
+  }
+}
+
+async function writeCache(cacheKey: string, symbol: string, result: ChainResult): Promise<void> {
+  try {
+    const supabase = getSupabaseClient();
+    await supabase.from("option_chain_cache").upsert({
+      cache_key: cacheKey,
+      symbol,
+      data: result,
+      fetched_at: new Date().toISOString(),
+    });
+  } catch {
+    // Caching is a performance optimization, not a correctness
+    // requirement — a failed write just means the next request re-fetches
+    // from Yahoo instead of hitting a stale/absent cache entry.
+  }
+}
 
 // Yahoo now gates /v7/finance/options behind a session cookie + crumb token
 // (the quote endpoint used by stock-quote does not need this, which is why
@@ -152,6 +203,19 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // Shared cache check — one cache entry per (symbol, exactly what the
+    // caller asked for), so requests for the same symbol+date within the
+    // TTL window never reach Yahoo at all, regardless of which user or
+    // browser tab made them.
+    const cacheKey = `${symbol.toUpperCase()}|${dateParam ?? "_default"}`;
+    const cached = await readCache(cacheKey);
+    if (cached) {
+      return new Response(
+        JSON.stringify(cached),
+        { headers: { ...corsHeaders, "Content-Type": "application/json", "X-Cache": "HIT" } },
+      );
+    }
+
     // First call (no date): gives the full list of available expirations plus
     // the chain nearest to today, which Yahoo uses as its default.
     const base = await fetchYahooChain(symbol);
@@ -203,9 +267,14 @@ Deno.serve(async (req: Request) => {
       puts: normalizeRows(block.puts),
     };
 
+    // Fire-and-forget from the response's perspective, but awaited so the
+    // function doesn't get torn down mid-write — Edge Functions don't keep
+    // running background work after the response is sent.
+    await writeCache(cacheKey, symbol.toUpperCase(), out);
+
     return new Response(
       JSON.stringify(out),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      { headers: { ...corsHeaders, "Content-Type": "application/json", "X-Cache": "MISS" } },
     );
   } catch (err) {
     return new Response(

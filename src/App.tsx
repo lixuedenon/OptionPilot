@@ -1,7 +1,8 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { Plus, Layers, Save, Settings2, RefreshCw, TrendingUp, TrendingDown, ChevronDown, Trash2, History, Clock, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle, DollarSign, Ban, Wallet } from "lucide-react";
 import type { Leg, Shifts } from "@/lib/types";
-import { priceCombo, probabilityOfProfit, weightedAvgIV, impliedSpotFromPremiums } from "@/lib/pricing";
+import { priceCombo, probabilityOfProfit, weightedAvgIV, impliedSpotFromPremiums, attributePnl } from "@/lib/pricing";
+import PnlAttributionPanel from "@/components/PnlAttributionPanel";
 import { PRESET_GROUPS } from "@/lib/presets";
 import { matchStrategy } from "@/lib/matchStrategy";
 import LegRow from "@/components/LegRow";
@@ -19,6 +20,7 @@ import DropdownMenu from "@/components/DropdownMenu";
 import RollDialog from "@/components/RollDialog";
 import ProtectDialog from "@/components/ProtectDialog";
 import HedgeDialog from "@/components/HedgeDialog";
+import DecisionCompareDialog from "@/components/DecisionCompareDialog";
 import { exportAllData, importAllData } from "@/lib/dataTransfer";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
@@ -28,6 +30,7 @@ import { getOptionChain, peekResolvedChain, nearestStrikeToSpot, resolveFromCach
 import { useI18n } from "@/i18n/I18nContext";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import { AlertCard, ConfirmBulkDeleteDialog, ConfirmClearDialog, ConfirmReplacePresetDialog, ConfirmSaveTrackedDialog, ConfirmSnapshotDialog, HelpPanel, ImpliedSpotInfoPanel } from "@/components/dialogs";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 let idc = 0;
 const uid = () => `leg-${Date.now()}-${idc++}`;
@@ -150,6 +153,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const [rollTarget, setRollTarget] = useState<Leg | null>(null);
   const [protectTarget, setProtectTarget] = useState<Leg | null>(null);
   const [hedgeOpen, setHedgeOpen] = useState(false);
+  const [compareTargetId, setCompareTargetId] = useState<string | null>(null);
   const [selectedLegIds, setSelectedLegIds] = useState<Set<string>>(new Set());
   const [confirmBulkDeleteOpen, setConfirmBulkDeleteOpen] = useState(false);
   const pendingPresetAction = useRef<{ name: string; rawLegs: Leg[] } | null>(null);
@@ -380,6 +384,18 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     return (trackedIV - openIV) * 100;
   }, [isCompareMode, activeTrackedLegs, activeLegs, spot, effectiveTrackedSpot]);
 
+  // P/L attribution — decomposes trackedResult.change (the real observed
+  // P&L move) into price/time/IV contributions. See attributePnl's own
+  // comments in pricing.ts for why the three don't sum exactly to the
+  // total and what the residual represents.
+  const pnlAttribution = useMemo(() => {
+    if (!isCompareMode || !trackedResult || activeLegs.length === 0 || spot <= 0) return null;
+    const dSpot = effectiveTrackedSpot - spot;
+    const dDays = effectiveDaysElapsed;
+    const dVolPct = trackedVolShift ?? 0;
+    return attributePnl(activeLegs, spot, dSpot, dDays, dVolPct, trackedResult.change);
+  }, [isCompareMode, trackedResult, activeLegs, spot, effectiveTrackedSpot, effectiveDaysElapsed, trackedVolShift]);
+
   const handleAddCustom = useCallback(async (data: { name: string; desc: string; market: string; stocks: string; direction: string }) => {
     const base = spot > 0 ? spot : (legs[0]?.strike || 100);
     const norm = base / 100;
@@ -488,6 +504,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     setLegs((prev) => [...prev, protectLeg]);
     setProtectTarget(null);
   };
+
+  const handleCompare = (legId: string) => setCompareTargetId(legId);
 
   const handleHedge = () => setHedgeOpen(true);
   const handleHedgeConfirm = (hedgeLeg: Leg) => {
@@ -1052,8 +1070,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       {/* ── Main two-column layout ── */}
       <div className="flex min-h-0 flex-1 gap-0">
         {/* LEFT: Leg inputs */}
-        <div className="flex shrink-0 flex-col border-r border-slate-800" style={{ width: "38%", minWidth: 380 }}>
-          <div className="grid shrink-0 grid-cols-[auto_minmax(0,1fr)] grid-rows-[auto_auto] items-center gap-x-2 gap-y-1 border-b border-slate-800/60 px-3 py-1.5">
+        <div className="flex shrink-0 flex-col overflow-y-auto border-r border-slate-800" style={{ width: "38%", minWidth: 380 }}>
+          <div className="sticky top-0 z-20 grid shrink-0 grid-cols-[auto_minmax(0,1fr)] grid-rows-[auto_auto] items-center gap-x-2 gap-y-1 border-b border-slate-800/60 bg-slate-950 px-3 py-1.5">
             <div className="col-start-1 row-start-1 flex min-w-0 shrink-0 items-center gap-2 whitespace-nowrap">
               <span className="shrink-0 whitespace-nowrap text-xs font-semibold text-slate-300">{t("leg.legs")}</span>
               {strategyName && (
@@ -1135,9 +1153,9 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           </div>
 
           {/* ── Original combo section ── */}
-          <div className="flex-1 overflow-y-auto p-2 space-y-1 min-h-0">
+          <div className="p-2 space-y-1">
             {isCompareMode && (
-              <div className="sticky top-0 z-10 flex items-center gap-2 bg-slate-900/80 py-1 backdrop-blur-sm">
+              <div className="flex items-center gap-2 bg-slate-900/40 py-1 rounded px-2">
                 <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-400">{t("compare.openCombo")}</span>
                 <span className="text-[9px] text-slate-500">{t("compare.compareBase")}</span>
                 {(() => {
@@ -1229,7 +1247,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               </div>
             )}
             {legs.length === 0 ? (
-              <div className="flex h-full flex-col items-center justify-center gap-2 text-slate-600">
+              <div className="flex min-h-[240px] flex-col items-center justify-center gap-2 text-slate-600">
                 <span className="text-sm">{t("leg.noLegs")}</span>
                 <span className="text-xs">{t("leg.noLegsHint")}</span>
               </div>
@@ -1248,6 +1266,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   onRoll={() => handleRoll(leg.id)}
                   onHedge={() => handleHedge()}
                   onProtect={() => handleProtect(leg.id)}
+                  onCompare={() => handleCompare(leg.id)}
                   onMoveUp={() => moveLeg(i, -1)}
                   onMoveDown={() => moveLeg(i, 1)}
                   canMoveUp={i > 0}
@@ -1261,8 +1280,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
           {/* ── Today's combo section (compare mode only) ── */}
           {isCompareMode && trackedLegs && (
-            <div className="flex max-h-[40%] flex-col border-t-2 border-sky-700/40 min-h-0">
-              <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 bg-sky-950/30 px-2 py-1">
+            <div className="flex flex-col border-t-2 border-sky-700/40">
+              <div className="flex flex-wrap items-center gap-2 bg-sky-950/30 px-2 py-1">
                 <span className="text-[10px] font-bold uppercase tracking-wide text-sky-400">{t("compare.todayCombo")}</span>
                 <span className="text-[9px] text-slate-500">{t("compare.fixed")}</span>
                 {(() => {
@@ -1347,7 +1366,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   </div>
                 );
               })()}
-              <div className="flex-1 overflow-y-auto p-2 space-y-1 min-h-0">
+              <div className="p-2 space-y-1">
                 {trackedLegs.map((leg, i) => (
                   <LegRow
                     key={leg.id}
@@ -1372,6 +1391,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             </div>
           )}
 
+          {isCompareMode && pnlAttribution && (
+            <div className="shrink-0 border-t border-slate-800 px-3 py-2">
+              <PnlAttributionPanel attribution={pnlAttribution} />
+            </div>
+          )}
+
           {/* Alert footer */}
           <div className="shrink-0 border-t border-slate-800 px-3 py-2">
             <AlertCard alert={alert} />
@@ -1381,26 +1406,28 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         {/* RIGHT: Chart + sliders */}
         <div className="flex min-w-0 flex-1 flex-col min-h-0">
           <div className="min-h-0 flex-1 px-2 py-1.5">
-            <PayoffChart
-              legs={activeLegs}
-              spot={spot}
-              shifts={shifts}
-              symbol={symbol}
-              pop={pop}
-              breakevens={breakevens}
-              trackedLegs={activeTrackedLegs ?? undefined}
-              openingLegs={isCompareMode ? activeLegs : undefined}
-              compareMode={isCompareMode}
-              perLegValues={isCompareMode && trackedResult ? trackedResult.perLeg : result.perLeg}
-              netValue={isCompareMode && trackedResult ? trackedResult.shiftedValue : result.shiftedValue}
-              netChange={isCompareMode && trackedResult ? trackedResult.change : result.change}
-              trackedSpot={isCompareMode ? effectiveTrackedSpot : undefined}
-              onAlert={setAlert}
-              correctedSpot={correctedSpot}
-              correcting={correcting}
-              onCorrectSpot={handleCorrectSpot}
-              symbolForCorrect={symbol}
-            />
+            <ErrorBoundary>
+              <PayoffChart
+                legs={activeLegs}
+                spot={spot}
+                shifts={shifts}
+                symbol={symbol}
+                pop={pop}
+                breakevens={breakevens}
+                trackedLegs={activeTrackedLegs ?? undefined}
+                openingLegs={isCompareMode ? activeLegs : undefined}
+                compareMode={isCompareMode}
+                perLegValues={isCompareMode && trackedResult ? trackedResult.perLeg : result.perLeg}
+                netValue={isCompareMode && trackedResult ? trackedResult.shiftedValue : result.shiftedValue}
+                netChange={isCompareMode && trackedResult ? trackedResult.change : result.change}
+                trackedSpot={isCompareMode ? effectiveTrackedSpot : undefined}
+                onAlert={setAlert}
+                correctedSpot={correctedSpot}
+                correcting={correcting}
+                onCorrectSpot={handleCorrectSpot}
+                symbolForCorrect={symbol}
+              />
+            </ErrorBoundary>
           </div>
 
           {/* Sliders */}
@@ -1535,6 +1562,16 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           symbol={symbol}
           onClose={() => setHedgeOpen(false)}
           onConfirm={handleHedgeConfirm}
+        />
+      )}
+
+      {compareTargetId && (
+        <DecisionCompareDialog
+          legs={legs}
+          targetLegId={compareTargetId}
+          spot={spot}
+          symbol={symbol}
+          onClose={() => setCompareTargetId(null)}
         />
       )}
 
