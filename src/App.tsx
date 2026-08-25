@@ -3,6 +3,8 @@ import { Plus, Layers, Save, Settings2, RefreshCw, TrendingUp, TrendingDown, Che
 import type { Leg, Shifts } from "@/lib/types";
 import { priceCombo, probabilityOfProfit, weightedAvgIV, impliedSpotFromPremiums, attributePnl } from "@/lib/pricing";
 import PnlAttributionPanel from "@/components/PnlAttributionPanel";
+import PositionHealthBadge from "@/components/PositionHealthBadge";
+import { computeHealth } from "@/lib/positionHealth";
 import { PRESET_GROUPS } from "@/lib/presets";
 import { matchStrategy } from "@/lib/matchStrategy";
 import LegRow from "@/components/LegRow";
@@ -300,17 +302,43 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const strategyName = useMemo(() => matchStrategy(activeLegs, spot, customPresets), [activeLegs, spot, customPresets]);
   const canSaveStrategy = activeLegs.length > 0 && serializeStrategyState(symbol, legs, shifts, openingAt) !== strategyBaseline;
   const result = useMemo(() => priceCombo(activeLegs, shifts, spot), [activeLegs, shifts, spot]);
+
   const scenarioPriceById = useMemo(() => {
     const m = new Map<string, number>();
     for (const pl of result.perLeg) m.set(pl.leg.id, pl.shifted);
     return m;
   }, [result]);
 
+  // Position Health deliberately reads the REAL current Greeks (zero
+  // shift), not result.breakdown — same reasoning as decision-compare's
+  // maxProfit/maxLoss/pop staying shift-independent: health describes
+  // "how is my actual position doing right now", not a hypothetical
+  // slider scenario. Recomputing at {dS:0,dT:0,dV:0} is cheap and keeps
+  // this from flickering as someone plays with the sliders.
+  const positionHealth = useMemo(() => {
+    if (activeLegs.length === 0 || spot <= 0) return null;
+    const realBreakdown = priceCombo(activeLegs, { dS: 0, dT: 0, dV: 0 }, spot).breakdown;
+    return computeHealth(activeLegs, spot, realBreakdown);
+  }, [activeLegs, spot]);
+
   const { pop, breakevens } = useMemo(() => probabilityOfProfit(activeLegs, spot), [activeLegs, spot]);
 
   const activeTrackedLegs = useMemo(() => trackedLegs?.filter((l) => !l.disabled) ?? null, [trackedLegs]);
 
   const isCompareMode = trackedLegs !== null;
+
+  // Analysis-mode P/L attribution — same attributePnl() used in tracking
+  // mode, just fed the slider's own dS/dT/dV instead of a tracked-vs-
+  // opening comparison. The sliders ARE the price/time/IV shift already;
+  // result.change is already the combo's total change under exactly those
+  // shifts, so this is a direct reuse, not new pricing logic. Only shown
+  // once at least one slider has actually moved — at rest all four numbers
+  // are zero and there's nothing useful to attribute.
+  const analysisAttribution = useMemo(() => {
+    if (isCompareMode || activeLegs.length === 0 || spot <= 0) return null;
+    if (shifts.dS === 0 && shifts.dT === 0 && shifts.dV === 0) return null;
+    return attributePnl(activeLegs, spot, shifts.dS, shifts.dT, shifts.dV, result.change);
+  }, [isCompareMode, activeLegs, spot, shifts, result]);
 
   // In compare mode, back-solve the implied stock price from the premiums the user
   // enters for each tracked leg. Different premiums imply different stock prices —
@@ -369,6 +397,18 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       perLeg,
     };
   }, [isCompareMode, activeTrackedLegs, activeLegs, effectiveTrackedSpot, spot]);
+
+  // Per-leg P&L for the tracked ("今日组合") list — trackedResult.perLeg
+  // already computes each tracked leg's change vs. its opening counterpart,
+  // this just re-keys it by id so LegRow can look its own value up the
+  // same way scenarioPriceById already works for the opening combo list.
+  const trackedLegPnlById = useMemo(() => {
+    const m = new Map<string, number>();
+    if (!trackedResult) return m;
+    for (const pl of trackedResult.perLeg) m.set(pl.leg.id, pl.change.total);
+    return m;
+  }, [trackedResult]);
+
   const trackedStrategy = trackingStrategyId ? savedStrategies.find((s) => s.id === trackingStrategyId) : undefined;
 
   // Volatility difference between opening and tracked combos (in percentage points).
@@ -1149,6 +1189,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   )}
                 </div>
               )}
+              {positionHealth && <PositionHealthBadge health={positionHealth} />}
             </div>
           </div>
 
@@ -1257,7 +1298,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   key={leg.id}
                   leg={leg}
                   index={i}
-                  scenarioPrice={scenarioPriceById.get(leg.id)}
+                  scenarioPrice={isCompareMode ? undefined : scenarioPriceById.get(leg.id)}
                   symbol={symbol}
                   onChange={(patch) => updateLeg(leg.id, patch)}
                   onToggleDisable={() => toggleLeg(leg.id)}
@@ -1373,6 +1414,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                     leg={leg}
                     index={i}
                     symbol={symbol}
+                    legPnl={trackedLegPnlById.get(leg.id)}
                     onChange={(patch) => updateTrackedLeg(leg.id, patch)}
                     onToggleDisable={() => {}}
                     onDelete={() => {}}
@@ -1394,6 +1436,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           {isCompareMode && pnlAttribution && (
             <div className="shrink-0 border-t border-slate-800 px-3 py-2">
               <PnlAttributionPanel attribution={pnlAttribution} />
+            </div>
+          )}
+
+          {!isCompareMode && analysisAttribution && (
+            <div className="shrink-0 border-t border-slate-800 px-3 py-2">
+              <PnlAttributionPanel attribution={analysisAttribution} />
             </div>
           )}
 
@@ -1571,6 +1619,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           targetLegId={compareTargetId}
           spot={spot}
           symbol={symbol}
+          shifts={shifts}
           onClose={() => setCompareTargetId(null)}
         />
       )}

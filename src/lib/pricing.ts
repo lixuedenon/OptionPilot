@@ -180,6 +180,30 @@ export function maxProfitLoss(legs: Leg[], spot: number): { maxProfit: number; m
   return { maxProfit, maxLoss };
 }
 
+// Same spot window as maxProfitLoss, but returns the sampled points
+// themselves instead of just the min/max — for drawing an actual payoff
+// curve (e.g. the decision-comparison mini-chart) rather than reporting a
+// single number. Fewer samples than maxProfitLoss's scan (60 vs 500) since
+// a small inline chart doesn't need that resolution and this runs once per
+// scenario shown.
+export interface PayoffPoint {
+  spot: number;
+  pnl: number;
+}
+
+export function payoffCurvePoints(legs: Leg[], spot: number, points = 60): PayoffPoint[] {
+  if (legs.length === 0 || spot <= 0) return [];
+  const range = Math.max(20, spot * 0.5);
+  const sMin = Math.max(0.01, spot - range);
+  const sMax = spot + range;
+  const out: PayoffPoint[] = [];
+  for (let i = 0; i <= points; i++) {
+    const s = sMin + (i / points) * (sMax - sMin);
+    out.push({ spot: s, pnl: pnlAtExpiry(legs, s) });
+  }
+  return out;
+}
+
 // Find breakeven points by sampling the PnL curve and detecting sign changes.
 export function findBreakevens(legs: Leg[], spot: number): number[] {
   const range = Math.max(20, spot * 0.5);

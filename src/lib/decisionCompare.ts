@@ -1,23 +1,42 @@
-import type { Leg } from "./types";
-import { priceCombo, probabilityOfProfit, maxProfitLoss } from "./pricing";
+import type { Leg, Shifts } from "./types";
+import { priceCombo, probabilityOfProfit, maxProfitLoss, payoffCurvePoints, type PayoffPoint } from "./pricing";
 import { dteFromDate } from "./dateUtils";
 import { getOptionChain, premiumFromQuote, nearestStrikeToSpot } from "./optionChain";
 
 export interface DecisionScenario {
   key: "doNothing" | "close" | "roll";
   legs: Leg[];
+  // Current (marked-to-market) combo value, evaluated under the SAME
+  // price/time/IV shift the analysis-mode sliders are currently set to —
+  // see compareDecisions' own comment for why this follows the sliders
+  // instead of always being "as of right now".
   netValue: number;
+  // maxProfit/maxLoss/pop describe the combo's outcome AT EXPIRY, which is
+  // a property of the leg list itself (strikes, premiums, actions) — the
+  // slider shift doesn't change that, so these are intentionally NOT
+  // re-evaluated under the shift the way netValue is.
   maxProfit: number;
   maxLoss: number;
   pop: number;
+  curve: PayoffPoint[];
+  // Only set for "roll" — the real, listed expiry date it resolved to, so
+  // the dialog can show an actual date instead of a vague "+30 days".
+  expiryDate?: string;
 }
 
-function buildScenario(key: DecisionScenario["key"], legs: Leg[], spot: number): DecisionScenario {
+function buildScenario(
+  key: DecisionScenario["key"],
+  legs: Leg[],
+  spot: number,
+  shifts: Shifts,
+  expiryDate?: string,
+): DecisionScenario {
   const active = legs.filter((l) => !l.disabled);
-  const netValue = priceCombo(active, { dS: 0, dT: 0, dV: 0 }, spot).shiftedValue;
+  const netValue = priceCombo(active, shifts, spot).shiftedValue;
   const { maxProfit, maxLoss } = maxProfitLoss(active, spot);
   const { pop } = probabilityOfProfit(active, spot);
-  return { key, legs, netValue, maxProfit, maxLoss, pop };
+  const curve = payoffCurvePoints(active, spot);
+  return { key, legs, netValue, maxProfit, maxLoss, pop, curve, expiryDate };
 }
 
 // Compares three outcomes for one specific leg within the combo:
@@ -31,6 +50,14 @@ function buildScenario(key: DecisionScenario["key"], legs: Leg[], spot: number):
 //    to appear and is added to the list once it resolves rather than
 //    blocking doNothing/close from showing immediately.
 //
+// `shifts` is the analysis-mode sliders' CURRENT price/time/IV shift, not
+// always {0,0,0} — the comparison deliberately follows wherever the
+// sliders are set, so a trader can drag to a hypothetical future scenario
+// ("if the stock drops 5% and 10 days pass") and immediately see what
+// hold/close/roll would each look like from there. That's the whole point
+// of pairing this with the sliders: rehearsing a decision before the real
+// market ever gets there, not just describing the position as of today.
+//
 // Hedging isn't included here — adding a hedge leg is a combo-level
 // decision (which strike, which type, sized how) rather than a mechanical
 // transform of the target leg the way close/roll are, so it doesn't have
@@ -40,14 +67,15 @@ export async function compareDecisions(
   targetLegId: string,
   spot: number,
   symbol: string,
+  shifts: Shifts,
 ): Promise<DecisionScenario[]> {
   const targetLeg = allLegs.find((l) => l.id === targetLegId);
   if (!targetLeg) return [];
 
-  const scenarios: DecisionScenario[] = [buildScenario("doNothing", allLegs, spot)];
+  const scenarios: DecisionScenario[] = [buildScenario("doNothing", allLegs, spot, shifts)];
 
   const closedLegs = allLegs.filter((l) => l.id !== targetLegId);
-  scenarios.push(buildScenario("close", closedLegs, spot));
+  scenarios.push(buildScenario("close", closedLegs, spot, shifts));
 
   if (targetLeg.kind !== "stock" && spot > 0 && symbol.trim()) {
     try {
@@ -65,7 +93,7 @@ export async function compareDecisions(
           premium: premiumFromQuote(quote),
         };
         const rolledLegs = [...allLegs.filter((l) => l.id !== targetLegId), rolledLeg];
-        scenarios.push(buildScenario("roll", rolledLegs, spot));
+        scenarios.push(buildScenario("roll", rolledLegs, spot, shifts, chain.usedExpiryDate));
       }
     } catch {
       // Real chain data unavailable (network issue, symbol has no listed

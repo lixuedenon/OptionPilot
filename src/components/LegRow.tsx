@@ -21,6 +21,7 @@ interface Props {
   leg: Leg;
   index: number;
   scenarioPrice?: number;
+  legPnl?: number;
   symbol?: string;
   onChange: (patch: Partial<Leg>) => void;
   onToggleDisable: () => void;
@@ -260,6 +261,7 @@ export default function LegRow({
   leg,
   index,
   scenarioPrice,
+  legPnl,
   symbol,
   onChange,
   onToggleDisable,
@@ -547,13 +549,13 @@ export default function LegRow({
         label={t("leg.qty")}
         value={leg.qty ?? 1}
         step={1}
-        width="38px"
+        width="52px"
         onChange={(v) => onChange({ qty: Math.max(1, Math.round(v)) })}
         disabled={disabled}
       />
 
       <div ref={strikeMenuRef} className="relative flex shrink-0 items-end gap-0.5">
-        <NumField label={t("leg.strike")} value={leg.strike} step={0.5} width="86px" onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ strike: v }); }} disabled={disabled} />
+        <NumField label={t("leg.strike")} value={leg.strike} step={0.5} width="52px" onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ strike: v }); }} disabled={disabled} />
         {!disabled && (
           <button
             onClick={() => setStrikeMenuOpen((v) => !v)}
@@ -651,6 +653,15 @@ export default function LegRow({
           <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{t("leg.scenarioValue")}</span>
           <span className={`rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-semibold tabular-nums ${scenarioPrice >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
             {scenarioPrice >= 0 ? "+" : ""}{scenarioPrice.toFixed(2)}
+          </span>
+        </div>
+      )}
+
+      {legPnl !== undefined && (
+        <div className="flex shrink-0 flex-col gap-0.5" title={t("leg.legPnlHint")}>
+          <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{t("leg.legPnl")}</span>
+          <span className={`rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-semibold tabular-nums ${legPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+            {legPnl >= 0 ? "+" : ""}{legPnl.toFixed(2)}
           </span>
         </div>
       )}
