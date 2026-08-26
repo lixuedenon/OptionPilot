@@ -1,16 +1,16 @@
-# OptionPilot — 项目交接文档（第2版）
+# OptionPilot — 项目交接文档（第3版）
 
-这份文档写给下一个 Claude 会话（新窗口）。仔细读完再动手，尤其是第8节"操作层面的教训"——里面记录的坑，不看会重蹈覆辙，包括这次新出现的一类 bug（见8.8）。
+这份文档写给下一个 Claude 会话（新窗口）。仔细读完再动手。第7节有一个**当前未解决**的谜团，务必先看，不然容易在同一个坑上重复排查。第8节是操作层面反复踩过的坑。
 
 ---
 
 ## 1. 这个项目是什么
 
-OptionPilot 是一个期权策略可视化 + 模拟交易 + AI 策略推荐的 Web 应用，面向中文用户（Xue，项目所有者，本人是有实战经验的期权交易者）。核心定位：不只是"分析当下的期权组合长什么样"，还要"理解盈亏是怎么来的、比较不同操作的结果"——这条产品哲学在最近这一轮开发里体现得更明确了（盈亏归因、决策比较、组合健康度这三个功能都是这条哲学的直接延伸）。
+OptionPilot 是一个期权策略可视化 + 模拟交易 + AI 策略推荐的 Web 应用，面向中文用户（Xue，项目所有者，本人是有实战经验的期权交易者）。核心定位：不只是"分析当下的期权组合长什么样"，还要"理解盈亏是怎么来的、比较不同操作的结果"。
 
 **技术栈**：React + TypeScript + Vite + Tailwind CSS，后端是 Supabase（Edge Functions 做数据代理和计算，Postgres 存少量结构化数据），部署走 Supabase CLI 手动 `deploy`，没有 CI/CD。
 
-**开发环境**：Xue 本地 Windows 电脑，VS Code + PowerShell，`C:\Users\lixue\projects\optionpilote`。已经不用 Bolt 了——Bolt 的浏览器内文件系统反复出现"改动没保存住、刷新就丢"的问题（这是 Bolt 平台本身的已知缺陷，不是操作问题），所以中途整个搬到了本地开发。GitHub 仓库 `github.com/lixuedenon/OptionPilot` 是 public 的，是唯一可信的"当前状态"来源（不要相信 Bolt 里的内容，Bolt 已经不用了）。
+**开发环境**：Xue 本地 Windows 电脑，VS Code + PowerShell（有时候也用Git Bash，看到 `lixue@intel MINGW64` 这种提示符不用奇怪），`C:\Users\lixue\projects\optionpilote`。已经不用 Bolt 了。GitHub 仓库 `github.com/lixuedenon/OptionPilot` 是 public 的，是唯一可信的"当前状态"来源。
 
 ---
 
@@ -18,10 +18,10 @@ OptionPilot 是一个期权策略可视化 + 模拟交易 + AI 策略推荐的 W
 
 | 模块 | 状态 | 说明 |
 |---|---|---|
-| 分析模式 | 成熟，这次改动最集中的地方 | 搭建期权组合，三滑块（价格/时间/IV）推演盈亏；新增盈亏归因、决策比较、组合健康度 |
-| 跟踪对比 | 成熟 | 对比开仓 vs 当前，反推股价/IV变化；这次也顺带修了几个细节 |
-| 模拟账户 | 基础功能完整，这一轮没动 | 虚拟开平仓，悔棋模式A + B |
-| AI推荐策略 | 开发中，这一轮**没有进展**（开发方向切换到了分析模式完善） | 见第5节，状态跟上一版交接文档时一致 |
+| 分析模式 | 成熟，这几轮改动最集中的地方 | 三滑块推演盈亏；盈亏归因、决策比较、组合健康度都已加入 |
+| 跟踪对比 | 成熟 | 对比开仓 vs 当前，反推股价/IV变化 |
+| 模拟账户 | 基础功能完整，好几轮没动了 | 虚拟开平仓，悔棋模式A + B |
+| AI推荐策略 | 开发中，好几轮没有进展（开发方向切到了分析模式完善） | 见第5节 |
 
 ---
 
@@ -36,182 +36,137 @@ interface Shifts { dS, dT, dV } // 价格/天数/波动率百分点的情景偏�
 interface GreekBreakdown { delta, gamma, theta, vega, total }
 ```
 
-关键约定，改动前必须知道：
-- 正股腿（kind:"stock"）盈亏按每股算，不乘 shares（shares 只是显示用）
-- 到期日全项目统一 snap 到最近周五，用 nearestFridayDte()（src/lib/dateUtils.ts），但这个函数只在特定路径调用（新建腿位、展期、对冲、保护、套预设），跟踪模式加载已存策略时不会重新 snap（如果旧数据本身不是周五，会一直显示错的日期，这是已知的历史遗留问题，不是当前代码的 bug）
-- 期权链数据（Yahoo）不直接提供 IV，全项目统一用"权利金反推 IV"（impliedVol()，src/lib/pricing.ts，bisection 法），不要假设有现成的 IV 字段
-- RSI/ATR 的计算实际是简单移动平均，尽管变量名/注释像是在说"标准 Wilder 平滑"——这是故意保留的行为（对齐 Python 原脚本的实际实现），不要"纠正"成教科书算法
+关键约定：
+- 正股腿（kind:"stock"）盈亏按每股算，不乘 shares
+- 到期日全项目统一 snap 到最近周五，用 nearestFridayDte()，但跟踪模式加载已存策略时不会重新 snap（历史遗留，不是bug）
+- Yahoo期权链不直接提供IV，全项目统一用权利金反推IV（impliedVol()，bisection法）
+- RSI/ATR 用简单移动平均，故意对齐Python原脚本，不要"纠正"成教科书算法
 - SimAccount 公式：realizedPnl = markValue - costBasis
-- **maxProfitLoss/probabilityOfProfit/positionHealth 这几个"到期结果"相关的指标，设计上刻意不跟随分析模式的情景滑块（Shifts）变化**——它们描述的是"这个腿位组合本身、到期那天会怎样"，是leg列表的固有属性，跟"现在滑块摆在哪"无关。只有"组合当前价值"（netValue/priceCombo的shiftedValue）才应该跟着滑块变。这是这一轮反复出现、必须遵守的设计原则，新增任何"到期类"指标时都要延续这个区分
+- **maxProfitLoss/probabilityOfProfit 描述"到期结果"，是leg列表的固有属性，跟当前滑块无关**——这条原则这几轮被反复强调，但**这一轮又出现了例外情况**：Position Health这一次改成了会跟随滑块（见6.3），因为Xue明确要求"健康度也该跟着滑块的假设情景走"。**这说明这条设计原则不是铁律，是"默认值"**——新增指标时先问自己：这个指标该反映"真实现状"还是"滑块推演的假设情景"？两种都有正当理由，取决于这个指标是给"了解现状"用的还是给"预演决策"用的，拿不准要问Xue，不要自己套用旧例子想当然
 
 ---
 
-## 4. 文件结构（当前实际状态）
+## 4. 文件结构
 
 ```
 src/
-  App.tsx              — 分析/跟踪对比模式主界面（约1620行，这次又长了一些，
-                          见第7节关于要不要继续拆分的讨论）
-  Shell.tsx            — 四个模块的路由壳
-  HomePage.tsx          — 首页模块选择
-  SimulatorPage.tsx     — 模拟账户（这轮没动）
-  AIStrategyPage.tsx    — AI推荐策略页面（临时预览版，这轮没动，见第5节）
-  ComingSoonPage.tsx    — 占位页组件（当前没被任何路由使用，但保留）
-  main.tsx              — 入口，包了一层最外层 ErrorBoundary
+  App.tsx              — 分析/跟踪对比模式主界面（约1660行，持续增长中，
+                          见7.1关于拆分的讨论）
+  Shell.tsx / HomePage.tsx / SimulatorPage.tsx / AIStrategyPage.tsx /
+  ComingSoonPage.tsx（未使用但保留）/ main.tsx
 
   hooks/
     useSavedStrategies.ts / useCustomPresets.ts / useAutoSync.ts
-    — 从 App.tsx 拆出来的三撮独立状态（已存策略/自定义预设/自动同步文件链接）
-    — 腿位组合 + 跟踪对比这两撮状态还没拆，耦合太深，这轮又往这两撮里加了
-      不少新东西（盈亏归因、健康度、决策比较相关的 state），拆分难度又
-      上升了一些，下次真要拆记得先设计"每个hook自己提供reset()方法"
+    — 腿位组合+跟踪对比这两撮状态依然没拆，耦合更深了
 
   lib/
-    types.ts / bs.ts（Black-Scholes）/ dateUtils.ts / matchStrategy.ts /
-      presets.ts / customPresets.ts / savedStrategies.ts / simAccount.ts /
+    types.ts / bs.ts / dateUtils.ts / matchStrategy.ts / presets.ts /
+      customPresets.ts / savedStrategies.ts / simAccount.ts /
       recentSymbols.ts / useStockQuote.ts / dataTransfer.ts / autoSync.ts
-    pricing.ts — 这轮明显变重了，现在导出：impliedVol / legShiftedPrice /
-      legGreekBreakdown / priceCombo / pnlAtExpiry（新导出）/ maxProfitLoss
-      （新增）/ payoffCurvePoints（新增，给决策比较画图用）/ findBreakevens /
-      probabilityOfProfit / impliedSpotFromPremiums / weightedAvgIV /
-      attributePnl（新增，盈亏归因用）
-    positionHealth.ts   — 新增，组合健康度评分（四个维度：到期盈利概率/距
-                          盈亏平衡点/临近到期风险/Delta方向暴露），纯函数，
-                          不依赖任何UI
-    decisionCompare.ts  — 这轮重写过两次：第一次改成用真实期权链数据（不是
-                          理论估算），第二次改成跟随分析模式情景滑块 + 曝露
-                          payoff曲线点位给图表用
-    optionChain.ts       — 前端期权链客户端，带 Promise 级去重缓存（无过期
-                          时间）
-    miniMarkdown.tsx     — 手写的轻量 markdown→JSX 渲染器（AI策略结果展示用）
+    pricing.ts — 核心计算文件，导出：impliedVol / legShiftedPrice /
+      legGreekBreakdown / priceCombo / pnlAtExpiry / maxProfitLoss /
+      payoffCurvePoints / findBreakevens / probabilityOfProfit /
+      impliedSpotFromPremiums / weightedAvgIV / attributePnl
+    positionHealth.ts — 组合健康度评分，**这轮重写过一次**（见6.3），
+      现在会构造"滑块情景下的假想腿位列表"再评分，不是简单读breakdown
+    decisionCompare.ts — 决策比较，跟随滑块，展期用真实期权链数据
+    optionChain.ts / miniMarkdown.tsx
 
   components/
-    LegRow.tsx           — 腿位行组件，分析/跟踪对比模式共用；这轮改动：
-                          张数/行权价输入框宽度调整、加了"腿位盈亏"徽章
-                          （跟踪模式今日组合专用）、"..."菜单里"比较方案"
-                          现在会跟随情景滑块
+    LegRow.tsx — 腿位行组件，"..."菜单里"比较方案"跟随情景滑块
     PayoffChart.tsx / ShiftSliders.tsx / PresetPicker.tsx / StrategyBadge.tsx
-    RollDialog.tsx / HedgeDialog.tsx / ProtectDialog.tsx — 单腿调整对话框
-    DecisionCompareDialog.tsx — 决策比较弹窗，这轮重写：加了SVG payoff曲线
-                          叠加图（不动/平掉/展期三色曲线），跟随情景滑块，
-                          展期日期直接显示在行标签里（不再只在提示文字里说）
-    PnlAttributionPanel.tsx   — 盈亏归因面板，**这轮从"只有跟踪对比模式能用"
-                          扩展成"分析模式也能用"**——分析模式喂给它的是滑块
-                          自己的dS/dT/dV，跟踪对比模式喂给它的是"开仓vs真实
-                          当前"反推出来的值，同一个组件两种用法
-    PositionHealthBadge.tsx   — 新增，组合健康度徽章，点开展开四项理由，
-                          放在头部"到期盈利/盈亏平衡"那个统计区域旁边，两个
-                          模式都能看到，且不跟随情景滑块（原因见第3节）
-    ErrorBoundary.tsx    — 通用错误边界（class component），**这轮真的救过场**
-                          （见8.7），确认有效
+    RollDialog.tsx / HedgeDialog.tsx / ProtectDialog.tsx
+    DecisionCompareDialog.tsx — SVG payoff曲线叠加图，跟随情景滑块
+    PnlAttributionPanel.tsx — **这轮改了刻度算法**（见6.1和第7节的未解决
+      问题），现在接受外部传入的`maxAbs`（固定尺子），不再自己算
+    PositionHealthBadge.tsx — **这轮改成了Portal渲染**（见6.4），不再是
+      普通的absolute定位子元素
+    ErrorBoundary.tsx — 已经真实发挥过作用（见8.7）
     ManageStrategiesDialog.tsx / SaveStrategyDialog.tsx / SavePresetDialog.tsx
     LanguageSwitcher.tsx / DropdownMenu.tsx
-    dialogs/             — 从App.tsx拆出的内联弹窗，index.ts统一导出
+    dialogs/ — index.ts统一导出
 
   i18n/
-    I18nContext.tsx      — 注意：变量插值用的是单花括号 `{varName}`，不是
-                          `{{varName}}`，这轮写错过一次
-    translations.ts      — 纯组装文件，import locales/*
-    locales/zh.ts / en.ts — 实际词条，这轮新增了 compare2.*（决策比较）、
-                          attribution.*（盈亏归因）、health.*（健康度）
-                          等几组key
+    I18nContext.tsx — 变量插值用单花括号 `{varName}`，不是双花括号
+    translations.ts / locales/zh.ts / locales/en.ts
 
-supabase/
-  functions/
-    stock-quote/ / option-chain/（已接入服务器端共享缓存，Postgres表
-      option_chain_cache，15分钟TTL）/ market-context/ / strategy-analysis/
-      — 这四个这轮都没动，状态跟上一版交接文档一致，见第5节
-    _shared/
-      bs.ts / deltaMatch.ts / technicalIndicators.ts / buildPrompt.ts
-      — 前端同名文件的手动同步副本，不是真正共享，这轮没有改动（因为AI
-        策略这条线暂停了），但要注意：如果下次有人往 src/lib/bs.ts 或
-        pricing.ts 里加通用计算逻辑，记得考虑是否也要同步一份到这里
-  migrations/
-    20260806061713_create_user_data_tables.sql — 未使用（前端仍是localStorage）
-    20260822010000_create_option_chain_cache.sql — 期权链共享缓存表，已生效
+supabase/ — 这几轮完全没动，状态跟AI策略部分一致，见第5节
 ```
 
 ---
 
-## 5. AI推荐策略模块——这轮暂停，状态原地不动
+## 5. AI推荐策略模块——继续暂停，状态原地不动
 
-上一版交接文档写的内容依然完全适用，这轮**没有任何进展**，因为 Xue 决定先把"分析模式完善"这条线做完。原文照抄如下，供参考：
-
-**背景**：Xue 原来有一套本地跑的 Python 脚本（daily_strategy.py + qqq_data_fetcher.py + data_fetcher.py），每天调用 Claude/GPT-4o/Grok/Gemini 四个模型给 QQQ/TQQQ 出期权策略建议。这次是把这套逻辑移植到 Web 应用里。策略逻辑（STRATEGY_REQUIREMENTS常量，在 supabase/functions/_shared/buildPrompt.ts）是逐字从 Python 脚本搬过来的，Xue 明确说过"不要随意修改策略方向定义"，改动前必须跟他确认。
-
-**已经做完、验证过的部分**：技术指标计算、Delta反推与匹配、市场环境数据、prompt拼装、四模型并行调用（真实调用成功过，拿到过真实结果）、期权链共享缓存。
-
-**还没做的部分（按原计划顺序）**：
-1. TQQQ参数匹配——方案已想清楚但没写代码：不单独调用AI，直接用deltaMatch.ts的findContractByTargetDelta从QQQ的AI建议里提取目标Delta去TQQQ期权链里匹配
-2. 数据库持久化——strategy-analysis现在是"调用即返回"，没存数据库
-3. Supabase Cron定时任务——**极其重要，不要跳过或改变这个架构决定**：必须是"每天收盘后自动生成一次"，不能做成"用户点按钮就调用"，否则成本随用户数增长。AIStrategyPage.tsx现在的按钮是临时开发预览用，页面上有橙色警告条说明这一点
-4. 前端改造——按钮换成"读取当天缓存结果"的只读展示
-
-**更远期、已讨论但还没定案**：AI管理的另类模拟账户（30个槽位滚动），平仓机制（AI主动判断 vs 固定指标触发）Xue自己还没最终决定，下次做到这一步前必须先跟他确认。
+跟上一版交接文档完全一致，这几轮**没有任何进展**。核心内容（不重复展开，需要时翻上一版）：技术指标、Delta匹配、市场环境数据、prompt拼装、四模型并行调用都已验证过能跑通；TQQQ参数匹配方案已想清楚没写代码；数据库持久化和Cron定时任务没做；**架构上"必须是每天自动生成一次、不能用户点按钮就调用"这个决定不要动摇**。AIStrategyPage.tsx现在的按钮仍是临时开发预览用，页面有橙色警告条说明。
 
 ---
 
-## 6. 分析模式完善——这一轮的主战场，四个功能全部做完
+## 6. 分析模式完善——这几轮的主战场
 
-Xue的产品思路：不只是"看当下"，还要"理解盈亏来源、比较不同决策"。这轮把他最初提的清单基本做完了。
+### 6.1 盈亏归因——刻度算法这轮重做过
 
-### 6.1 盈亏归因（P/L Attribution）——已扩展到两个模式
+**背景**：Xue发现原来的条形图设计有问题——原来是"四个数字（价格/时间/IV/交叉项贡献）里最大的那个当满格"，这种"自相对"刻度会导致：拖滑块时哪怕数字持续增长，最大的那根条永远是100%满格（因为尺子本身跟着数据一起在变），看起来像是"图不动但数字在动"。
 
-`attributePnl()`（pricing.ts）把观察到的盈亏变化拆解成价格/时间/IV三项贡献 + 一个"交叉项"（因为期权定价不是线性可加的，三项加起来对不上真实总变化是正常数学现象，不是bug）。
+**改法**：换成"固定尺子"——用**这个组合本身的最大盈利/最大亏损**（`maxProfitLoss()`）中绝对值较大的那个当满格，这两个数字不随滑块变化，尺子稳定，条形图能真实反映每次变化占组合总风险的比例。`PnlAttributionPanel.tsx`现在需要外部传入`maxAbs`这个prop，`App.tsx`里新增了`attributionMaxAbs`这个useMemo，两个使用场景（分析模式、跟踪对比模式）共用同一把尺子（因为两边的归因计算都是基于`activeLegs`/`spot`）。
 
-**这轮的关键扩展**：这个函数本身设计得足够通用，喂给它不同的"dSpot/dDays/dVolPct/actualChange"就能同时服务两种场景——跟踪对比模式喂"开仓vs真实当前"反推出来的值；**分析模式喂滑块自己的shifts.dS/dT/dV**，`result.change`（已有的，滑块推演出的总变化）直接作为actualChange。滑块一动，归因面板实时联动，UI组件`PnlAttributionPanel.tsx`两边共用同一个。分析模式下只有滑块非零时才显示（归零时没什么可归因的）。
+**已知的正常副作用**：这把尺子有上限，如果价格/时间/IV贡献的绝对值本身就接近甚至超过组合的最大盈亏（比如滑块拖得很猛），条形图会封顶（`Math.min(100,...)`），这是设计本身决定的，不是bug——见第7节详细讨论这个"封顶"现象跟"当前遇到的诡异问题"的区别。
 
-### 6.2 决策比较（Decision Comparison）——设计经历了两次重大调整，最终留在分析模式
+### 6.2 决策比较——设计定型，留在分析模式
 
-这个功能的设计过程值得记录，因为期间有几次方向性调整：
+这个功能上一轮已经定型，这轮没有进一步改动。核心设计：跟随情景滑块、SVG图形化叠加"不动/平掉/展期"三条到期payoff曲线、展期用真实期权链数据（弹窗打开时查一次，之后拖滑块不重新查）、最大盈利/最大亏损/到期概率三个数字不跟随滑块（延续第3节的默认原则）。
 
-1. **第一版**：组合层面对比"不动/平掉这条腿/展期"，展期用理论BS估算 → 被指出"展期不该是估算，要用真实数据"
-2. **改成用真实期权链数据**——服务器端共享缓存表`option_chain_cache`就是为了配合这个改动做的（不然每次点开弹窗都要连Yahoo，用户多了有峰值风险）
-3. **讨论过要不要把这个功能挪到跟踪对比模式**（因为"要不要展期"这类决策理论上该针对"真实持有的仓位"才有意义）——**最终决定：留在分析模式**，理由是分析模式本身就有PayoffChart可视化，"预览/总结"这个定位跟分析模式的"可视化推演"更贴合；而且单纯做单腿数字对比"太抽象、看不出对交易者的实际帮助"（Xue原话），组合层面配图形化展示反而更直观
-4. **最终版设计**（当前状态）：
-   - **跟随情景滑块**——三个方案（不动/平掉/展期）的"组合当前价值"，按滑块**当前的假设情景**去算，不是固定按"现在的真实市场状态"。这是刻意设计：让交易者能把滑块拖到某个假设的未来情景（"如果跌5%、过10天"），当场比较三种应对方式，等真的遇到类似情况时已经有预案了。滑块非零时弹窗顶部有黄色提示条说明这一点
-   - **图形化**——SVG小图叠加显示三种方案到期时的payoff曲线（灰=不动，橙=平仓，紫=展期），用`payoffCurvePoints()`（pricing.ts新增）取样，跟数字表格并列，不是二选一
-   - **展期这一档用真实数据**：真实的最近似到期日 + 真实报价，弹窗打开那一刻查一次，之后哪怕继续拖滑块也不会重新查（滑块只影响"这个新腿位现在值多少"，不影响"该展到哪个真实日期"）
-   - **最大盈利/最大亏损/到期概率这三个数字不跟随滑块**（跟第3节说的设计原则一致）
-   - "对冲"没有纳入对比——它是往组合里加一条全新结构的腿，没有一个天然的"默认方案"可以比
+### 6.3 组合健康度——这轮经历了一次实质性重构
 
-### 6.3 组合健康度（Position Health）——新增，一次性做完，中途调整过打分维度
+上一轮做出来的第一版有三个被Xue指出的问题，这轮全部处理了：
 
-`positionHealth.ts`，纯函数，四个维度各占25分：到期盈利概率、距最近盈亏平衡点的百分比、临近到期的Gamma风险（剩余天数）、组合净Delta方向暴露。
+1. **健康度现在跟随情景滑块**——不只是Delta，到期盈利概率/距盈亏平衡点/剩余天数**这三项也会基于"滑块推演到的假设时点"重新算**。做法：新增了`buildShiftedLegs()`（positionHealth.ts内部），构造一份"如果滑块的情景真的发生了，这些期权腿会变成什么样"的假想腿位列表（用`legShiftedPrice()`重新算每条腿在新时点的权利金、dte减去`shifts.dT`），再拿这份假想列表去跑到期概率/盈亏平衡点计算。Delta则直接用`priceCombo`已经算好的`result.breakdown`（本身就是shift-aware的）。**这是本轮"到期类指标该不该跟随滑块"这条设计默认值被明确打破的一次**，记在第3节了
 
-**中途发现并修正的一个设计问题，值得记录**：最初设计了第五个维度"风险回报比"（最大亏损/最大盈利），**用两个对比场景（保守的远虚值Sell Put vs 高风险近到期裸Call）测试时发现这个维度对两个场景都判"bad"**——因为这个应用的核心策略就是卖方收权利金，天生是"权利金收得少、理论最大亏损很大"的结构，不是选得不好，是策略类型的数学特性使然。用这个维度打分会导致Xue最常用的策略永远被扣分，**已经去掉这个维度**，把权重分给了其他四项（这四项在测试里区分度很好）。这是一个"验证发现问题、及时调整"的例子，说明每个新指标上线前，最好都拿正反两个例子实际测一遍，不要只测一个"看起来对"的场景。
+2. **加了总结句**——`HealthResult`新增`summary`字段，根据四项里有没有"bad"/"warning"状态，自动生成一句人话总结（比如"存在明显风险点：距盈亏平衡点偏弱，建议重点关注"），不是让用户自己拼四条
 
-**UI**：`PositionHealthBadge.tsx`，头部"到期盈利/盈亏平衡"那个统计区域旁边，点开展开四条具体理由，两个模式都能看到，且**不跟随情景滑块**（同第3节的设计原则）。
+3. **Delta改成按张数归一化**——原来用组合净Delta的绝对值判断方向暴露，被Xue指出"这样张数越多的仓位会被误判成风险越大，哪怕每张合约本身风险控制得一样好"。改成"平均每张合约的Delta"（净Delta ÷ 总张数）。**验证过**：1张和10张完全相同结构的仓位，改完之后打分完全一致，改之前会因为张数不同而分数不同
 
-### 6.4 还没做的：Leg Purpose
+**同时发现并处理的一个UI bug**：健康度弹窗一开始用普通的`position: absolute`渲染，文字会被截断——排查发现两层原因：(a) 外层容器有`whitespace-nowrap`，被子元素继承导致文字被迫挤成一行；(b) 更深层的原因是这个弹窗现在渲染在"整体滚动的左侧栏"内部，可能被这个滚动容器的`overflow-y-auto`裁切掉超出可视范围的部分。**最终修法是用`createPortal`把弹窗传送到`document.body`下渲染**，彻底跳出任何祖先容器的裁切影响，用按钮的`getBoundingClientRect()`手动计算弹窗该出现在屏幕的什么位置。**这是本轮唯一引入的新技术模式（Portal），下面会展开说**
 
-Xue原始建议清单里的最后一项——每条腿的"角色"标签（比如"收租中" vs "已变方向性"，根据当前Delta跟开仓时Delta的偏移判断）。这轮没有开始，改动预计集中在`LegRow.tsx`。
+### 6.4 关于Portal模式——一个值得注意的、可能影响其他组件的技术决定
+
+`PositionHealthBadge.tsx`这次改成了`createPortal`渲染，是**这个项目第一次用这个模式**。背景：App.tsx的左侧栏在更早一轮被改成了"整体滚动"（外层容器`overflow-y-auto`），从那以后，**任何普通的`position:absolute`弹窗/下拉菜单，只要嵌套在这个滚动容器内部，理论上都有被裁切的风险**——不是只有健康度弹窗会中招。
+
+项目里现在还有好几个类似的下拉/弹窗组件是**普通absolute定位、没有用Portal**：`LegRow.tsx`里的`LegMenu`（"..."菜单）、行权价选择下拉、`DropdownMenu.tsx`、`PresetPicker.tsx`、头部的股票代码历史下拉等等。**这些目前没有被报告出问题，可能是因为它们弹出的位置、大小恰好没有触发裁切**，但如果以后Xue反馈"某个下拉菜单显示不全/被切掉"，大概率是同一类问题，直接抄`PositionHealthBadge.tsx`这次的Portal写法即可，不用重新摸索。
 
 ---
 
-## 7. 已知问题 / 技术债
+## 7. 【当前未解决】盈亏归因条形图疑似仍在用旧刻度——需要下一步排查
 
-1. **App.tsx 持续增长**（约1620行），这轮盈亏归因/决策比较/健康度都往里加了新的useMemo和state，腿位组合+跟踪对比这两撮状态依然没拆分成hook。之前建议"下次单独拆"，现在文件更大了，拆分的必要性在上升，但风险也在上升（见8.8的教训，文件里useMemo/useState的相互依赖链条已经很长）
-2. option-chain前端客户端缓存（src/lib/optionChain.ts）没有过期时间——没有最终拍板要不要加
-3. 没有排队限速机制——Xue倾向于等真的有用户量再做
-4. 没有单元测试
-5. supabase/migrations/20260806061713那三张表没接上，前端仍是localStorage
-6. 移动端适配几乎没做
-7. **Position Health的四个阈值（POP 30%/70%，距离2%/8%，DTE 7天/30天，Delta 0.3/1.0）是我按经验设的，没有跟Xue逐条确认过是否符合他的实际风险偏好**，如果他反馈"某个场景打分跟直觉不符"，先看是不是阈值需要调整，不要急着改算法结构
+这是这份交接文档最需要下一个开发者重点关注的地方。
+
+**现象**：6.1提到的"固定尺子"改动，代码经过`Select-String`确认已经存在于`App.tsx`（`attributionMaxAbs`、两处`maxAbs={attributionMaxAbs}`）和`PnlAttributionPanel.tsx`（`maxAbs: number`这个prop）里，**代码本身是对的**。但Xue用一个具体组合（Sell Call 220 + Sell Put 220，52天，权利金29.7+30.45）实测，观察到的条形图行为**看起来仍然是旧算法**（价格贡献这一条顶格封顶，IV和交叉项按照"相对价格的比例"缩小显示）。
+
+**已经做的验证**：拿这个组合的真实数据算过，`maxProfitLoss()`算出来 maxProfit=60.15，maxLoss=-49.85，尺子应该是60.15。截图里价格贡献是-36.64，按新算法应该只占尺子的**60.9%**，不该顶格。但视觉上明显顶格了，这跟"旧算法"（拿四个数字里最大的当满格，价格自己最大，必然100%）的特征完全吻合。
+
+**已经排除的可能性**：不是代码没写对（`Select-String`确认过）。
+
+**建议下一步排查的方向（还没做，按怀疑程度排序）**：
+1. **最可能**：这是Vite的HMR（热更新）在"给组件新增必填prop"这种改动上失效导致的——建议的第一步是重启`npm run dev`（不只是浏览器刷新），必要时删掉`node_modules/.vite`缓存目录再重启，这是最常见也最容易被忽略的原因
+2. 其次：确认Xue截图那次操作，是不是**在同一个浏览器标签页里、没有重新触发组件重新挂载**的情况下测的
+3. 再次：检查是不是存在**两份`PnlAttributionPanel`渲染逻辑**——`Select-String`只搜了关键词，没有排查"是否所有渲染路径都用的是新组件"
+4. 最不可能但要写出来存档：`maxProfitLoss()`本身的计算是否在某些leg组合下有边界条件bug——这次用的验证例子已经手动算过、结果合理，暂不怀疑这个函数本身，除非1-3排查完还是没找到原因，再回头怀疑这里
+
+**给下一个开发者的建议**：先做1（重启dev server + 清vite缓存），如果解决了，在这里补一笔"确认是HMR缓存问题"；如果没解决，按2→3→4顺序继续排查，不要跳过步骤瞎猜。
 
 ---
 
 ## 8. 反复出现、必须知道的"操作层面"教训
 
-1. Bolt已经不用了，如果Xue的消息里提到"Bolt"，大概率是在回忆旧事，不代表还在用它开发
-2. Xue在本地用VS Code + PowerShell + npm run dev，每次改完文件要提醒他保存、确认dev server还在跑，建议固定用一个窗口跑它，Supabase CLI相关命令用另一个窗口
-3. 一定要按文件路径给完整文件内容（不是diff），Xue会自己复制粘贴替换整个文件
-4. **反复发生"文件之前建过，但后来发现本地没有"的情况**——历史上Bolt不稳定阶段的遗留问题，每次改动前如果依赖某个之前做过的文件，最好先用`Select-String`确认它真的存在，不要假设"之前做过的东西现在肯定还在"。这轮又发生过好几次（`LegRow.tsx`里的`onCompare`丢过、`ErrorBoundary.tsx`丢过、`CLAUDE.md`本身也丢过一次内容没更新成功的情况）
-5. 代码交付前，永远先用esbuild做语法检查（`node_modules/.bin/esbuild <file> --bundle=false --outfile=/dev/null`），能用真实数据交叉验证的一定要验证
-6. 部署流程：改前端文件 → 保存 → npm run dev本地过一遍 → 涉及Edge Function的额外`supabase functions deploy <name>` → 涉及数据库改动的额外`supabase secrets set`或`supabase db push` → 确认无误后 → `git add . && git commit && git push`
-7. **ErrorBoundary这轮真的发挥作用了**——一次运行时报错（见8.8）导致分析/跟踪对比模式同时崩溃，因为有错误边界兜底，页面显示的是"这里出错了/重试/返回首页"，没有变成完全白屏，用户体验上是可控的。这印证了当初做这个功能的判断是对的
-8. **新出现的一类bug，这轮踩了两次，下次必须提前规避**：`App.tsx`里几十个`useMemo`/`const`前后互相依赖，**往文件中间插入新的计算逻辑时，如果引用了在插入点之后才声明的变量，会触发JavaScript的"暂时性死区"报错**（`Uncaught ReferenceError: Cannot access 'xxx' before initialization`），表现为运行时崩溃、esbuild语法检查完全查不出来（这是运行时顺序问题，不是语法问题）。这轮先后在`trackedResult`和`isCompareMode`上犯过这个错——都是把新代码加在了引用对象声明**之前**。**以后每次往App.tsx中间插入新的useMemo/const时，必须手动确认：这段新代码引用的每一个变量，是否都在文件里排在它前面已经声明过**，不能只做语法检查就自信地交付。最好的做法是插入到文件末尾附近（在所有会被引用的东西都已经声明完之后），而不是图方便插在中间某个看起来相关的位置
-9. Supabase项目当初是从Bolt认领过来的（bolt-native-database-70052271，已认领到`lixuedenon's Org`，项目ref是`oyotvdhlffxodyfzqfxt`），认领时Bolt保留了对整个Supabase组织的大范围API权限，Xue还没去检查/收回，如果他问起可以提醒
+1. Bolt已经不用了
+2. Xue在本地用VS Code + PowerShell/Git Bash + npm run dev，每次改完文件提醒他保存、确认dev server还在跑
+3. 一定要按文件路径给完整文件内容（不是diff）
+4. **反复发生"文件之前建过，但后来发现本地没有"的情况**——每次改动前如果依赖某个之前做过的文件，最好先用`Select-String`确认它真的存在
+5. 代码交付前，永远先用esbuild做语法检查，能用真实数据交叉验证的一定要验证——**但这轮也暴露了esbuild语法检查的局限**：第7节这个诡异问题提醒我们，"语法正确"、"逻辑经过Select-String确认存在于文件里"，都不等于"浏览器里跑的就是这份代码"，中间还隔着一层"是否真的重新构建/热更新生效"，这一层esbuild检查不了，只能靠重启dev server或硬刷新来排除
+6. 部署流程：改前端文件 → 保存 → npm run dev本地过一遍 → 涉及Edge Function的额外`supabase functions deploy` → 涉及数据库改动的额外`supabase secrets set`或`supabase db push` → 确认无误后 → `git add . && git commit && git push`
+7. ErrorBoundary这几轮真实发挥过作用（运行时崩溃时只影响局部，没有变成完全白屏），印证了这个防护的价值
+8. **"暂时性死区"（TDZ）报错**：App.tsx里几十个`useMemo`/`const`前后互相依赖，往文件中间插入新代码时如果引用了在插入点之后才声明的变量，会导致`Uncaught ReferenceError: Cannot access 'xxx' before initialization`，esbuild查不出来（运行时顺序问题不是语法问题）。这几轮已经踩过两次。**每次往App.tsx中间插入新的useMemo/const，必须手动确认引用的每个变量是否都排在它前面**
+9. **新增：Portal是解决"弹窗被滚动容器裁切"的标准方案**——见6.4，这个模式目前只在`PositionHealthBadge.tsx`用过一次，如果后续还有其他下拉/弹窗被反馈"显示不全"，大概率是同一类问题，直接复用这个写法
+10. Supabase项目当初是从Bolt认领过来的，认领时Bolt保留了对整个Supabase组织的大范围API权限，Xue还没去检查/收回，如果他问起可以提醒
 
 ---
 
@@ -223,19 +178,18 @@ VITE_SUPABASE_URL=https://oyotvdhlffxodyfzqfxt.supabase.co
 VITE_SUPABASE_ANON_KEY=<已知，需要时Xue可以直接给，这个key设计上可以公开>
 ```
 
-Supabase Secrets（已确认配置完成，不需要重新问Xue要）：
+Supabase Secrets（已确认配置完成）：
 ```
 ANTHROPIC_API_KEY / OPENAI_API_KEY / XAI_API_KEY / GEMINI_API_KEY  — 四个AI模型
 FINNHUB_API_KEY  — market-context用
 ```
-SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY等是Supabase自动提供的，不需要手动设置。
 
 ---
 
 ## 10. 建议的下一步（按优先级）
 
-1. **Leg Purpose**——分析模式完善清单里最后一项，工作量不大，做完这条产品线上Xue最初提的功能建议就算全部落地了
-2. **重新评估要不要继续AI推荐策略那条线**（TQQQ匹配 → 数据库持久化 → Cron定时），还是Xue有别的优先级；这条线技术方案都已经想清楚了，随时可以捡起来
-3. **App.tsx拆分**——这轮又长了不少，且第8.8节的教训说明这个文件的可维护性正在下降，值得找一个专门的时间段，小步拆分、每步都verify，参照第7.1节
-4. Position Health的评分阈值，如果Xue用了一段时间后反馈"跟直觉不符"，回来调整第7.7节提到的那几个数字
-5. 其他的看Xue想先做哪个，他是那种会主动说清楚需求、也会主动纠正理解偏差的人，不确定的地方直接问他，不要自己瞎猜着往下做
+1. **先解决第7节的未解决问题**——这是当前最紧急的，不确认清楚，后续在这个基础上继续开发风险很高
+2. **Leg Purpose**——分析模式完善清单最后一项还没做
+3. **重新评估AI推荐策略那条线的优先级**——技术方案都想清楚了，随时可以捡起来（TQQQ匹配 → 数据库持久化 → Cron）
+4. **App.tsx拆分**——文件持续增长，第8.8节的教训说明可维护性在下降
+5. 其他的看Xue想先做哪个，不确定的地方直接问他，不要自己瞎猜着往下做

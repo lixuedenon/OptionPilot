@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { HeartPulse } from "lucide-react";
 import type { HealthResult } from "@/lib/positionHealth";
 import { useI18n } from "@/i18n/I18nContext";
@@ -30,22 +31,49 @@ const STATUS_DOT: Record<string, string> = {
 export default function PositionHealthBadge({ health }: Props) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+
+  // The popover is rendered via a portal directly under <body>, not as a
+  // normal DOM child of this component — a scrolling ancestor (the left
+  // panel now scrolls as one column, see App.tsx's layout notes) will clip
+  // any absolutely-positioned descendant that extends past its visible
+  // area, no matter how wide the popover itself is set. Escaping to a
+  // portal sidesteps that clipping entirely; position is computed from the
+  // button's own screen position instead of relying on CSS position:absolute
+  // within the clipped ancestor chain.
+  useLayoutEffect(() => {
+    if (!open || !buttonRef.current) return;
+    const rect = buttonRef.current.getBoundingClientRect();
+    const popoverWidth = 288; // matches w-72 below
+    // Keep the popover on-screen: align its right edge with the button's
+    // right edge, but never let its left edge go past the viewport edge.
+    const left = Math.max(8, Math.min(rect.right - popoverWidth, window.innerWidth - popoverWidth - 8));
+    setPos({ top: rect.bottom + 4, left });
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (
+        buttonRef.current && !buttonRef.current.contains(target) &&
+        popoverRef.current && !popoverRef.current.contains(target)
+      ) {
+        setOpen(false);
+      }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
   return (
-    <div ref={ref} className="relative flex shrink-0 items-center">
+    <>
       <button
+        ref={buttonRef}
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 rounded border border-slate-800 bg-slate-900/40 px-2 py-1 transition hover:border-slate-600"
+        className="flex shrink-0 items-center gap-1.5 rounded border border-slate-800 bg-slate-900/40 px-2 py-1 transition hover:border-slate-600"
       >
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${TIER_DOT[health.tier]}`} />
         <HeartPulse size={11} className={TIER_COLOR[health.tier]} />
@@ -53,12 +81,19 @@ export default function PositionHealthBadge({ health }: Props) {
         <span className={`text-base font-bold tabular-nums leading-none ${TIER_COLOR[health.tier]}`}>{health.score}</span>
       </button>
 
-      {open && (
-        <div className="absolute right-0 top-full z-50 mt-1 w-64 rounded-lg border border-slate-700 bg-slate-900 p-3 shadow-2xl">
+      {open && createPortal(
+        <div
+          ref={popoverRef}
+          className="fixed z-[100] w-72 whitespace-normal rounded-lg border border-slate-700 bg-slate-900 p-3 shadow-2xl"
+          style={{ top: pos.top, left: pos.left }}
+        >
           <div className="mb-2 flex items-center justify-between">
             <span className="text-[11px] font-bold text-slate-200">{t("health.title")}</span>
             <span className={`text-sm font-bold tabular-nums ${TIER_COLOR[health.tier]}`}>{health.score} / 100</span>
           </div>
+          <p className="mb-2.5 rounded-md bg-slate-800/60 px-2 py-1.5 text-[10px] leading-relaxed text-slate-300">
+            {health.summary}
+          </p>
           <div className="space-y-1.5">
             {health.factors.map((f, i) => (
               <div key={i} className="flex items-start gap-1.5">
@@ -70,8 +105,9 @@ export default function PositionHealthBadge({ health }: Props) {
               </div>
             ))}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
-    </div>
+    </>
   );
 }

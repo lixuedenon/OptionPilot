@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { Plus, Layers, Save, Settings2, RefreshCw, TrendingUp, TrendingDown, ChevronDown, Trash2, History, Clock, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle, DollarSign, Ban, Wallet } from "lucide-react";
 import type { Leg, Shifts } from "@/lib/types";
-import { priceCombo, probabilityOfProfit, weightedAvgIV, impliedSpotFromPremiums, attributePnl } from "@/lib/pricing";
+import { priceCombo, probabilityOfProfit, weightedAvgIV, impliedSpotFromPremiums, attributePnl, maxProfitLoss } from "@/lib/pricing";
 import PnlAttributionPanel from "@/components/PnlAttributionPanel";
 import PositionHealthBadge from "@/components/PositionHealthBadge";
 import { computeHealth } from "@/lib/positionHealth";
@@ -317,9 +317,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // this from flickering as someone plays with the sliders.
   const positionHealth = useMemo(() => {
     if (activeLegs.length === 0 || spot <= 0) return null;
-    const realBreakdown = priceCombo(activeLegs, { dS: 0, dT: 0, dV: 0 }, spot).breakdown;
-    return computeHealth(activeLegs, spot, realBreakdown);
-  }, [activeLegs, spot]);
+    return computeHealth(activeLegs, spot, shifts, result.breakdown);
+  }, [activeLegs, spot, shifts, result]);
 
   const { pop, breakevens } = useMemo(() => probabilityOfProfit(activeLegs, spot), [activeLegs, spot]);
 
@@ -339,6 +338,17 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     if (shifts.dS === 0 && shifts.dT === 0 && shifts.dV === 0) return null;
     return attributePnl(activeLegs, spot, shifts.dS, shifts.dT, shifts.dV, result.change);
   }, [isCompareMode, activeLegs, spot, shifts, result]);
+
+  // Fixed reference scale for the attribution bars in both modes — see
+  // PnlAttributionPanel's own comments on why this needs to be something
+  // that doesn't move with the slider. Both analysisAttribution and
+  // pnlAttribution are built from activeLegs/spot (the opening combo), so
+  // one shared scale computed the same way covers both panels.
+  const attributionMaxAbs = useMemo(() => {
+    if (activeLegs.length === 0 || spot <= 0) return 0.01;
+    const { maxProfit, maxLoss } = maxProfitLoss(activeLegs, spot);
+    return Math.max(Math.abs(maxProfit), Math.abs(maxLoss), 0.01);
+  }, [activeLegs, spot]);
 
   // In compare mode, back-solve the implied stock price from the premiums the user
   // enters for each tracked leg. Different premiums imply different stock prices —
@@ -1435,13 +1445,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
           {isCompareMode && pnlAttribution && (
             <div className="shrink-0 border-t border-slate-800 px-3 py-2">
-              <PnlAttributionPanel attribution={pnlAttribution} />
+              <PnlAttributionPanel attribution={pnlAttribution} maxAbs={attributionMaxAbs} />
             </div>
           )}
 
           {!isCompareMode && analysisAttribution && (
             <div className="shrink-0 border-t border-slate-800 px-3 py-2">
-              <PnlAttributionPanel attribution={analysisAttribution} />
+              <PnlAttributionPanel attribution={analysisAttribution} maxAbs={attributionMaxAbs} />
             </div>
           )}
 

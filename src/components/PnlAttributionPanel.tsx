@@ -4,6 +4,15 @@ import { useI18n } from "@/i18n/I18nContext";
 
 interface Props {
   attribution: PnlAttribution;
+  // A fixed reference scale (typically the combo's max profit/max loss —
+  // see App.tsx) instead of scaling bars against whichever of the four
+  // values happens to be biggest right now. That self-relative approach
+  // meant the tallest bar always looked "maxed out" even as the actual
+  // dollar amounts kept growing while dragging a slider, since the ruler
+  // grew right along with the data. max profit/loss don't move with the
+  // slider (see pricing.ts's own notes on why), so they make a ruler that
+  // actually holds still.
+  maxAbs: number;
 }
 
 function Bar({ value, maxAbs }: { value: number; maxAbs: number }) {
@@ -20,10 +29,10 @@ function Bar({ value, maxAbs }: { value: number; maxAbs: number }) {
   );
 }
 
-export default function PnlAttributionPanel({ attribution }: Props) {
+export default function PnlAttributionPanel({ attribution, maxAbs }: Props) {
   const { t } = useI18n();
   const { priceEffect, timeEffect, ivEffect, residual, totalChange } = attribution;
-  const maxAbs = Math.max(Math.abs(priceEffect), Math.abs(timeEffect), Math.abs(ivEffect), Math.abs(residual), 0.01);
+  const scale = Math.max(maxAbs, 0.01);
 
   const rows = [
     { icon: TrendingUp, label: t("attribution.price"), value: priceEffect, color: "text-sky-400" },
@@ -49,7 +58,7 @@ export default function PnlAttributionPanel({ attribution }: Props) {
             <Icon size={11} className={color} />
             <span className="w-14 shrink-0 text-slate-400">{label}</span>
             <div className="flex-1">
-              <Bar value={value} maxAbs={maxAbs} />
+              <Bar value={value} maxAbs={scale} />
             </div>
             <span className={`w-16 shrink-0 text-right font-semibold tabular-nums ${value >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
               {value >= 0 ? "+" : ""}{value.toFixed(2)}
@@ -60,7 +69,7 @@ export default function PnlAttributionPanel({ attribution }: Props) {
           <HelpCircle size={11} className="text-slate-500" />
           <span className="w-14 shrink-0 text-slate-500">{t("attribution.residual")}</span>
           <div className="flex-1">
-            <Bar value={residual} maxAbs={maxAbs} />
+            <Bar value={residual} maxAbs={scale} />
           </div>
           <span className={`w-16 shrink-0 text-right font-semibold tabular-nums ${residual >= 0 ? "text-emerald-400/70" : "text-rose-400/70"}`}>
             {residual >= 0 ? "+" : ""}{residual.toFixed(2)}
