@@ -1,3 +1,4 @@
+// src/lib/pricing.ts
 import type { Leg, Shifts, GreekBreakdown } from "./types";
 import { blackScholes, ncdf } from "./bs";
 
@@ -140,8 +141,28 @@ export function priceCombo(legs: Leg[], s: Shifts, spot: number): ComboResult {
 
 // ── Probability of Profit (PoP) ──
 
-// Compute the PnL at expiry for a given terminal spot price.
-export function pnlAtExpiry(legs: Leg[], sTest: number): number {
+// Compute the PnL for a given terminal spot price. For a single-expiry
+// combo (the common case) this is exactly "at expiry" — every leg is
+// intrinsic value only. For a MULTI-expiry combo (a calendar/diagonal,
+// where legs don't share one dte), "at expiry" isn't one single moment —
+// the correct evaluation point is the EARLIEST leg's own expiry (the
+// "horizon"): legs that share that horizon dte are genuinely expiring
+// then (intrinsic value is correct for them), but a leg with a LATER dte
+// still has real time value at that moment and needs Black-Scholes, not
+// intrinsic value, or its worth gets silently understated (this was the
+// bug behind a calendar spread's "max loss" once coming out positive —
+// nonsense, since pure-intrinsic pricing was pretending the far leg had
+// already expired too). The far leg's implied vol is backed out from its
+// OWN opening premium at `spot` (the position's real opening price, not
+// sTest) and held constant — the same "flat vol" assumption already used
+// everywhere else in this file (attributePnl, legShiftedPrice, etc.), not
+// a new one introduced here.
+export function pnlAtExpiry(legs: Leg[], sTest: number, spot?: number): number {
+  const optionLegs = legs.filter((l) => l.kind !== "stock");
+  const dtes = optionLegs.map((l) => l.dte);
+  const horizonDte = dtes.length > 0 ? Math.min(...dtes) : 0;
+  const multiExpiry = new Set(dtes).size > 1;
+
   let pnl = 0;
   for (const l of legs) {
     const sign = l.action === "buy" ? 1 : -1;
@@ -150,10 +171,20 @@ export function pnlAtExpiry(legs: Leg[], sTest: number): number {
       continue;
     }
     const qty = l.qty ?? 1;
-    const intrinsic = l.type === "call"
-      ? Math.max(0, sTest - l.strike)
-      : Math.max(0, l.strike - sTest);
-    pnl += sign * qty * (intrinsic - l.premium);
+    const remainingDte = l.dte - horizonDte;
+    let value: number;
+    if (!multiExpiry || remainingDte <= 0 || spot === undefined || spot <= 0) {
+      // Single-expiry (the normal case), or this particular leg IS at the
+      // horizon already, or no opening spot was given to back out an
+      // implied vol from (callers that only ever pass single-expiry combos
+      // don't need to pass spot at all — this mirrors the old 2-argument
+      // behavior exactly when spot is omitted).
+      value = l.type === "call" ? Math.max(0, sTest - l.strike) : Math.max(0, l.strike - sTest);
+    } else {
+      const iv = impliedVol(spot, l.strike, l.dte, l.premium, l.type);
+      value = blackScholes({ spot: sTest, strike: l.strike, dte: remainingDte, vol: iv, rate: RATE, type: l.type }).price;
+    }
+    pnl += sign * qty * (value - l.premium);
   }
   return pnl;
 }
@@ -173,7 +204,7 @@ export function maxProfitLoss(legs: Leg[], spot: number): { maxProfit: number; m
   let maxLoss = Infinity;
   for (let i = 0; i <= N; i++) {
     const s = sMin + (i / N) * (sMax - sMin);
-    const pnl = pnlAtExpiry(legs, s);
+    const pnl = pnlAtExpiry(legs, s, spot);
     if (pnl > maxProfit) maxProfit = pnl;
     if (pnl < maxLoss) maxLoss = pnl;
   }
@@ -199,7 +230,7 @@ export function payoffCurvePoints(legs: Leg[], spot: number, points = 60): Payof
   const out: PayoffPoint[] = [];
   for (let i = 0; i <= points; i++) {
     const s = sMin + (i / points) * (sMax - sMin);
-    out.push({ spot: s, pnl: pnlAtExpiry(legs, s) });
+    out.push({ spot: s, pnl: pnlAtExpiry(legs, s, spot) });
   }
   return out;
 }
@@ -211,11 +242,11 @@ export function findBreakevens(legs: Leg[], spot: number): number[] {
   const sMax = spot + range;
   const N = 1000;
   const bes: number[] = [];
-  let prevPnl = pnlAtExpiry(legs, sMin);
+  let prevPnl = pnlAtExpiry(legs, sMin, spot);
   let prevS = sMin;
   for (let i = 1; i <= N; i++) {
     const s = sMin + (i / N) * (sMax - sMin);
-    const pnl = pnlAtExpiry(legs, s);
+    const pnl = pnlAtExpiry(legs, s, spot);
     if ((prevPnl < 0 && pnl >= 0) || (prevPnl > 0 && pnl <= 0)) {
       // linear interpolation for the crossing point
       const t = prevPnl / (prevPnl - pnl);
@@ -227,12 +258,26 @@ export function findBreakevens(legs: Leg[], spot: number): number[] {
   return bes;
 }
 
-// Compute PoP assuming lognormal terminal spot distribution at the weighted-average expiry.
-// Uses each leg's implied vol, weighted by |premium|, to estimate the terminal distribution.
+// Compute PoP assuming lognormal terminal spot distribution. For a
+// single-expiry combo this is evaluated at the (premium-weighted average,
+// though all legs share one dte anyway) expiry as before. For a MULTI-
+// expiry combo, the distribution's time horizon T uses the EARLIEST leg's
+// own dte — that's the actual moment pnlAtExpiry now evaluates at (see its
+// own comment), so the probability distribution needs to describe the
+// spot's distribution at THAT moment, not some blended average dte that
+// doesn't correspond to when anything really happens. Using the old
+// weighted-average dte here would have described the wrong distribution
+// even after pnlAtExpiry itself got fixed to evaluate at the right point.
 export function probabilityOfProfit(legs: Leg[], spot: number): { pop: number; breakevens: number[] } {
   if (legs.length === 0 || spot <= 0) return { pop: 0, breakevens: [] };
 
-  // Weighted-average implied vol and DTE across legs
+  const optionLegs = legs.filter((l) => l.kind !== "stock");
+  const dtes = optionLegs.map((l) => l.dte);
+  const multiExpiry = new Set(dtes).size > 1;
+  const horizonDte = dtes.length > 0 ? Math.min(...dtes) : 0;
+
+  // Weighted-average implied vol across legs (still premium-weighted —
+  // multiple legs each have their own IV regardless of expiry structure).
   let totalWeight = 0;
   let weightedVol = 0;
   let weightedDte = 0;
@@ -248,13 +293,13 @@ export function probabilityOfProfit(legs: Leg[], spot: number): { pop: number; b
   }
   if (totalWeight === 0) return { pop: 0, breakevens: [] };
   const vol = weightedVol / totalWeight;
-  const dte = weightedDte / totalWeight;
+  const dte = multiExpiry ? horizonDte : weightedDte / totalWeight;
   const T = dte / 365;
 
   const breakevens = findBreakevens(legs, spot);
   if (breakevens.length === 0) {
     // No breakeven crossing — always profit or always loss at expiry
-    const pop = pnlAtExpiry(legs, spot) >= 0 ? 1 : 0;
+    const pop = pnlAtExpiry(legs, spot, spot) >= 0 ? 1 : 0;
     return { pop, breakevens };
   }
 
@@ -268,13 +313,13 @@ export function probabilityOfProfit(legs: Leg[], spot: number): { pop: number; b
   // The profit region is where pnl > 0. Sample at spot to determine which side is profit.
   // Build profit intervals from sorted breakevens.
   const profitIntervals: [number, number][] = [];
-  const testBelow = pnlAtExpiry(legs, Math.max(0.01, sorted[0] - 1));
-  const testAbove = pnlAtExpiry(legs, sorted[sorted.length - 1] + 1);
+  const testBelow = pnlAtExpiry(legs, Math.max(0.01, sorted[0] - 1), spot);
+  const testAbove = pnlAtExpiry(legs, sorted[sorted.length - 1] + 1, spot);
 
   if (testBelow > 0) profitIntervals.push([0, sorted[0]]);
   for (let i = 0; i < sorted.length - 1; i++) {
     const midS = (sorted[i] + sorted[i + 1]) / 2;
-    if (pnlAtExpiry(legs, midS) > 0) profitIntervals.push([sorted[i], sorted[i + 1]]);
+    if (pnlAtExpiry(legs, midS, spot) > 0) profitIntervals.push([sorted[i], sorted[i + 1]]);
   }
   if (testAbove > 0) profitIntervals.push([sorted[sorted.length - 1], Infinity]);
 

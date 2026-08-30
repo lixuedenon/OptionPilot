@@ -1,6 +1,7 @@
+// src/SimulatorPage.tsx
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Plus, RefreshCw, X, Trash2, History, Search, Undo2, TrendingUp, TrendingDown, ChevronDown, MoreVertical, CalendarClock, Shield, Layers, Ban, Wallet, DollarSign } from "lucide-react";
+import { ArrowLeft, Plus, RefreshCw, X, Trash2, History, Search, Undo2, TrendingUp, TrendingDown, Minus, ChevronDown, MoreVertical, CalendarClock, Shield, Layers, Ban, Wallet, DollarSign, Compass, RotateCcw } from "lucide-react";
 import type { Leg } from "@/lib/types";
 import { dateFromDte } from "@/lib/dateUtils";
 import {
@@ -16,6 +17,7 @@ import {
   recordSnapshot,
   loadSnapshotsForPosition,
   adjustSimPosition,
+  resetSimAccount,
 } from "@/lib/simAccount";
 import { fetchSpotPrice } from "@/lib/useStockQuote";
 import { fetchLegPremium } from "@/lib/optionChain";
@@ -25,10 +27,12 @@ import ProtectDialog from "@/components/ProtectDialog";
 import HedgeDialog from "@/components/HedgeDialog";
 import StrategyBadge from "@/components/StrategyBadge";
 import { matchStrategy } from "@/lib/matchStrategy";
+import { ConfirmResetAccountDialog } from "@/components/dialogs";
 
 interface Props {
   onBack: () => void;
   onNewPosition: () => void;
+  onStartFromScenario: () => void;
 }
 
 interface MarkState {
@@ -57,6 +61,19 @@ function fmtPct(pnl: number, costBasis: number): string {
   const base = Math.abs(costBasis);
   if (base < 0.01) return "—";
   return `${pnl >= 0 ? "+" : ""}${((pnl / base) * 100).toFixed(1)}%`;
+}
+
+// Every P&L figure in this page used a plain ">= 0 ? green : red" split —
+// which colors an exact $0.00 green, misleadingly implying a (nonexistent)
+// gain. A real three-way split (profit/loss/exactly flat) reads correctly
+// at a glance instead of quietly lying about a break-even position, and
+// having ONE helper for it means every P&L number on this page — cost
+// basis, unrealized, realized, per-leg — stays consistent instead of each
+// callsite re-deriving its own version of the same three-way check.
+function pnlColorClass(value: number): string {
+  if (value > 0) return "text-emerald-400";
+  if (value < 0) return "text-rose-400";
+  return "text-slate-400";
 }
 
 function optionCode(symbol: string, dte: number, type: "call" | "put", strike: number): string {
@@ -107,7 +124,7 @@ function TimelinePanel({
             }`}
           >
             <div>{s.dateISO}</div>
-            <div className={s.unrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}>{fmt(s.unrealizedPnl)}</div>
+            <div className={pnlColorClass(s.unrealizedPnl)}>{fmt(s.unrealizedPnl)}</div>
           </div>
         ))}
       </div>
@@ -233,7 +250,7 @@ async function refreshLegs(symbol: string, legs: Leg[], openedAt: number): Promi
   return { spot, legs: refreshed };
 }
 
-export default function SimulatorPage({ onBack, onNewPosition }: Props) {
+export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenario }: Props) {
   const { t } = useI18n();
   const [account, setAccount] = useState<SimAccount | null>(null);
   const [positions, setPositions] = useState<SimPosition[]>([]);
@@ -253,6 +270,8 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
   const [selectedLegKeys, setSelectedLegKeys] = useState<Set<string>>(new Set());
   const [confirmBulkCloseOpen, setConfirmBulkCloseOpen] = useState(false);
   const [bulkCloseLoading, setBulkCloseLoading] = useState(false);
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  const [justReset, setJustReset] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -268,6 +287,21 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
     if (!Number.isFinite(v) || v <= 0) return;
     const a = await initSimAccount(v);
     setAccount(a);
+  };
+
+  const handleResetAccount = async () => {
+    await resetSimAccount();
+    setAccount(null);
+    setPositions([]);
+    setMarks({});
+    setRegrets({});
+    setConfirmResetOpen(false);
+    // The person explicitly asked for feedback here — landing back on the
+    // onboarding screen (which looks the same whether it's a first-ever
+    // visit or a just-reset account) gave no visible confirmation that
+    // anything actually happened, easy to read as "the button didn't do
+    // anything" even though the reset itself worked correctly.
+    setJustReset(true);
   };
 
   const [refreshingAll, setRefreshingAll] = useState(false);
@@ -527,6 +561,66 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
     setSelectedLegKeys(allSelected ? new Set() : new Set(allClosableLegKeys));
   };
 
+  // ── Bulk-close WHOLE positions ──
+  // Separate from the leg-level selection above (which partially adjusts
+  // a position — removes specific legs without necessarily fully closing
+  // it) — this closes each selected position completely, through the
+  // same closeSimPosition path handleClose already uses for one position
+  // at a time, just looped so several positions can be closed in one
+  // action instead of clicking "close" once per position.
+  const [selectedPositionIds, setSelectedPositionIds] = useState<Set<string>>(new Set());
+  const togglePositionGroupSelection = (posList: SimPosition[]) => {
+    const ids = posList.map((p) => p.id);
+    const allIn = ids.every((id) => selectedPositionIds.has(id));
+    setSelectedPositionIds((prev) => {
+      const next = new Set(prev);
+      if (allIn) ids.forEach((id) => next.delete(id));
+      else ids.forEach((id) => next.add(id));
+      return next;
+    });
+  };
+  const allPositionIds = useMemo(() => openPositions.map((p) => p.id), [openPositions]);
+  const selectedPositionCount = selectedPositionIds.size;
+  const allPositionsSelected = selectedPositionCount > 0 && allPositionIds.every((id) => selectedPositionIds.has(id));
+  const toggleSelectAllPositions = () => {
+    setSelectedPositionIds(allPositionsSelected ? new Set() : new Set(allPositionIds));
+  };
+
+  const [bulkClosePositionsLoading, setBulkClosePositionsLoading] = useState(false);
+  const [confirmBulkClosePositionsOpen, setConfirmBulkClosePositionsOpen] = useState(false);
+
+  const bulkClosePositions = async () => {
+    if (selectedPositionIds.size === 0) return;
+    setBulkClosePositionsLoading(true);
+    try {
+      for (const posId of selectedPositionIds) {
+        const pos = positions.find((p) => p.id === posId);
+        if (!pos || pos.status !== "open") continue;
+        const spot = await fetchSpotPrice(pos.symbol);
+        const liveLegs: Leg[] = [];
+        for (const l of pos.legs) {
+          if (l.disabled) continue;
+          if (l.kind === "stock") { liveLegs.push(l); continue; }
+          const currentDte = Math.max(0, Math.round(l.dte - daysSince(pos.openedAt)));
+          try {
+            const result = await fetchLegPremium(pos.symbol, l.type, l.strike, currentDte, true);
+            liveLegs.push({ ...l, premium: result.premium, dte: result.actualDte });
+          } catch {
+            liveLegs.push(l);
+          }
+        }
+        const { account: a, positions: p } = await closeSimPosition(posId, liveLegs, spot);
+        setAccount(a);
+        setPositions(p);
+        setMarks((prev) => { const next = { ...prev }; delete next[posId]; return next; });
+      }
+    } finally {
+      setBulkClosePositionsLoading(false);
+      setSelectedPositionIds(new Set());
+      setConfirmBulkClosePositionsOpen(false);
+    }
+  };
+
   // Batch version of closeSingleLeg: groups the selection by position (a
   // single adjustSimPosition call can close several legs from the same
   // position at once), fetches each leg's live price, then applies one
@@ -622,10 +716,25 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
             />
           </button>
           <h1 className="text-sm font-bold text-slate-100">{t("sim.title")}</h1>
+          {account && (
+            <button
+              onClick={() => setConfirmResetOpen(true)}
+              title={t("sim.resetAccount")}
+              className="ml-auto flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-slate-500 transition hover:border-rose-500/60 hover:text-rose-400"
+            >
+              <RotateCcw size={11} />
+              {t("sim.resetAccount")}
+            </button>
+          )}
         </header>
 
         {!account ? (
           <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-6 text-center">
+            {justReset && (
+              <div className="mb-4 rounded-lg border border-emerald-700/40 bg-emerald-950/30 px-3 py-2 text-[11px] font-semibold text-emerald-300">
+                {t("sim.resetDone")}
+              </div>
+            )}
             <p className="mb-4 text-[12px] text-slate-400">{t("sim.setupPrompt")}</p>
             <div className="mx-auto flex max-w-xs items-center gap-2">
               <input
@@ -635,7 +744,7 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
                 className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-emerald-500 focus:outline-none"
               />
               <button
-                onClick={handleCreateAccount}
+                onClick={() => { setJustReset(false); handleCreateAccount(); }}
                 className="shrink-0 rounded bg-emerald-600 px-4 py-2 text-[12px] font-semibold text-white transition hover:bg-emerald-500"
               >
                 {t("sim.createAccount")}
@@ -664,21 +773,21 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
                 </div>
               </div>
               <div className="flex items-center gap-2.5 rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${unrealizedPnl >= 0 ? "bg-emerald-950 text-emerald-400" : "bg-rose-950 text-rose-400"}`}>
-                  {unrealizedPnl >= 0 ? <TrendingUp size={15} /> : <TrendingDown size={15} />}
+                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${unrealizedPnl > 0 ? "bg-emerald-950 text-emerald-400" : unrealizedPnl < 0 ? "bg-rose-950 text-rose-400" : "bg-slate-800 text-slate-400"}`}>
+                  {unrealizedPnl > 0 ? <TrendingUp size={15} /> : unrealizedPnl < 0 ? <TrendingDown size={15} /> : <Minus size={15} />}
                 </div>
                 <div>
                   <div className="text-[9px] text-slate-500">{t("sim.unrealizedPnl")}</div>
-                  <div className={`text-sm font-bold ${unrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{fmt(unrealizedPnl)}</div>
+                  <div className={`text-sm font-bold ${pnlColorClass(unrealizedPnl)}`}>{fmt(unrealizedPnl)}</div>
                 </div>
               </div>
               <div className="flex items-center gap-2.5 rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${realizedPnlTotal >= 0 ? "bg-emerald-950 text-emerald-400" : "bg-rose-950 text-rose-400"}`}>
-                  {realizedPnlTotal >= 0 ? <TrendingUp size={15} /> : <TrendingDown size={15} />}
+                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${realizedPnlTotal > 0 ? "bg-emerald-950 text-emerald-400" : realizedPnlTotal < 0 ? "bg-rose-950 text-rose-400" : "bg-slate-800 text-slate-400"}`}>
+                  {realizedPnlTotal > 0 ? <TrendingUp size={15} /> : realizedPnlTotal < 0 ? <TrendingDown size={15} /> : <Minus size={15} />}
                 </div>
                 <div>
                   <div className="text-[9px] text-slate-500">{t("sim.realizedPnl")}</div>
-                  <div className={`text-sm font-bold ${realizedPnlTotal >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{fmt(realizedPnlTotal)}</div>
+                  <div className={`text-sm font-bold ${pnlColorClass(realizedPnlTotal)}`}>{fmt(realizedPnlTotal)}</div>
                 </div>
               </div>
             </div>
@@ -712,8 +821,45 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
                   <Plus size={12} />
                   {t("sim.newPosition")}
                 </button>
+                <button
+                  onClick={onStartFromScenario}
+                  title={t("sim.templateEntryDesc")}
+                  className="flex items-center gap-1 rounded border border-violet-600/60 bg-violet-950/30 px-2.5 py-1.5 text-[11px] font-semibold text-violet-300 transition hover:border-violet-500"
+                >
+                  <Compass size={12} />
+                  {t("sim.templateEntryTitle")}
+                </button>
               </div>
             </div>
+
+            {openPositions.length > 0 && (
+              <div className="mb-2 flex items-center gap-2 rounded border border-slate-800 bg-slate-900/40 px-2 py-1.5">
+                <label className="flex shrink-0 items-center gap-1.5 text-[10px] text-slate-400">
+                  <input
+                    type="checkbox"
+                    checked={allPositionsSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = selectedPositionCount > 0 && !allPositionsSelected;
+                    }}
+                    onChange={toggleSelectAllPositions}
+                    className="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500"
+                  />
+                  {selectedPositionCount > 0 ? t("sim.selectedPositionsCount", { count: selectedPositionCount }) : t("sim.selectAllPositions")}
+                </label>
+                {selectedPositionCount > 0 && (
+                  <div className="ml-auto flex items-center gap-1.5">
+                    <button
+                      onClick={() => setConfirmBulkClosePositionsOpen(true)}
+                      disabled={bulkClosePositionsLoading}
+                      className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-rose-400 transition hover:border-rose-500/50 hover:bg-rose-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {bulkClosePositionsLoading ? <RefreshCw size={11} className="animate-spin" /> : <Ban size={11} />}
+                      {t("sim.bulkClosePosition")}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             {allClosableLegKeys.length > 0 && (
               <div className="mb-3 flex items-center gap-2 rounded border border-slate-800 bg-slate-900/40 px-2 py-1.5">
@@ -762,13 +908,20 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
                     <div key={symbol} className="overflow-hidden rounded-lg border border-slate-800">
                       <div className="flex items-center justify-between bg-slate-900 px-3 py-1.5">
                         <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={posList.every((p) => selectedPositionIds.has(p.id))}
+                            onChange={() => togglePositionGroupSelection(posList)}
+                            title={t("sim.selectPosition")}
+                            className="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500"
+                          />
                           <span className="flex h-5 w-5 items-center justify-center rounded bg-slate-800 text-[9px] font-bold text-slate-400">
                             {symbol.slice(0, 2)}
                           </span>
                           <span className="font-mono text-xs font-bold text-slate-100">{symbol}</span>
                           <span className="text-[9px] text-slate-600">{posList.length} {posList.length === 1 ? t("sim.positionSingular") : t("sim.positionPlural")}</span>
                         </div>
-                        <span className={`text-[11px] font-bold ${symbolPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{fmt(symbolPnl)}</span>
+                        <span className={`text-[11px] font-bold ${symbolPnl > 0 ? "text-emerald-400" : symbolPnl < 0 ? "text-rose-400" : "text-slate-400"}`}>{fmt(symbolPnl)}</span>
                       </div>
                       <table className="w-full border-collapse text-[10px]">
                         <thead>
@@ -820,10 +973,10 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
                                   <td className="px-2 py-1 text-right tabular-nums text-slate-200">
                                     {legMarkValue !== null ? (legMarkValue < 0 ? `(${Math.abs(legMarkValue).toFixed(2)})` : legMarkValue.toFixed(2)) : "—"}
                                   </td>
-                                  <td className={`px-2 py-1 text-right tabular-nums font-semibold ${legPnl !== null ? (legPnl >= 0 ? "text-emerald-400" : "text-rose-400") : "text-slate-600"}`}>
+                                  <td className={`px-2 py-1 text-right tabular-nums font-semibold ${legPnl !== null ? pnlColorClass(legPnl) : "text-slate-600"}`}>
                                     {legPnl !== null ? fmt(legPnl) : "—"}
                                   </td>
-                                  <td className={`px-2 py-1 text-right tabular-nums ${legPnl !== null ? (legPnl >= 0 ? "text-emerald-400" : "text-rose-400") : "text-slate-600"}`}>
+                                  <td className={`px-2 py-1 text-right tabular-nums ${legPnl !== null ? pnlColorClass(legPnl) : "text-slate-600"}`}>
                                     {legPnl !== null ? fmtPct(legPnl, legCost) : "—"}
                                   </td>
                                   <td className="px-2 py-1 font-mono text-[9px] text-slate-600">
@@ -861,7 +1014,7 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
                               <div className="flex items-center gap-2 text-[9px] text-slate-500">
                                 {strategyName && <StrategyBadge name={strategyName} customPresets={[]} />}
                                 <span>{daysSince(p.openedAt)} {t("compare.days")}</span>
-                                <span>{t("sim.costBasis")} {fmt(p.costBasis)}</span>
+                                <span className="text-slate-500">{t("sim.costBasis")} {fmt(p.costBasis)}</span>
                                 {mark?.loading && (
                                   <span className="flex items-center gap-1 text-sky-400">
                                     <RefreshCw size={9} className="animate-spin" />
@@ -869,7 +1022,7 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
                                   </span>
                                 )}
                                 {!mark?.loading && unrealized !== null && (
-                                  <span className={unrealized >= 0 ? "text-emerald-400" : "text-rose-400"}>
+                                  <span className={pnlColorClass(unrealized)}>
                                     {t("sim.unrealizedPnl")} {fmt(unrealized)}
                                   </span>
                                 )}
@@ -950,7 +1103,7 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
                             </span>
                           </div>
                           <div className="flex items-center gap-2">
-                            <span className={`text-[11px] font-bold ${(p.realizedPnl ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                            <span className={`text-[11px] font-bold ${pnlColorClass(p.realizedPnl ?? 0)}`}>
                               {fmt(p.realizedPnl ?? 0)}
                             </span>
                             <button
@@ -1036,6 +1189,37 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
           onConfirm={handleHedgeConfirm}
         />
       )}
+      {confirmBulkClosePositionsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-72 rounded-xl border border-rose-500/30 bg-slate-900 p-5 shadow-2xl">
+            <div className="mb-3 flex items-center gap-2">
+              <Ban size={18} className="text-rose-400" />
+              <h3 className="text-sm font-bold text-rose-200">{t("sim.bulkClosePositionConfirmTitle")}</h3>
+            </div>
+            <p className="mb-5 text-[12px] leading-relaxed text-slate-300">
+              {t("sim.bulkClosePositionConfirmDesc", { count: selectedPositionCount })}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmBulkClosePositionsOpen(false)}
+                disabled={bulkClosePositionsLoading}
+                className="rounded-md border border-slate-600 px-3 py-1.5 text-[11px] font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={bulkClosePositions}
+                disabled={bulkClosePositionsLoading}
+                className="flex items-center gap-1.5 rounded-md bg-rose-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {bulkClosePositionsLoading && <RefreshCw size={11} className="animate-spin" />}
+                {t("sim.bulkClosePosition")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {confirmBulkCloseOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="w-72 rounded-xl border border-rose-500/30 bg-slate-900 p-5 shadow-2xl">
@@ -1065,6 +1249,12 @@ export default function SimulatorPage({ onBack, onNewPosition }: Props) {
             </div>
           </div>
         </div>
+      )}
+      {confirmResetOpen && (
+        <ConfirmResetAccountDialog
+          onConfirm={handleResetAccount}
+          onCancel={() => setConfirmResetOpen(false)}
+        />
       )}
     </div>
   );

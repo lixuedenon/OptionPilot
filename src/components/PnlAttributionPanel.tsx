@@ -16,13 +16,22 @@ interface Props {
 }
 
 function Bar({ value, maxAbs }: { value: number; maxAbs: number }) {
+  // pct is 0–100, relative to the FULL scale (maxAbs). But this bar is
+  // centered at 50% and each side only has 50 percentage-points of visual
+  // space to fill (left half for negative, right half for positive) — so
+  // the visual fill must be pct/2, not pct. Using pct directly here used
+  // to make "left" go negative (or "width" push past 100% on the positive
+  // side) for any value past half of maxAbs, which overflow-hidden then
+  // silently clipped — visually indistinguishable from being fully maxed
+  // out, and further increases in the value made no visible difference.
   const pct = maxAbs > 0 ? Math.min(100, (Math.abs(value) / maxAbs) * 100) : 0;
+  const visualPct = pct / 2;
   const positive = value >= 0;
   return (
     <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
       <div
         className={`absolute top-0 h-full rounded-full ${positive ? "bg-emerald-500" : "bg-rose-500"}`}
-        style={{ width: `${pct}%`, left: positive ? "50%" : `${50 - pct}%` }}
+        style={{ width: `${visualPct}%`, left: positive ? "50%" : `${50 - visualPct}%` }}
       />
       <div className="absolute left-1/2 top-0 h-full w-px bg-slate-600" />
     </div>

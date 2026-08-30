@@ -1,3 +1,4 @@
+// src/lib/presets.ts
 import type { Leg } from "@/lib/types";
 
 let idc = 0;
@@ -336,9 +337,9 @@ export const PRESET_GROUPS: PresetGroup[] = [
         direction: "温和看涨",
         legs: () => [
           leg({ action: "buy", type: "call", strike: 100, premium: 5 }),
-          leg({ action: "sell", type: "call", strike: 105, premium: 2.5 }),
-          leg({ action: "sell", type: "call", strike: 105, premium: 2.5 }),
-          leg({ action: "buy", type: "call", strike: 110, premium: 1 }),
+          leg({ action: "sell", type: "call", strike: 110, premium: 1.2 }),
+          leg({ action: "sell", type: "call", strike: 110, premium: 1.2 }),
+          leg({ action: "buy", type: "call", strike: 115, premium: 0.5 }),
         ],
       },
       {
@@ -349,9 +350,9 @@ export const PRESET_GROUPS: PresetGroup[] = [
         direction: "温和看跌",
         legs: () => [
           leg({ action: "buy", type: "put", strike: 100, premium: 5 }),
-          leg({ action: "sell", type: "put", strike: 95, premium: 2.5 }),
-          leg({ action: "sell", type: "put", strike: 95, premium: 2.5 }),
-          leg({ action: "buy", type: "put", strike: 90, premium: 1 }),
+          leg({ action: "sell", type: "put", strike: 90, premium: 1.2 }),
+          leg({ action: "sell", type: "put", strike: 90, premium: 1.2 }),
+          leg({ action: "buy", type: "put", strike: 85, premium: 0.5 }),
         ],
       },
     ],

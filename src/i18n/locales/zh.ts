@@ -1,3 +1,4 @@
+// src/i18n/locales/zh.ts
 import type { Dict } from "../translations";
 
 const zh: Dict = {
@@ -27,6 +28,7 @@ const zh: Dict = {
 
   // ── leg section ──
   "leg.legs": "期权腿位",
+  "leg.roleMenuItem": "这条腿的作用",
   "leg.compareMode": "对比模式",
   "leg.pop": "到期盈利",
   "leg.breakeven": "盈亏平衡",
@@ -132,6 +134,8 @@ const zh: Dict = {
   "confirm.clear": "确认清空",
   "confirm.replaceTitle": "当前组合尚未保存",
   "confirm.replaceDesc": "选择新预设会替换当前的腿位，而当前组合有未保存的改动。要先保存吗？",
+  "confirm.leaveTitle": "当前组合尚未保存",
+  "confirm.leaveDesc": "离开分析模式会丢失当前未保存的改动。要先保存吗？",
   "confirm.saveFirst": "先保存",
 
   // ── help dialog ──
@@ -423,6 +427,7 @@ const zh: Dict = {
   "shift.reset": "重置",
   "shift.spotChange": "股价变化",
   "shift.timeDecay": "时间流逝",
+  "shift.deltaTSublabel": "ΔT (天)",
   "shift.volChange": "波动率变化",
   "shift.left": "剩",
   "shift.positionSpot": "持仓股价",
@@ -462,6 +467,52 @@ const zh: Dict = {
   "sim.bulkCloseLeg": "批量平仓选中",
   "sim.bulkCloseConfirmTitle": "平仓选中的腿位？",
   "sim.bulkCloseConfirmDesc": "将按当前市价平掉 {count} 条选中的腿位，此操作无法撤销。",
+
+  // ── margin ──
+  "margin.insufficientTitle": "保证金不足，无法开仓",
+  "margin.required": "需要占用",
+  "margin.available": "当前可用",
+  "margin.shortBy": "还差",
+  "margin.breakdown": "明细",
+  "margin.explainerNote": "模拟账户按标准券商保证金规则计算：卖出Put默认按现金全额担保，价差/铁鹰按两翼中较大一侧计算，备兑仓位由正股覆盖不额外占用。",
+  "sim.templateEntryTitle": "从场景开始",
+  "sim.templateEntryDesc": "选一个你对市场的判断，直接给出建议策略",
+  "sim.templateComingSoon": "场景模板即将推出",
+  "sim.resetAccount": "重置账户",
+  "sim.resetConfirmTitle": "重置模拟账户",
+  "sim.resetConfirmDesc": "将清除全部持仓、历史记录和快照，回到初始设置界面，此操作无法撤销。",
+  "sim.resetConfirmAction": "确认重置",
+  "sim.resetDone": "账户已重置，请重新设置初始资金",
+  "sim.selectAllPositions": "全选仓位",
+  "sim.selectedPositionsCount": "已选 {count} 个仓位",
+  "sim.selectPosition": "选择这个仓位",
+  "sim.bulkClosePosition": "平仓所选",
+  "sim.bulkClosePositionConfirmTitle": "批量平仓",
+  "sim.bulkClosePositionConfirmDesc": "将按当前市价完整平掉 {count} 个所选仓位，此操作无法撤销。",
+
+  // ── scenario selector ──
+  "scenario.title": "从场景开始",
+  "scenario.symbol": "标的代码",
+  "scenario.spotError": "拉取现价失败",
+  "scenario.pickView": "你的判断",
+  "scenario.pickViewHint": "最多选4个",
+  "scenario.maxFour": "最多选4个",
+  "scenario.wouldBlock": "跟当前已选的组合冲突，取消某个\"强烈\"档才能选这个",
+  "scenario.timeWindow": "时间窗",
+  "scenario.ivEstimate": "波动率估算",
+  "scenario.ivEstimateHint": "理论定价用，接入真实期权链后自动读取",
+  "scenario.boundsPreview": "平盘区间约 {low} ~ {high}",
+  "scenario.generate": "生成建议",
+  "scenario.resultsTitle": "推荐结果",
+  "scenario.theoreticalNote": "以上权利金为理论定价（Black-Scholes），尚未接入真实期权链报价，仅供参考",
+  "scenario.noResults": "没有找到合适的候选，试试换个场景组合",
+  "scenario.useThis": "使用这个",
+  "scenario.useThisPartialFail": "部分腿位没能匹配到真实期权链报价，已保留理论值，进入编辑后请手动核对。",
+  "scenario.legStock": "正股",
+  "scenario.returnOnRisk": "收益率",
+  "scenario.maxProfit": "最大盈利",
+  "scenario.maxLoss": "最大亏损",
+  "scenario.blockedNote": "这个组合互相矛盾（比如同时要求两端大涨大跌都赚钱、又要求横盘也赚钱），没有标准结构能同时满足，暂不支持，换一个组合试试。",
 };
 
 export default zh;

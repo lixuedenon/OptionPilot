@@ -1,3 +1,4 @@
+// src/lib/dateUtils.ts
 export function todayISO(): string {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
@@ -39,4 +40,24 @@ export function nearestFridayDte(baseDte: number): number {
   snapped.setDate(snapped.getDate() + delta);
 
   return Math.max(0, Math.round((snapped.getTime() - today.getTime()) / 86400000));
+}
+
+// Local-date <input type="date"> read/write helpers — separate from
+// dteFromDate/dateFromDte above (which work in days-from-today terms for
+// option expiries) because these round-trip an absolute epoch timestamp
+// instead (used for things like "when was this position opened" that
+// aren't relative to today). Originally lived directly in App.tsx; moved
+// here so the extracted leg-list component can use the exact same
+// functions instead of a duplicate copy.
+export function formatDateInput(ts: number): string {
+  const date = new Date(ts);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+export function parseDateInput(value: string): number | null {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return null;
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return date.getTime();
 }

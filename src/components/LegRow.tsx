@@ -1,3 +1,4 @@
+// src/components/LegRow.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   MoreVertical,
@@ -11,6 +12,7 @@ import {
   ChevronUp,
   RefreshCw,
   GitCompare,
+  HelpCircle,
 } from "lucide-react";
 import type { Leg } from "@/lib/types";
 import { dateFromDte, dteFromDate } from "@/lib/dateUtils";
@@ -23,6 +25,14 @@ interface Props {
   scenarioPrice?: number;
   legPnl?: number;
   symbol?: string;
+  // What this specific leg is doing in the combo (主力腿/保护腿/etc, computed
+  // across the whole leg list by legRoles.ts) — shown inside the "..."
+  // menu rather than a separate always-visible panel, per Xue's request:
+  // folded into the existing menu saves space and keeps the leg row itself
+  // uncluttered, rather than adding a permanent header-level element.
+  // Undefined for a disabled leg (legRoles.ts only classifies active legs)
+  // or when it can't be confidently classified.
+  roleInfo?: { label: string; explanation: string };
   onChange: (patch: Partial<Leg>) => void;
   onToggleDisable: () => void;
   onDelete: () => void;
@@ -67,9 +77,14 @@ function useClickOutside(active: boolean, onClose: () => void) {
   return ref;
 }
 
-function weekdayLabel(iso: string): string {
-  const names = ["日", "一", "二", "三", "四", "五", "六"];
-  return `周${names[new Date(iso + "T00:00:00").getDay()]}`;
+// Locale-aware weekday abbreviation ("周一" in zh, "Mon" in en) via the
+// browser's own Intl formatter rather than a hardcoded Chinese lookup
+// table — the earlier version always returned "周X" regardless of UI
+// language, so the English interface was showing Chinese weekday labels
+// next to expiry dates in the strike/expiry picker dropdown.
+function weekdayLabel(iso: string, lang: string): string {
+  const date = new Date(iso + "T00:00:00");
+  return new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", { weekday: "short" }).format(date);
 }
 
 function num(v: string): number {
@@ -185,6 +200,7 @@ function LegMenu({
   onMoveDown,
   canMoveUp,
   canMoveDown,
+  roleInfo,
 }: {
   disabled: boolean;
   onToggleDisable: () => void;
@@ -198,10 +214,21 @@ function LegMenu({
   onMoveDown?: () => void;
   canMoveUp?: boolean;
   canMoveDown?: boolean;
+  roleInfo?: { label: string; explanation: string };
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  // Separate from `open` — clicking "这条腿的作用" expands an explanation
+  // block IN PLACE rather than closing the whole dropdown (closing would
+  // defeat the point; the person wants to read it, not dismiss it), and
+  // resets whenever the dropdown itself closes so it doesn't stay expanded
+  // the next time this same row's menu is reopened for something else.
+  const [showRole, setShowRole] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) setShowRole(false);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -229,7 +256,7 @@ function LegMenu({
         <MoreVertical size={14} />
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1 w-36 rounded-lg border border-slate-700 bg-slate-900 py-1 shadow-2xl">
+        <div className={`absolute right-0 top-full z-50 mt-1 rounded-lg border border-slate-700 bg-slate-900 py-1 shadow-2xl transition-all ${showRole ? "w-64" : "w-36"}`}>
           {showMove && (
             <>
               <MenuItem icon={<ChevronUp size={12} />} label={t("leg.moveUp")} hint={t("leg.single")} onClick={() => onMoveUp && run(onMoveUp)} disabled={!canMoveUp} />
@@ -251,6 +278,17 @@ function LegMenu({
               <MenuItem icon={<GitCompare size={12} />} label={t("compare2.menuItem")} hint={t("leg.single")} onClick={() => run(onCompare)} tone="violet" />
             </>
           )}
+          {roleInfo && (
+            <>
+              <div className="my-0.5 border-t border-slate-800" />
+              <MenuItem icon={<HelpCircle size={12} />} label={t("leg.roleMenuItem")} hint={roleInfo.label} onClick={() => setShowRole((v) => !v)} tone="sky" />
+              {showRole && (
+                <div className="mx-2 mb-1.5 rounded bg-slate-800/60 px-2 py-1.5 text-[10px] leading-relaxed text-slate-300">
+                  {roleInfo.explanation}
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>
@@ -263,6 +301,7 @@ export default function LegRow({
   scenarioPrice,
   legPnl,
   symbol,
+  roleInfo,
   onChange,
   onToggleDisable,
   onDelete,
@@ -279,7 +318,7 @@ export default function LegRow({
   onToggleSelect,
   selectable = true,
 }: Props) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const disabled = leg.disabled === true;
   const [priceFetching, setPriceFetching] = useState(false);
   const [priceError, setPriceError] = useState<string | null>(null);
@@ -464,6 +503,7 @@ export default function LegRow({
       onMoveDown={onMoveDown}
       canMoveUp={canMoveUp}
       canMoveDown={canMoveDown}
+      roleInfo={roleInfo}
     />
   );
 
@@ -618,7 +658,7 @@ export default function LegRow({
                 }`}
               >
                 <span>{iso}</span>
-                <span className="text-[9px] text-slate-500">{weekdayLabel(iso)}</span>
+                <span className="text-[9px] text-slate-500">{weekdayLabel(iso, lang)}</span>
               </button>
             ))}
           </div>

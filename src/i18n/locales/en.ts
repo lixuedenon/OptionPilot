@@ -1,3 +1,4 @@
+// src/i18n/locales/en.ts
 import type { Dict } from "../translations";
 
 const en: Dict = {
@@ -27,6 +28,7 @@ const en: Dict = {
 
   // ── leg section ──
   "leg.legs": "Option Legs",
+  "leg.roleMenuItem": "What this leg does",
   "leg.compareMode": "Compare Mode",
   "leg.pop": "POP",
   "leg.breakeven": "Breakeven",
@@ -132,6 +134,8 @@ const en: Dict = {
   "confirm.clear": "Confirm Clear",
   "confirm.replaceTitle": "Current combo isn't saved",
   "confirm.replaceDesc": "Picking a new preset will replace the current legs, and you have unsaved changes. Save first?",
+  "confirm.leaveTitle": "Current combo isn't saved",
+  "confirm.leaveDesc": "Leaving analysis mode will lose your unsaved changes. Save first?",
   "confirm.saveFirst": "Save First",
 
   // ── help dialog ──
@@ -423,6 +427,7 @@ const en: Dict = {
   "shift.reset": "Reset",
   "shift.spotChange": "Spot Change",
   "shift.timeDecay": "Time Decay",
+  "shift.deltaTSublabel": "ΔT (days)",
   "shift.volChange": "Vol Change",
   "shift.left": "Left",
   "shift.positionSpot": "Position Spot",
@@ -462,6 +467,52 @@ const en: Dict = {
   "sim.bulkCloseLeg": "Close selected",
   "sim.bulkCloseConfirmTitle": "Close selected legs?",
   "sim.bulkCloseConfirmDesc": "This will close {count} selected leg(s) at current market price. This cannot be undone.",
+
+  // ── margin ──
+  "margin.insufficientTitle": "Insufficient margin to open this position",
+  "margin.required": "Required",
+  "margin.available": "Available",
+  "margin.shortBy": "Short by",
+  "margin.breakdown": "Breakdown",
+  "margin.explainerNote": "The simulated account follows standard brokerage margin rules: short puts default to full cash-secured, spreads/iron condors are margined on the larger wing (not both), and covered positions backed by stock use no extra margin.",
+  "sim.templateEntryTitle": "Start from a scenario",
+  "sim.templateEntryDesc": "Pick a view on the market and get a suggested strategy",
+  "sim.templateComingSoon": "Scenario templates coming soon",
+  "sim.resetAccount": "Reset account",
+  "sim.resetConfirmTitle": "Reset simulated account",
+  "sim.resetConfirmDesc": "This clears all positions, history, and snapshots, and returns to the initial setup screen. This cannot be undone.",
+  "sim.resetConfirmAction": "Confirm reset",
+  "sim.resetDone": "Account reset — set a starting capital to begin again",
+  "sim.selectAllPositions": "Select all positions",
+  "sim.selectedPositionsCount": "{count} position(s) selected",
+  "sim.selectPosition": "Select this position",
+  "sim.bulkClosePosition": "Close selected",
+  "sim.bulkClosePositionConfirmTitle": "Bulk close positions",
+  "sim.bulkClosePositionConfirmDesc": "This will fully close {count} selected position(s) at current market price. This cannot be undone.",
+
+  // ── scenario selector ──
+  "scenario.title": "Start from a scenario",
+  "scenario.symbol": "Symbol",
+  "scenario.spotError": "Couldn't fetch price",
+  "scenario.pickView": "Your view",
+  "scenario.pickViewHint": "up to 4",
+  "scenario.maxFour": "Up to 4 selections",
+  "scenario.wouldBlock": "Conflicts with your current selection — deselect one of the \"strongly\" options to pick this",
+  "scenario.timeWindow": "Time window",
+  "scenario.ivEstimate": "IV estimate",
+  "scenario.ivEstimateHint": "for theoretical pricing — replaced with real chain data later",
+  "scenario.boundsPreview": "flat range ≈ {low} – {high}",
+  "scenario.generate": "Generate suggestions",
+  "scenario.resultsTitle": "Suggested strategies",
+  "scenario.theoreticalNote": "Premiums above are theoretical (Black-Scholes), not yet from a real option chain — for reference only.",
+  "scenario.noResults": "No good fit found — try a different combination",
+  "scenario.useThis": "Use this",
+  "scenario.useThisPartialFail": "Some legs couldn't be matched to a real quote and kept their theoretical values — please double-check them after entering the editor.",
+  "scenario.legStock": "Stock",
+  "scenario.returnOnRisk": "Return",
+  "scenario.maxProfit": "Max profit",
+  "scenario.maxLoss": "Max loss",
+  "scenario.blockedNote": "This combination contradicts itself (e.g. wanting both extreme tails to pay off AND flat to pay off) — no standard structure can satisfy both. Try a different combination.",
 };
 
 export default en;

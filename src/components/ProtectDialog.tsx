@@ -1,3 +1,4 @@
+// src/components/ProtectDialog.tsx
 import { useState, useMemo, useEffect } from "react";
 import { Shield, X, RefreshCw } from "lucide-react";
 import type { Leg } from "@/lib/types";
@@ -10,7 +11,7 @@ import { useI18n } from "@/i18n/I18nContext";
 const RATE = 0.05;
 
 const inp =
-  "w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-100 focus:border-sky-500 focus:outline-none tabular-nums";
+  "w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-100 focus:border-sky-500 focus:outline-none tabular-nums [color-scheme:dark]";
 
 interface Props {
   leg: Leg;

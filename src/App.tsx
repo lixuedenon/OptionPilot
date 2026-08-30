@@ -1,16 +1,18 @@
+// src/App.tsx
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { Plus, Layers, Save, Settings2, RefreshCw, TrendingUp, TrendingDown, ChevronDown, Trash2, History, Clock, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle, DollarSign, Ban, Wallet } from "lucide-react";
 import type { Leg, Shifts } from "@/lib/types";
 import { priceCombo, probabilityOfProfit, weightedAvgIV, impliedSpotFromPremiums, attributePnl, maxProfitLoss } from "@/lib/pricing";
+import { explainLegRoles } from "@/lib/legRoles";
 import PnlAttributionPanel from "@/components/PnlAttributionPanel";
 import PositionHealthBadge from "@/components/PositionHealthBadge";
 import { computeHealth } from "@/lib/positionHealth";
 import { PRESET_GROUPS } from "@/lib/presets";
 import { matchStrategy } from "@/lib/matchStrategy";
 import LegRow from "@/components/LegRow";
+import LegListSection from "@/components/LegListSection";
 import ShiftSliders from "@/components/ShiftSliders";
 import PayoffChart, { type AlertInfo } from "@/components/PayoffChart";
-import PresetPicker from "@/components/PresetPicker";
 import SavePresetDialog from "@/components/SavePresetDialog";
 import StrategyBadge from "@/components/StrategyBadge";
 import { useStockQuote } from "@/lib/useStockQuote";
@@ -23,15 +25,14 @@ import RollDialog from "@/components/RollDialog";
 import ProtectDialog from "@/components/ProtectDialog";
 import HedgeDialog from "@/components/HedgeDialog";
 import DecisionCompareDialog from "@/components/DecisionCompareDialog";
-import { exportAllData, importAllData } from "@/lib/dataTransfer";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
 import { useSavedStrategies } from "@/hooks/useSavedStrategies";
-import { nearestFridayDte } from "@/lib/dateUtils";
+import { nearestFridayDte, formatDateInput, parseDateInput } from "@/lib/dateUtils";
 import { getOptionChain, peekResolvedChain, nearestStrikeToSpot, resolveFromCache } from "@/lib/optionChain";
 import { useI18n } from "@/i18n/I18nContext";
-import LanguageSwitcher from "@/components/LanguageSwitcher";
-import { AlertCard, ConfirmBulkDeleteDialog, ConfirmClearDialog, ConfirmReplacePresetDialog, ConfirmSaveTrackedDialog, ConfirmSnapshotDialog, HelpPanel, ImpliedSpotInfoPanel } from "@/components/dialogs";
+import AppHeader from "@/components/AppHeader";
+import { AlertCard, ConfirmBulkDeleteDialog, ConfirmClearDialog, ConfirmLeaveDialog, ConfirmReplacePresetDialog, ConfirmSaveTrackedDialog, ConfirmSnapshotDialog, HelpPanel, ImpliedSpotInfoPanel } from "@/components/dialogs";
 import ErrorBoundary from "@/components/ErrorBoundary";
 
 let idc = 0;
@@ -61,19 +62,6 @@ function daysSince(ts: number): number {
   return (Date.now() - ts) / 86400000;
 }
 
-function formatDateInput(ts: number): string {
-  const date = new Date(ts);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-}
-
-function parseDateInput(value: string): number | null {
-  const [year, month, day] = value.split("-").map(Number);
-  if (!year || !month || !day) return null;
-  const date = new Date(year, month - 1, day);
-  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
-  return date.getTime();
-}
-
 function serializeStrategyState(sym: string, ls: Leg[], sh: Shifts, oa: number): string {
   const norm = (l: Leg) => `${l.action}-${l.type}-${l.strike}-${l.dte}-${l.premium}-${l.kind ?? "option"}-${l.shares ?? 100}-${l.qty ?? 1}-${l.disabled ?? false}`;
   return `${sym}|${ls.map(norm).join("|")}|${sh.dS}|${sh.dT}|${sh.dV}|${oa}`;
@@ -92,12 +80,18 @@ interface AppProps {
   // (Shell.tsx) can send the person to set one up instead of silently
   // failing.
   onAddToSimAccount?: (payload: { symbol: string; legs: Leg[]; spot: number }) => Promise<{ ok: boolean; needsSetup?: boolean }>;
+  // Pre-fills the simOrigin leg builder — used when arriving here from the
+  // scenario selector's "use this" button, so the person reviews/adjusts a
+  // real candidate instead of starting from a blank combo. Only applied
+  // once on mount (see the effect right after state declarations below);
+  // editing after that point is just normal leg editing, same as always.
+  simOriginInitial?: { symbol: string; legs: Leg[]; spot: number };
 }
 
-export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSimOpen, onCancelSimOrigin, onAddToSimAccount }: AppProps = {}) {
-  const [symbol, setSymbol] = useState("");
-  const [spot, setSpot] = useState(0);
-  const [legs, setLegs] = useState<Leg[]>([]);
+export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSimOpen, onCancelSimOrigin, onAddToSimAccount, simOriginInitial }: AppProps = {}) {
+  const [symbol, setSymbol] = useState(() => simOriginInitial?.symbol ?? "");
+  const [spot, setSpot] = useState(() => simOriginInitial?.spot ?? 0);
+  const [legs, setLegs] = useState<Leg[]>(() => simOriginInitial?.legs ?? []);
   const [shifts, setShifts] = useState<Shifts>({ dS: 0, dT: 0, dV: 0 });
   const {
     customPresets,
@@ -162,11 +156,17 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const [confirmPresetOpen, setConfirmPresetOpen] = useState(false);
   const pendingPresetReplace = useRef<Leg[] | null>(null);
   const [confirmReplaceOpen, setConfirmReplaceOpen] = useState(false);
+  // Set when the person clicks "save first, then leave" in ConfirmLeaveDialog
+  // — checked inside handleSaveStrategy/handleOverwriteStrategy so the
+  // actual navigation only fires once the save has genuinely succeeded,
+  // same lifecycle as pendingPresetReplace above.
+  const pendingLeaveAfterSave = useRef(false);
+  const [confirmLeaveOpen, setConfirmLeaveOpen] = useState(false);
   const symbolWrapRef = useRef<HTMLDivElement>(null);
   const pendingPreset = useRef<{ name: string; rawLegs: Leg[] } | null>(null);
-  const legBaseSpot = useRef(0);
-  const legBaseSymbol = useRef("");
-  const spotManuallySet = useRef(false);
+  const legBaseSpot = useRef(simOriginInitial?.spot ?? 0);
+  const legBaseSymbol = useRef(simOriginInitial?.symbol ?? "");
+  const spotManuallySet = useRef(!!simOriginInitial);
   const trackedLegsRef = useRef<Leg[] | null>(null);
   trackedLegsRef.current = trackedLegs;
 
@@ -418,6 +418,19 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     for (const pl of trackedResult.perLeg) m.set(pl.leg.id, pl.change.total);
     return m;
   }, [trackedResult]);
+
+  // Same per-leg role explanation the analysis-mode leg list gets (see
+  // LegListSection.tsx), computed here separately for "today's combo"
+  // since that list is still rendered directly in App.tsx rather than
+  // through LegListSection — a role like "anchor leg" is relative to the
+  // CURRENT tracked strikes/premiums, which can differ from the opening
+  // combo's roles if the person has edited a tracked leg's premium.
+  const trackedLegRolesById = useMemo(() => {
+    const map = new Map<string, { label: string; explanation: string }>();
+    if (!trackedLegs) return map;
+    for (const r of explainLegRoles(trackedLegs)) map.set(r.legId, { label: r.label, explanation: r.explanation });
+    return map;
+  }, [trackedLegs]);
 
   const trackedStrategy = trackingStrategyId ? savedStrategies.find((s) => s.id === trackingStrategyId) : undefined;
 
@@ -714,7 +727,11 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       pendingPresetReplace.current = null;
       applyPreset(rawLegs);
     }
-  }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset]);
+    if (pendingLeaveAfterSave.current) {
+      pendingLeaveAfterSave.current = false;
+      onBackHome?.();
+    }
+  }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset, onBackHome]);
 
   const handleOverwriteStrategy = useCallback(async (id: string, filename: string) => {
     const updated = await overwriteStrategy(id, { filename, symbol, spot, legs: activeLegs, shifts, openingAt });
@@ -726,7 +743,11 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       pendingPresetReplace.current = null;
       applyPreset(rawLegs);
     }
-  }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset]);
+    if (pendingLeaveAfterSave.current) {
+      pendingLeaveAfterSave.current = false;
+      onBackHome?.();
+    }
+  }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset, onBackHome]);
 
   const handleTrack = useCallback(async (s: SavedStrategy) => {
     setSymbol(s.symbol);
@@ -900,216 +921,52 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-950 text-slate-200">
       {/* ── Header ── */}
-      <header className="flex shrink-0 items-center justify-between border-b border-slate-800 px-4 py-2">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={simOrigin ? onCancelSimOrigin : onBackHome}
-            disabled={!onBackHome && !onCancelSimOrigin}
-            title={simOrigin ? t("sim.cancelOrigin") : t("home.backToHome")}
-            className="flex items-center rounded transition enabled:hover:opacity-80 disabled:cursor-default"
-          >
-            <img
-              src="/image copy 2.png"
-              alt="OptionPilot"
-              className="h-12 w-auto shrink-0 object-contain"
-            />
-          </button>
-
-          <PresetPicker
-            customPresets={customPresets}
-            onDeleteCustom={handleDeleteCustom}
-            onSelect={(preset) => {
-              const rawLegs = preset.legs();
-              if (isCompareMode && trackedDirty) {
-                pendingPresetAction.current = { name: typeof preset.name === "string" ? preset.name : preset.name.zh, rawLegs };
-                setConfirmPresetOpen(true);
-                return;
-              }
-              if (!isCompareMode && legs.length > 0 && canSaveStrategy) {
-                pendingPresetReplace.current = rawLegs;
-                setConfirmReplaceOpen(true);
-                return;
-              }
-              applyPreset(rawLegs);
-            }}
-          />
-
-          <div ref={symbolWrapRef} className="relative flex items-center gap-1.5">
-            <span className="text-[10px] uppercase text-slate-500">{t("stock.code")}</span>
-            <div className="flex items-center">
-              <input
-                placeholder="SPY"
-                value={symbol}
-                onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-                className="w-16 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs font-semibold text-slate-100 placeholder:text-slate-600 focus:border-emerald-500 focus:outline-none"
-              />
-              <button
-                onClick={() => setSymbolDropdownOpen((v) => !v)}
-                className="-ml-px rounded-r border border-l-0 border-slate-700 bg-slate-900 px-1 py-1 text-slate-500 transition hover:text-slate-300"
-              >
-                <ChevronDown size={12} />
-              </button>
-            </div>
-            {symbolDropdownOpen && recentSymbols.length > 0 && (
-              <div className="absolute left-0 top-full z-[90] mt-1 max-h-64 w-28 overflow-y-auto rounded-lg border border-slate-700 bg-slate-900 py-1 shadow-2xl">
-                {[...recentSymbols].sort((a, b) => a.localeCompare(b)).map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => {
-                      setSymbol(s);
-                      setSymbolDropdownOpen(false);
-                    }}
-                    className={`flex w-full items-center px-3 py-1.5 text-xs font-semibold transition ${
-                      s === symbol ? "bg-emerald-500/10 text-emerald-300" : "text-slate-300 hover:bg-slate-800"
-                    }`}
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <button
-              onClick={refetch}
-              title={quoteError ?? (quote ? `${t("stock.live")} ${quote.source}` : t("stock.fetchHint"))}
-              className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] transition hover:border-slate-500"
-            >
-              {quoteLoading ? (
-                <RefreshCw size={11} className="animate-spin text-slate-400" />
-              ) : quote ? (
-                <span className="flex items-center gap-1">
-                  {quote.price >= quote.previousClose
-                    ? <TrendingUp size={11} className="text-emerald-400" />
-                    : <TrendingDown size={11} className="text-rose-400" />
-                  }
-                  <span className="font-semibold tabular-nums text-slate-200">{quote.price.toFixed(2)}</span>
-                </span>
-              ) : quoteError ? (
-                <span className="text-rose-400">!</span>
-              ) : (
-                <RefreshCw size={11} className="text-slate-500" />
-              )}
-            </button>
-
-            {priceChange !== null && changePct !== null ? (
-              <div className="flex items-center gap-1 rounded border border-slate-800 bg-slate-900/40 px-2 py-1 text-[10px] tabular-nums">
-                <span className={priceChange >= 0 ? "text-emerald-400 font-semibold" : "text-rose-400 font-semibold"}>
-                  {priceChange >= 0 ? "+" : ""}{priceChange.toFixed(2)}
-                </span>
-                <span className={priceChange >= 0 ? "text-emerald-400/60" : "text-rose-400/60"}>
-                  ({changePct >= 0 ? "+" : ""}{changePct.toFixed(2)}%)
-                </span>
-              </div>
-            ) : (
-              <div className="w-[88px]" />
-            )}
-        </div>
-
-        <div className="flex items-center gap-3">
-
-          <DropdownMenu
-            label={t("toolbar.dataLabel")}
-            icon={<Database size={11} />}
-            menuClassName="w-56"
-          >
-            {(close) => (
-              <>
-                {autoSyncSupported && (
-                  <>
-                    <div className="px-3 py-1.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">
-                      {t("toolbar.fileLink")}
-                    </div>
-                    {autoSyncName ? (
-                      <>
-                        <div className="mx-2 mb-1 truncate rounded bg-slate-800 px-2 py-1 text-[10px] text-emerald-400" title={autoSyncName}>
-                          <FileSymlink size={10} className="mr-1 inline" />{autoSyncName}
-                        </div>
-                        <button
-                          onClick={syncNow}
-                          className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
-                        >
-                          <RefreshCw size={12} className="text-sky-400" /> {t("toolbar.syncNow")}
-                        </button>
-                        <button
-                          onClick={unlinkBackup}
-                          className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-rose-400 transition hover:bg-rose-950/40"
-                        >
-                          <Unlink size={12} /> {t("toolbar.unlink")}
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        onClick={linkBackup}
-                        className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
-                      >
-                        <FileSymlink size={12} className="text-emerald-400" /> {t("toolbar.linkBackup")}
-                      </button>
-                    )}
-                    <div className="my-1 border-t border-slate-800" />
-                  </>
-                )}
-                <button
-                  onClick={() => { close(); exportAllData(); }}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
-                >
-                  <Download size={12} className="text-sky-400" /> {t("toolbar.exportData")}
-                </button>
-                <label className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800">
-                  <Upload size={12} className="text-sky-400" /> {t("toolbar.importData")}
-                  <input
-                    type="file"
-                    accept=".json"
-                    className="hidden"
-                    onChange={async (e) => {
-                      close();
-                      const file = e.target.files?.[0];
-                      if (!file) return;
-                      try {
-                        await importAllData(file);
-                        await reloadData();
-                      } catch {
-                        window.alert(t("toolbar.importFail"));
-                      }
-                      e.target.value = "";
-                    }}
-                  />
-                </label>
-              </>
-            )}
-          </DropdownMenu>
-          <LanguageSwitcher />
-          {simOrigin && onConfirmSimOpen && (
-            <button
-              onClick={() => onConfirmSimOpen({ symbol, legs: activeLegs, spot })}
-              disabled={activeLegs.length === 0 || spot <= 0}
-              title={t("sim.confirmOpen")}
-              className="flex items-center gap-1 rounded border border-emerald-500 bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Plus size={12} />
-              <span>{t("sim.confirmOpen")}</span>
-            </button>
-          )}
-          <button
-            onClick={() => setHelpOpen(true)}
-            title={t("toolbar.help")}
-            className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-[11px] font-semibold text-slate-400 transition hover:border-emerald-500/50 hover:text-emerald-300"
-          >
-            <HelpCircle size={12} />
-            <span>{t("toolbar.help")}</span>
-          </button>
-          {autoSyncError && (
-            <div className="absolute right-2 top-full mt-1 z-50 max-w-xs rounded-lg border border-rose-700 bg-rose-950/90 px-3 py-2 text-[11px] text-rose-300 shadow-xl">
-              {autoSyncError}
-              <button
-                onClick={() => setAutoSyncError(null)}
-                className="ml-2 text-rose-500 hover:text-rose-300"
-              >
-                <X size={11} className="inline" />
-              </button>
-            </div>
-          )}
-        </div>
-      </header>
+      <AppHeader
+        simOrigin={simOrigin}
+        onCancelSimOrigin={onCancelSimOrigin}
+        onBackHome={onBackHome}
+        isCompareMode={isCompareMode}
+        canSaveStrategy={canSaveStrategy}
+        onRequestLeave={() => setConfirmLeaveOpen(true)}
+        customPresets={customPresets}
+        onDeleteCustomPreset={handleDeleteCustom}
+        onSelectPreset={(preset) => {
+          const rawLegs = preset.legs();
+          if (isCompareMode && trackedDirty) {
+            pendingPresetAction.current = { name: typeof preset.name === "string" ? preset.name : preset.name.zh, rawLegs };
+            setConfirmPresetOpen(true);
+            return;
+          }
+          if (!isCompareMode && legs.length > 0 && canSaveStrategy) {
+            pendingPresetReplace.current = rawLegs;
+            setConfirmReplaceOpen(true);
+            return;
+          }
+          applyPreset(rawLegs);
+        }}
+        symbolWrapRef={symbolWrapRef}
+        symbol={symbol}
+        onSymbolChange={setSymbol}
+        symbolDropdownOpen={symbolDropdownOpen}
+        onToggleSymbolDropdown={() => setSymbolDropdownOpen((v) => !v)}
+        recentSymbols={recentSymbols}
+        onPickRecentSymbol={(s) => { setSymbol(s); setSymbolDropdownOpen(false); }}
+        quote={quote}
+        quoteLoading={quoteLoading}
+        quoteError={quoteError}
+        onRefetchQuote={refetch}
+        priceChange={priceChange}
+        changePct={changePct}
+        autoSyncSupported={autoSyncSupported}
+        autoSyncName={autoSyncName}
+        autoSyncError={autoSyncError}
+        onDismissAutoSyncError={() => setAutoSyncError(null)}
+        onSyncNow={syncNow}
+        onUnlinkBackup={unlinkBackup}
+        onLinkBackup={linkBackup}
+        onReloadData={reloadData}
+        onOpenHelp={() => setHelpOpen(true)}
+      />
 
       {simOrigin && (
         <div className="shrink-0 border-b border-emerald-800/40 bg-emerald-950/30 px-4 py-1.5 text-[11px] text-emerald-300">
@@ -1172,7 +1029,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                         const next = parseDateInput(e.target.value);
                         if (next !== null) setOpeningAt(next);
                       }}
-                      className="rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] tabular-nums text-slate-300 outline-none transition focus:border-sky-500 focus:text-sky-200"
+                      className="rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] tabular-nums text-slate-300 outline-none transition focus:border-sky-500 focus:text-sky-200 [color-scheme:dark]"
                     />
                   </label>
                   <div className="ml-auto flex items-center gap-2">
@@ -1204,131 +1061,40 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           </div>
 
           {/* ── Original combo section ── */}
-          <div className="p-2 space-y-1">
-            {isCompareMode && (
-              <div className="flex items-center gap-2 bg-slate-900/40 py-1 rounded px-2">
-                <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-400">{t("compare.openCombo")}</span>
-                <span className="text-[9px] text-slate-500">{t("compare.compareBase")}</span>
-                {(() => {
-                  const snaps = trackedStrategy?.trackedSnapshots ?? [];
-                  const activeSnap = snaps.find((sn) => sn.id === activeSnapshotId) ?? snaps[snaps.length - 1];
-                  const ts = activeSnap?.savedAt ?? trackedStrategy?.createdAt;
-                  if (!ts) return null;
-                  return (
-                    <label className="flex items-center gap-1 text-[9px] tabular-nums text-slate-500" title={t("compare.clickModifyDate")}>
-                      <Clock size={9} className="text-slate-500" />
-                      <input
-                        type="date"
-                        value={formatDateInput(ts)}
-                        onChange={(e) => {
-                          const newTs = parseDateInput(e.target.value);
-                          if (newTs !== null && activeSnap) handleUpdateSnapshotTime(activeSnap.id, newTs);
-                        }}
-                        className="rounded border border-slate-700 bg-slate-900 px-1 py-0.5 text-[9px] tabular-nums text-slate-400 outline-none focus:border-sky-500 focus:text-sky-200"
-                      />
-                    </label>
-                  );
-                })()}
-                <div className="ml-auto flex items-center gap-2">
-                  {legToolbar}
-                </div>
-              </div>
-            )}
-            {isCompareMode && (() => {
-              const openIV = spot > 0 ? weightedAvgIV(activeLegs, spot) : 0;
-              const currSpot = effectiveTrackedSpot;
-              const currIV = currSpot > 0 ? weightedAvgIV(activeTrackedLegs ?? [], currSpot) : 0;
-              const spotChg = currSpot - spot;
-              const ivChg = openIV > 0 && currIV > 0 ? (currIV - openIV) * 100 : 0;
-              return (
-                <div className="mb-1 grid grid-cols-3 gap-1.5 rounded-lg border border-slate-800 bg-slate-900/40 p-2 text-[10px]">
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-slate-500">{t("compare.spot")}</span>
-                    <span className="tabular-nums text-slate-300">{t("compare.openLabel")} <span className="font-semibold text-emerald-400">{spot.toFixed(2)}</span></span>
-                    <span className="tabular-nums text-slate-300">{t("compare.currentLabel")} <span className="font-semibold text-sky-400">{currSpot.toFixed(2)}</span></span>
-                    <span className={`tabular-nums font-semibold ${spotChg >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{spotChg >= 0 ? "+" : ""}{spotChg.toFixed(2)} ({spot > 0 ? (spotChg / spot * 100).toFixed(2) : "0.00"}%)</span>
-                  </div>
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-slate-500">{t("compare.timeDecay")}</span>
-                    <span className="tabular-nums text-slate-300">{t("compare.openLabel")} <span className="font-semibold text-emerald-400">{activeLegs.length > 0 ? Math.round(Math.max(...activeLegs.map((l) => l.dte))) : "-"}</span> {t("compare.days")}</span>
-                    <span className="tabular-nums text-slate-300">{t("compare.currentLabel")} <span className="font-semibold text-sky-400">{activeLegs.length > 0 ? Math.max(0, Math.round(Math.max(...activeLegs.map((l) => l.dte)) - effectiveDaysElapsed)) : "-"}</span> {t("compare.days")}</span>
-                    <span className="tabular-nums font-semibold text-amber-400">{t("compare.elapsed")} {Math.round(effectiveDaysElapsed)} {t("compare.days")}</span>
-                  </div>
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-slate-500">{t("compare.iv")}</span>
-                    <span className="tabular-nums text-slate-300">{t("compare.openLabel")} <span className="font-semibold text-emerald-400">{openIV > 0 ? (openIV * 100).toFixed(2) : "-"}%</span></span>
-                    <span className="tabular-nums text-slate-300">{t("compare.currentLabel")} <span className="font-semibold text-sky-400">{currIV > 0 ? (currIV * 100).toFixed(2) : "-"}%</span></span>
-                    <span className={`tabular-nums font-semibold ${ivChg >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{ivChg >= 0 ? "+" : ""}{ivChg.toFixed(2)}pp</span>
-                  </div>
-                </div>
-              );
-            })()}
-            {legs.length > 0 && (
-              <div className="mb-1 flex items-center gap-2 rounded border border-slate-800 bg-slate-900/40 px-2 py-1">
-                <label className="flex shrink-0 items-center gap-1.5 text-[10px] text-slate-400">
-                  <input
-                    type="checkbox"
-                    checked={selectedCount > 0 && selectedCount === legs.length}
-                    ref={(el) => {
-                      if (el) el.indeterminate = selectedCount > 0 && selectedCount < legs.length;
-                    }}
-                    onChange={() => (selectedCount === legs.length ? clearLegSelection() : selectAllLegs())}
-                    className="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500"
-                  />
-                  {selectedCount > 0 ? t("leg.selectedCount", { count: selectedCount }) : t("leg.selectAll")}
-                </label>
-                {selectedCount > 0 && (
-                  <div className="ml-auto flex items-center gap-1.5">
-                    <button
-                      onClick={bulkToggleDisable}
-                      className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-amber-400 transition hover:border-amber-500/50 hover:bg-amber-950/30"
-                    >
-                      <Ban size={11} />
-                      {allSelectedDisabled ? t("leg.bulkUnblock") : t("leg.bulkBlock")}
-                    </button>
-                    <button
-                      onClick={requestBulkDelete}
-                      className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-rose-400 transition hover:border-rose-500/50 hover:bg-rose-950/30"
-                    >
-                      <Trash2 size={11} />
-                      {t("leg.bulkDelete")}
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-            {legs.length === 0 ? (
-              <div className="flex min-h-[240px] flex-col items-center justify-center gap-2 text-slate-600">
-                <span className="text-sm">{t("leg.noLegs")}</span>
-                <span className="text-xs">{t("leg.noLegsHint")}</span>
-              </div>
-            ) : (
-              legs.map((leg, i) => (
-                <LegRow
-                  key={leg.id}
-                  leg={leg}
-                  index={i}
-                  scenarioPrice={isCompareMode ? undefined : scenarioPriceById.get(leg.id)}
-                  symbol={symbol}
-                  onChange={(patch) => updateLeg(leg.id, patch)}
-                  onToggleDisable={() => toggleLeg(leg.id)}
-                  onDelete={() => deleteLeg(leg.id)}
-                  onAddToPreset={() => setSaveDialogOpen(true)}
-                  onRoll={() => handleRoll(leg.id)}
-                  onHedge={() => handleHedge()}
-                  onProtect={() => handleProtect(leg.id)}
-                  onCompare={() => handleCompare(leg.id)}
-                  onMoveUp={() => moveLeg(i, -1)}
-                  onMoveDown={() => moveLeg(i, 1)}
-                  canMoveUp={i > 0}
-                  canMoveDown={i < legs.length - 1}
-                  selected={selectedLegIds.has(leg.id)}
-                  onToggleSelect={() => toggleLegSelection(leg.id)}
-                />
-              ))
-            )}
-          </div>
-
+          <LegListSection
+            isCompareMode={isCompareMode}
+            trackedStrategy={trackedStrategy}
+            activeSnapshotId={activeSnapshotId}
+            onUpdateSnapshotTime={handleUpdateSnapshotTime}
+            legToolbar={legToolbar}
+            spot={spot}
+            activeLegs={activeLegs}
+            effectiveTrackedSpot={effectiveTrackedSpot}
+            activeTrackedLegs={activeTrackedLegs}
+            effectiveDaysElapsed={effectiveDaysElapsed}
+            legs={legs}
+            selectedCount={selectedCount}
+            selectedLegIds={selectedLegIds}
+            onClearLegSelection={clearLegSelection}
+            onSelectAllLegs={selectAllLegs}
+            allSelectedDisabled={allSelectedDisabled}
+            onBulkToggleDisable={bulkToggleDisable}
+            onRequestBulkDelete={requestBulkDelete}
+            scenarioPriceById={scenarioPriceById}
+            symbol={symbol}
+            onChangeLeg={updateLeg}
+            onToggleLeg={toggleLeg}
+            onDeleteLeg={deleteLeg}
+            onAddToPreset={() => setSaveDialogOpen(true)}
+            onRoll={handleRoll}
+            onHedge={handleHedge}
+            onProtect={handleProtect}
+            onCompare={handleCompare}
+            onMoveLeg={moveLeg}
+            onToggleLegSelection={toggleLegSelection}
+            simOrigin={simOrigin}
+            onConfirmSimOpen={onConfirmSimOpen}
+          />
           {/* ── Today's combo section (compare mode only) ── */}
           {isCompareMode && trackedLegs && (
             <div className="flex flex-col border-t-2 border-sky-700/40">
@@ -1425,6 +1191,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                     index={i}
                     symbol={symbol}
                     legPnl={trackedLegPnlById.get(leg.id)}
+                    roleInfo={trackedLegRolesById.get(leg.id)}
                     onChange={(patch) => updateTrackedLeg(leg.id, patch)}
                     onToggleDisable={() => {}}
                     onDelete={() => {}}
@@ -1539,6 +1306,19 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         />
       )}
 
+      {confirmLeaveOpen && (
+        <ConfirmLeaveDialog
+          onCancel={() => setConfirmLeaveOpen(false)}
+          onDontSave={() => { setConfirmLeaveOpen(false); onBackHome?.(); }}
+          onSaveFirst={() => {
+            setConfirmLeaveOpen(false);
+            pendingLeaveAfterSave.current = true;
+            setSaveStrategyOpen(true);
+            // navigation fires from inside handleSaveStrategy/handleOverwriteStrategy once the save succeeds
+          }}
+        />
+      )}
+
       {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
 
       {confirmClearOpen && (
@@ -1569,7 +1349,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
       <SaveStrategyDialog
         open={saveStrategyOpen}
-        onClose={() => { setSaveStrategyOpen(false); pendingPresetReplace.current = null; }}
+        onClose={() => { setSaveStrategyOpen(false); pendingPresetReplace.current = null; pendingLeaveAfterSave.current = false; }}
         onSave={handleSaveStrategy}
         onOverwrite={handleOverwriteStrategy}
         symbol={symbol}

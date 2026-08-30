@@ -1,4 +1,6 @@
+// src/lib/simAccount.ts
 import type { Leg } from "./types";
+import { computeComboMargin, type MarginNote } from "./margin";
 
 export interface SimPosition {
   id: string;
@@ -167,13 +169,70 @@ export async function initSimAccount(startingCapital: number): Promise<SimAccoun
   return account;
 }
 
+// Clears the simulated account, all positions (open and closed), and every
+// recorded daily snapshot (used by "regret mode" / position timelines) —
+// a true fresh start, not just wiping the account+positions and leaving
+// orphaned snapshot rows keyed to position ids that no longer exist.
 export async function resetSimAccount(): Promise<void> {
   localStorage.removeItem(ACCOUNT_KEY);
   localStorage.removeItem(POSITIONS_KEY);
+  localStorage.removeItem(SNAPSHOTS_KEY);
 }
 
 export async function loadSimPositions(): Promise<SimPosition[]> {
   return loadPositionsFromStorage();
+}
+
+// Margin for every OPEN position, summed. Uses each position's stored
+// OPENING spot rather than re-fetching a live quote per symbol — margin
+// does technically drift with the live price (see margin.ts's naked-call
+// formula), but re-fetching quotes for every open position on every check
+// adds real network/async complexity for a number that's meant as a
+// capital-availability guardrail, not a live risk figure. This is a
+// deliberate approximation for v1; if it ever needs to track live prices
+// instead, the shape of the change is "pass a symbol→spot map in" rather
+// than a redesign.
+export function computeMarginUsed(positions: SimPosition[]): number {
+  return positions
+    .filter((p) => p.status === "open")
+    .reduce((sum, p) => sum + computeComboMargin(p.legs, p.spot).total, 0);
+}
+
+// What's actually free to open a NEW position with — cash minus whatever
+// margin the currently-open positions are already holding as collateral.
+// This is the number "钱花完了没法下单" is checked against, not raw cash,
+// since a credit spread's premium already inflated cash even though most
+// of that isn't really "free" while the position is open.
+export function computeAvailableCapital(account: SimAccount, positions: SimPosition[]): number {
+  return account.cash - computeMarginUsed(positions);
+}
+
+export interface MarginCheckResult {
+  ok: boolean;
+  required: number;
+  available: number;
+  shortfall: number; // 0 when ok
+  breakdown: MarginNote[];
+}
+
+// Thrown by openSimPosition when a position can't be opened for lack of
+// margin. Carries the full breakdown (not just a formatted message) so the
+// UI can render a real itemized explanation instead of a single opaque
+// error string — see MarginErrorDialog.tsx, which reads `.detail` directly.
+export class InsufficientMarginError extends Error {
+  detail: MarginCheckResult;
+  constructor(detail: MarginCheckResult) {
+    super(`保证金不足：需要$${detail.required.toFixed(2)}，当前可用$${detail.available.toFixed(2)}，还差$${detail.shortfall.toFixed(2)}`);
+    this.name = "InsufficientMarginError";
+    this.detail = detail;
+  }
+}
+
+export function checkMarginForOpen(legs: Leg[], spot: number, account: SimAccount, positions: SimPosition[]): MarginCheckResult {
+  const { total, notes } = computeComboMargin(legs, spot);
+  const available = computeAvailableCapital(account, positions);
+  const shortfall = Math.max(0, Math.round((total - available) * 100) / 100);
+  return { ok: total <= available, required: total, available, shortfall, breakdown: notes };
 }
 
 export async function openSimPosition(params: {
@@ -183,6 +242,10 @@ export async function openSimPosition(params: {
 }): Promise<{ account: SimAccount; positions: SimPosition[] }> {
   const account = loadAccountFromStorage();
   if (!account) throw new Error("Simulated account not initialized");
+
+  const positions = loadPositionsFromStorage();
+  const check = checkMarginForOpen(params.legs, params.spot, account, positions);
+  if (!check.ok) throw new InsufficientMarginError(check);
 
   const costBasis = computeCostBasis(params.legs);
   const position: SimPosition = {
@@ -198,7 +261,6 @@ export async function openSimPosition(params: {
   const updatedAccount: SimAccount = { ...account, cash: account.cash - costBasis };
   saveAccountToStorage(updatedAccount);
 
-  const positions = loadPositionsFromStorage();
   positions.unshift(position);
   savePositionsToStorage(positions);
 

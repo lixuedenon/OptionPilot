@@ -1,3 +1,4 @@
+// src/components/StrategyBadge.tsx
 import { useState, useRef } from "react";
 import type { PresetMeta, LocalStr } from "@/lib/presets";
 import { PRESET_GROUPS } from "@/lib/presets";
@@ -9,7 +10,12 @@ function ls(val: LocalStr | string, lang: Lang): string {
   return typeof val === "string" ? val : val[lang];
 }
 
-const dirKeyMap: Record<string, string> = {
+// Exported so other places that display a preset's `direction` field (a
+// plain Chinese string, not a {zh,en} LocalStr) can translate it the same
+// way instead of rendering the raw Chinese directly — ScenarioSelectorPage
+// was doing exactly that, which is why "双向波动" showed up untranslated
+// even in the English UI.
+export const dirKeyMap: Record<string, string> = {
   "看涨": "bullish", "看跌": "bearish", "看跌/中性": "bearishNeutral",
   "温和看涨": "mildBullish", "温和看跌": "mildBearish", "中性": "neutral",
   "中性/震荡": "neutralRange", "中性/温和看涨": "neutralMildBullish",
