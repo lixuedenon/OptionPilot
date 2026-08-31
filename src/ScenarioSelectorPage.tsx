@@ -16,6 +16,8 @@ import {
 } from "@/lib/scenarioEngine";
 import { fetchSpotPrice } from "@/lib/useStockQuote";
 import { fetchLegPremium } from "@/lib/optionChain";
+import { impliedVol } from "@/lib/pricing";
+import { fetchHistoricalCloses, computeHV, computeIvHvNote, RICH_THRESHOLD, type IvHvNote } from "@/lib/historicalVolatility";
 import { dirKeyMap } from "@/components/StrategyBadge";
 import { useI18n } from "@/i18n/I18nContext";
 import type { Leg } from "@/lib/types";
@@ -56,6 +58,40 @@ const BUCKET_ICON: Record<Bucket, React.ReactNode> = {
 
 const TIER_ORDER: Tier[] = ["conservative", "neutral", "aggressive"];
 
+// Same credit/debit determination scenarioEngine.ts uses internally
+// (compare illustrative sell vs buy premiums) — reused here just to
+// classify "is this recommendation a sell-side or buy-side posture" for
+// deciding whether the IV/HV note applies. A recommendation that's net
+// credit (selling premium) only gets the note when IV looks cheap
+// relative to HV (the sell thesis is weaker than usual); a net-debit
+// (buying) recommendation only gets it when IV looks rich (buying is
+// more expensive than usual) — the opposite pairing wouldn't be useful
+// advice (telling someone already buying that IV is cheap isn't a
+// caution, it's a compliment).
+function isNetCredit(legs: Leg[]): boolean {
+  const sellTotal = legs.filter((l) => l.action === "sell" && l.kind !== "stock").reduce((a, l) => a + l.premium, 0);
+  const buyTotal = legs.filter((l) => l.action === "buy" && l.kind !== "stock").reduce((a, l) => a + l.premium, 0);
+  return sellTotal >= buyTotal;
+}
+
+// How far out is "长期" for a sell-side strategy — 3 months or longer.
+// Standard options wisdom puts the theta-efficient sweet spot for selling
+// premium around 4-8 weeks (roughly 30-56 days); going out 3 months+
+// trades that efficiency for a longer, more exposed holding period. The
+// one shape this warning is unconditional for is a naked short call
+// (sold, no stock underneath it) — its risk is theoretically unlimited
+// on the upside, and a longer window is strictly more time for that tail
+// risk to matter, regardless of how attractive the current IV looks.
+const LONG_DURATION_WINDOWS = new Set(["3m", "6m", "1y"]);
+type DurationWarning = "naked" | "highIvOk" | "preferShort" | null;
+
+function computeDurationWarning(windowId: string, presetName: string, netCredit: boolean, ivHvRatio: number | null): DurationWarning {
+  if (!netCredit || !LONG_DURATION_WINDOWS.has(windowId)) return null;
+  if (presetName === "裸卖 Call") return "naked";
+  if (ivHvRatio !== null && ivHvRatio >= RICH_THRESHOLD) return "highIvOk";
+  return "preferShort";
+}
+
 export default function ScenarioSelectorPage({ onBack, onUseCandidate, persisted, onPersist }: Props) {
   const { t, lang } = useI18n();
   const [symbol, setSymbol] = useState(persisted?.symbol ?? "");
@@ -75,12 +111,28 @@ export default function ScenarioSelectorPage({ onBack, onUseCandidate, persisted
   // Defaults every card to "neutral" the first time it's seen; carries
   // forward the person's own choice on a persist/restore round trip.
   const [selectedTiers, setSelectedTiers] = useState<Record<string, Tier>>(persisted?.selectedTiers ?? {});
+  // The "方向" tab (bucket-based direction picker) is the only one with
+  // real content right now — "财报" (earnings) and "待定" (TBD) are
+  // placeholders for templates on the roadmap (see CLAUDE.md's scenario-
+  // template list) that aren't built yet. Structuring the tabs now, even
+  // with two of them empty, means adding a real earnings template later
+  // is "fill in this tab's content" rather than a page redesign.
+  const [activeTab, setActiveTab] = useState<"direction" | "earnings" | "pending">("direction");
   // Keyed by preset name — "use this" is only ever clicked on one card at
   // a time in practice, but keying by name (rather than one shared bool)
   // means a second click on a DIFFERENT card while the first is still
   // fetching doesn't show a stale/wrong loading state on the wrong button.
   const [usingCandidateFor, setUsingCandidateFor] = useState<string | null>(null);
   const [useCandidateError, setUseCandidateError] = useState<string | null>(null);
+  // A standalone substitute for true IV Rank/Percentile — see the chat
+  // discussion on why: those need a year of accumulated history we don't
+  // have yet, but comparing today's real IV to recent realized volatility
+  // (HV) is usable right now with data we can already fetch. This does
+  // NOT change which strategy gets recommended (the SCENARIO_RULES table
+  // stays exactly as Xue defined it) — it only adds an advisory note next
+  // to the existing recommendation when the current IV/HV gap suggests
+  // the opposite side (buy vs sell) might be worth a look too.
+  const [ivHvNote, setIvHvNote] = useState<IvHvNote | null>(null);
 
   const days = TIME_WINDOWS.find((w) => w.id === windowId)?.days ?? 30;
 
@@ -146,7 +198,29 @@ export default function ScenarioSelectorPage({ onBack, onUseCandidate, persisted
       for (const r of recs) if (!next[r.preset.name.zh]) next[r.preset.name.zh] = "neutral";
       return next;
     });
-  }, [spot, ivPct, days, windowId, selectedBuckets]);
+
+    // Fire-and-forget: fetch real IV (via one ATM-ish quote) and recent
+    // HV in the background, then compute the advisory note once both
+    // land. Not blocking the recommendation display itself — the note is
+    // supplementary context, not something worth making the person wait
+    // on, and if either fetch fails (illiquid name, thin chain) the note
+    // just doesn't appear rather than erroring the whole generate flow.
+    setIvHvNote(null);
+    const sym = symbol.trim();
+    (async () => {
+      try {
+        const [premiumResult, closes] = await Promise.all([
+          fetchLegPremium(sym, "call", spot, days),
+          fetchHistoricalCloses(sym),
+        ]);
+        const realIv = impliedVol(spot, premiumResult.actualStrike, premiumResult.actualDte, premiumResult.premium, "call");
+        const hv = computeHV(closes, 30);
+        setIvHvNote(computeIvHvNote(realIv, hv));
+      } catch {
+        setIvHvNote(null);
+      }
+    })();
+  }, [spot, ivPct, days, windowId, selectedBuckets, symbol]);
 
   // Everything up to this point priced legs theoretically (Black-Scholes
   // off the bucket-boundary strikes) — good enough for comparing which
@@ -199,7 +273,34 @@ export default function ScenarioSelectorPage({ onBack, onUseCandidate, persisted
         <h1 className="text-sm font-bold text-slate-100">{t("scenario.title")}</h1>
       </header>
 
+      <div className="flex shrink-0 gap-1 border-b border-slate-800 bg-slate-900/40 px-4 pt-2">
+        {(["direction", "earnings", "pending"] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`rounded-t-lg border-x border-t px-4 py-2 text-[12px] font-semibold transition ${
+              activeTab === tab
+                ? "border-slate-700 bg-slate-950 text-violet-300"
+                : "border-transparent text-slate-500 hover:text-slate-300"
+            }`}
+          >
+            {t(`scenario.tab.${tab}`)}
+          </button>
+        ))}
+      </div>
+
       <div className="flex-1 overflow-y-auto px-4 py-4">
+        {activeTab === "earnings" && (
+          <div className="mx-auto max-w-2xl rounded-lg border border-slate-800 bg-slate-900/40 p-8 text-center text-sm text-slate-500">
+            {t("scenario.tab.comingSoon")}
+          </div>
+        )}
+        {activeTab === "pending" && (
+          <div className="mx-auto max-w-2xl rounded-lg border border-slate-800 bg-slate-900/40 p-8 text-center text-sm text-slate-500">
+            {t("scenario.tab.comingSoon")}
+          </div>
+        )}
+        {activeTab === "direction" && (
         <div className="mx-auto max-w-2xl space-y-5">
           {/* symbol */}
           <div>
@@ -359,6 +460,57 @@ export default function ScenarioSelectorPage({ onBack, onUseCandidate, persisted
                         </button>
                       </div>
 
+                      {(() => {
+                        const netCredit = isNetCredit(r.preset.legs());
+                        // "stillRich" only has a meaningful message for
+                        // sell-side cards (it's specifically "the ratio
+                        // looks low but absolute IV is still rich, sell
+                        // premium is fine") — a buy-side card has no
+                        // natural counterpart reading of that state, so it
+                        // stays silent there rather than forcing an
+                        // irrelevant note onto it.
+                        const warnApplies = !!ivHvNote && ((netCredit && ivHvNote.bias === "buyCheap") || (!netCredit && ivHvNote.bias === "sellRich"));
+                        const reassureApplies = !!ivHvNote && netCredit && ivHvNote.bias === "stillRich";
+                        // Decoupled from ivHvNote's success on purpose — the
+                        // duration guidance itself doesn't strictly need the
+                        // IV/HV comparison to be meaningful (only its
+                        // "highIvOk" softened wording does); if that fetch
+                        // failed, ratio is just null and the function falls
+                        // back to the safe default wording rather than the
+                        // whole warning silently disappearing.
+                        const durationWarning = computeDurationWarning(windowId, r.preset.name.zh, netCredit, ivHvNote?.ratio ?? null);
+                        return (
+                          <>
+                            {ivHvNote && (
+                              // Always shown once loaded — even a "nothing
+                              // notable" ratio is useful context, and only
+                              // showing this when a threshold trips reads
+                              // as "broken" the rest of the time (testing
+                              // showed every early attempt landing in the
+                              // normal range and showing nothing at all).
+                              <div className="mb-1.5 text-[9px] text-slate-500">
+                                {t("scenario.ivHvContext", { iv: (ivHvNote.iv * 100).toFixed(0), hv: (ivHvNote.hv * 100).toFixed(0), ratio: (ivHvNote.ratio * 100).toFixed(0) })}
+                              </div>
+                            )}
+                            {warnApplies && ivHvNote && (
+                              <div className="mb-2 rounded-md border border-amber-700/40 bg-amber-950/20 px-2.5 py-1.5 text-[10px] leading-relaxed text-amber-300">
+                                {t(netCredit ? "scenario.ivHvNoteSell" : "scenario.ivHvNoteBuy", { ratio: (ivHvNote.ratio * 100).toFixed(0) })}
+                              </div>
+                            )}
+                            {reassureApplies && ivHvNote && (
+                              <div className="mb-2 rounded-md border border-emerald-700/40 bg-emerald-950/20 px-2.5 py-1.5 text-[10px] leading-relaxed text-emerald-300">
+                                {t("scenario.ivHvNoteStillRich", { ratio: (ivHvNote.ratio * 100).toFixed(0), iv: (ivHvNote.iv * 100).toFixed(0) })}
+                              </div>
+                            )}
+                            {durationWarning && (
+                              <div className="mb-2 rounded-md border border-sky-700/40 bg-sky-950/20 px-2.5 py-1.5 text-[10px] leading-relaxed text-sky-300">
+                                {t(`scenario.durationWarning.${durationWarning}`)}
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
+
                       {/* tier tabs — 保守/中性/激进 */}
                       <div className="mb-2 flex gap-1 rounded-md border border-slate-800 bg-slate-950/40 p-0.5">
                         {TIER_ORDER.map((tk) => (
@@ -412,6 +564,7 @@ export default function ScenarioSelectorPage({ onBack, onUseCandidate, persisted
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   );
