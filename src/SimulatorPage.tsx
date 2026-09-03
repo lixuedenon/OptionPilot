@@ -1,9 +1,13 @@
 // src/SimulatorPage.tsx
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Plus, RefreshCw, X, Trash2, History, Search, Undo2, TrendingUp, TrendingDown, Minus, ChevronDown, MoreVertical, CalendarClock, Shield, Layers, Ban, Wallet, DollarSign, Compass, RotateCcw } from "lucide-react";
+import { ArrowLeft, Plus, RefreshCw, X, Trash2, History, Search, Undo2, TrendingUp, TrendingDown, Minus, ChevronDown, MoreVertical, CalendarClock, Shield, Layers, Ban, Wallet, DollarSign, Compass, RotateCcw, Target, LineChart } from "lucide-react";
 import type { Leg } from "@/lib/types";
-import { dateFromDte } from "@/lib/dateUtils";
+import type { CurvePosition } from "@/lib/pricing";
+import { probabilityOfProfit } from "@/lib/pricing";
+import { dateFromDte, formatDateInput } from "@/lib/dateUtils";
+import PayoffChart from "@/components/PayoffChart";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import {
   type SimAccount,
   type SimPosition,
@@ -15,7 +19,10 @@ import {
   deleteSimPosition,
   computeMarkValue,
   recordSnapshot,
-  loadSnapshotsForPosition,
+  backfillSnapshots,
+  analyzeBestExit,
+  type ExitAnalysis,
+  daysBetweenLocalDates,
   adjustSimPosition,
   resetSimAccount,
 } from "@/lib/simAccount";
@@ -53,6 +60,36 @@ function daysSince(ts: number): number {
   return Math.floor((Date.now() - ts) / 86400000);
 }
 
+// A position's legs store `dte` as it was AT OPENING (frozen — same
+// convention analysis mode itself uses, see App.tsx's handleOpenStrategy),
+// so "days left today" has to subtract however many days have elapsed
+// since this position actually opened. Uses the nearest (smallest) leg
+// DTE among active, non-stock legs — the leg closest to expiry is the one
+// that matters for "how much runway does this combo have left."
+function nearestDteRemaining(p: SimPosition): number | null {
+  const elapsed = daysSince(p.openedAt);
+  const candidates = p.legs
+    .filter((l) => l.kind !== "stock" && !l.disabled)
+    .map((l) => Math.max(0, Math.round(l.dte - elapsed)));
+  return candidates.length > 0 ? Math.min(...candidates) : null;
+}
+
+// The Timeline chart's full x-axis span, in days: for a closed position,
+// its actual open→close lifespan (fixed, known); for a still-open one, its
+// nearest-to-expiry leg's ORIGINAL dte at opening (frozen — same value
+// nearestDteRemaining above measures elapsed time against), since that's
+// the natural horizon this trade is heading toward. Scaling the x-axis
+// against this rather than "one slot per snapshot so far" is what makes the
+// line actually grow day by day instead of always stretching edge-to-edge
+// on however few points happen to exist right now.
+function plannedSpanDays(p: SimPosition): number {
+  if (p.status === "closed" && p.closedAt) {
+    return Math.max(1, daysBetweenLocalDates(formatDateInput(p.openedAt), formatDateInput(p.closedAt)));
+  }
+  const dtes = p.legs.filter((l) => l.kind !== "stock" && !l.disabled).map((l) => l.dte);
+  return dtes.length > 0 ? Math.max(1, Math.round(Math.min(...dtes))) : 1;
+}
+
 function fmt(n: number): string {
   return (n >= 0 ? "+" : "") + n.toFixed(2);
 }
@@ -82,22 +119,140 @@ function optionCode(symbol: string, dte: number, type: "call" | "put", strike: n
   return `${symbol.toUpperCase()}${yy}${mm}${dd}${type === "call" ? "C" : "P"}${strike}`;
 }
 
-// "Regret mode B" — shows the daily mark-to-market snapshots collected so
+// "复盘" (post-trade review, formerly an unlabeled "trend" icon that didn't
+// say what it did) — shows the daily mark-to-market snapshots collected so
 // far (see recordSnapshot in simAccount.ts) and highlights the single best
 // day to have closed, compared against either the position's current
 // unrealized P&L (still open) or its actual realized P&L (already closed).
-// Can only ever cover days since snapshotting started for that position —
-// there's no way to backfill history from before that.
+// Days the person never actually refreshed on are filled in by
+// backfillSnapshots() from that day's historical (open+close)/2 average
+// instead of being left blank — those entries carry `estimated: true` and
+// are rendered with a dashed border + "(估)" tag below so they read as a
+// reconstruction, not an observed price (see simAccount.ts for why this
+// can only ever ESTIMATE, never show a real historical option fill).
+// Layout: the one-line verdict ("you're near/above/below the best point on
+// record") is the headline — that's the actual insight this feature exists
+// to deliver. Right under it, a second line explains WHY when there's a
+// structural (curve-shape) reason to point to — see analyzeBestExit /
+// classifySpotOnCurve — since a bare "this day was better" number doesn't
+// tell the person whether that day was a fluke or a genuinely well-timed
+// exit. Below that, a small line chart (not a wall of day-boxes — those
+// stopped scaling once backfill could put 40+ days on screen for an older
+// position) plots every day's P&L; hovering anywhere on it reads off the
+// nearest day's date and value, so full detail stays reachable without the
+// panel's footprint growing with the position's age.
+function structuralReasonKey(structural: CurvePosition | null): string | null {
+  if (structural === "near-peak") return "sim.reasonNearPeak";
+  if (structural === "beyond-breakeven") return "sim.reasonBeyondBreakeven";
+  return null; // "in-zone" — no strong structural signal worth calling out
+}
+
+const CHART_W = 280;
+const CHART_H = 56;
+const CHART_PAD = 4;
+
+function TimelineChart({
+  position,
+  snapshots,
+  bestDateISO,
+  t,
+}: {
+  position: SimPosition;
+  snapshots: PositionSnapshot[]; // must already be sorted chronologically
+  bestDateISO: string;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+}) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  const n = snapshots.length;
+  const values = snapshots.map((s) => s.unrealizedPnl);
+  const minV = Math.min(0, ...values);
+  const maxV = Math.max(0, ...values);
+  const span = maxV - minV || 1;
+
+  // x-axis is scaled by real elapsed CALENDAR days against the position's
+  // full planned span (see plannedSpanDays), not one evenly-spaced slot per
+  // snapshot — so the line only reaches as far as time actually has, and
+  // fills in the rest of the width day by day as more snapshots accumulate,
+  // instead of always stretching to fill the chart on whatever few points
+  // exist so far.
+  const openedISO = formatDateInput(position.openedAt);
+  const totalSpan = plannedSpanDays(position);
+  const xAt = (i: number) => {
+    const elapsed = daysBetweenLocalDates(openedISO, snapshots[i].dateISO);
+    const ratio = Math.max(0, Math.min(1, elapsed / totalSpan));
+    return CHART_PAD + ratio * (CHART_W - CHART_PAD * 2);
+  };
+  const yAt = (v: number) => CHART_H - CHART_PAD - ((v - minV) / span) * (CHART_H - CHART_PAD * 2);
+  const zeroY = yAt(0);
+
+  const pathD = snapshots.map((s, i) => `${i === 0 ? "M" : "L"} ${xAt(i).toFixed(1)} ${yAt(s.unrealizedPnl).toFixed(1)}`).join(" ");
+  const hovered = hoverIdx !== null ? snapshots[hoverIdx] : null;
+
+  return (
+    <div className="relative mt-1.5">
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${CHART_W} ${CHART_H}`}
+        className="w-full cursor-crosshair"
+        onMouseMove={(e) => {
+          if (!svgRef.current || n === 0) return;
+          const rect = svgRef.current.getBoundingClientRect();
+          const relX = ((e.clientX - rect.left) / rect.width) * CHART_W;
+          let nearest = 0;
+          let bestDist = Infinity;
+          for (let i = 0; i < n; i++) {
+            const d = Math.abs(xAt(i) - relX);
+            if (d < bestDist) { bestDist = d; nearest = i; }
+          }
+          setHoverIdx(nearest);
+        }}
+        onMouseLeave={() => setHoverIdx(null)}
+      >
+        <line x1={0} y1={zeroY} x2={CHART_W} y2={zeroY} className="stroke-slate-700" strokeDasharray="2,2" strokeWidth={1} />
+        <path d={pathD} fill="none" className="stroke-sky-500" strokeWidth={1.2} />
+        {hoverIdx !== null && (
+          <line x1={xAt(hoverIdx)} y1={0} x2={xAt(hoverIdx)} y2={CHART_H} className="stroke-slate-600" strokeWidth={0.5} />
+        )}
+        {snapshots.map((s, i) => (
+          <circle
+            key={s.dateISO}
+            cx={xAt(i)}
+            cy={yAt(s.unrealizedPnl)}
+            r={s.dateISO === bestDateISO ? 2.6 : hoverIdx === i ? 2.2 : 1.2}
+            className={s.dateISO === bestDateISO ? "fill-amber-400" : "fill-sky-400"}
+            fillOpacity={s.estimated && s.dateISO !== bestDateISO ? 0.5 : 1}
+          />
+        ))}
+      </svg>
+      {hovered && hoverIdx !== null && (
+        <div
+          className="pointer-events-none absolute top-0 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[9px] text-slate-300 shadow-2xl"
+          style={{ left: `${(xAt(hoverIdx) / CHART_W) * 100}%` }}
+        >
+          <div className="font-mono">{hovered.dateISO}{hovered.estimated ? <span className="text-slate-600"> {t("sim.estimatedTag")}</span> : null}</div>
+          <div className={pnlColorClass(hovered.unrealizedPnl)}>{fmt(hovered.unrealizedPnl)}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TimelinePanel({
+  position,
   snapshots,
   loading,
   currentPnl,
+  currentSpot,
   currentLabel,
   t,
 }: {
+  position: SimPosition;
   snapshots: PositionSnapshot[] | undefined;
   loading: boolean;
   currentPnl: number | null;
+  currentSpot: number | null;
   currentLabel: string;
   t: (key: string, vars?: Record<string, string | number>) => string;
 }) {
@@ -108,35 +263,92 @@ function TimelinePanel({
     return <div className="border-t border-slate-800/60 bg-slate-950/40 px-3 py-2 text-[10px] text-slate-600">{t("sim.noSnapshots")}</div>;
   }
 
-  const best = snapshots.reduce((a, b) => (b.unrealizedPnl > a.unrealizedPnl ? b : a), snapshots[0]);
+  const analysis = analyzeBestExit(position, snapshots, currentSpot) as ExitAnalysis;
+  const best = analysis.bestSnapshot;
   const diffFromCurrent = currentPnl !== null ? best.unrealizedPnl - currentPnl : null;
+  // Explain whichever point the verdict is actually pointing at: the
+  // historical best day when it beat the comparison point, otherwise the
+  // comparison point (now, or the actual close) itself.
+  const reasonKey = diffFromCurrent !== null && diffFromCurrent > 0.01
+    ? structuralReasonKey(analysis.bestStructural)
+    : structuralReasonKey(analysis.compareStructural);
 
   return (
     <div className="border-t border-slate-800/60 bg-slate-950/40 px-3 py-2">
-      <div className="mb-1.5 flex flex-wrap gap-1">
-        {snapshots.map((s) => (
-          <div
-            key={s.dateISO}
-            className={`rounded px-1.5 py-1 text-[9px] tabular-nums ${
-              s.dateISO === best.dateISO
-                ? "border border-amber-500/50 bg-amber-950/30 text-amber-300"
-                : "border border-slate-800 bg-slate-900 text-slate-400"
-            }`}
-          >
-            <div>{s.dateISO}</div>
-            <div className={pnlColorClass(s.unrealizedPnl)}>{fmt(s.unrealizedPnl)}</div>
-          </div>
-        ))}
-      </div>
       {diffFromCurrent !== null && (
-        <p className="text-[10px] leading-relaxed text-amber-300">
-          {diffFromCurrent > 0.01
-            ? t("sim.bestPointWorse", { date: best.dateISO, pnl: fmt(best.unrealizedPnl), label: currentLabel, diff: fmt(diffFromCurrent) })
-            : diffFromCurrent < -0.01
-            ? t("sim.bestPointBetter", { label: currentLabel })
-            : t("sim.bestPointSame")}
-        </p>
+        <>
+          <p className="text-[10px] font-medium leading-relaxed text-amber-300">
+            {diffFromCurrent > 0.01
+              ? t("sim.bestPointWorse", { date: best.dateISO, pnl: fmt(best.unrealizedPnl), label: currentLabel, diff: fmt(diffFromCurrent) })
+              : diffFromCurrent < -0.01
+              ? t("sim.bestPointBetter", { label: currentLabel })
+              : t("sim.bestPointSame")}
+            {best.estimated ? <span className="font-normal text-slate-500"> {t("sim.estimatedBestHint")}</span> : null}
+          </p>
+          {reasonKey && <p className="mt-0.5 text-[9px] leading-relaxed text-slate-500">{t(reasonKey)}</p>}
+        </>
       )}
+      <TimelineChart position={position} snapshots={snapshots} bestDateISO={best.dateISO} t={t} />
+    </div>
+  );
+}
+
+// "对比" — the SAME PayoffChart component analysis mode's own tracking/
+// compare view uses (see App.tsx's handleTrack), fed directly from this
+// SimPosition's own fields instead of routing through SavedStrategy (which
+// has no closed-state fields, so it isn't actually the right shape for a
+// sim position — see the design discussion this was built from). `legs`/
+// `openingLegs` are always the position's OPENING legs (the strategy's
+// shape never changes, only where spot/time sit on it does); `trackedLegs`/
+// `trackedSpot` are "now" for an open position or "at close" for a closed
+// one — the caller resolves which before this renders, so this component
+// only draws, it doesn't decide.
+function ComparePanel({
+  position,
+  trackedLegs,
+  trackedSpot,
+  t,
+}: {
+  position: SimPosition;
+  trackedLegs: Leg[] | null; // null = not enough data yet (open position, no live refresh this session)
+  trackedSpot: number | null;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+}) {
+  const openingLegs = useMemo(() => position.legs.filter((l) => !l.disabled), [position.legs]);
+  const { pop, breakevens } = useMemo(() => probabilityOfProfit(openingLegs, position.spot), [openingLegs, position.spot]);
+
+  if (!trackedLegs || trackedSpot === null) {
+    return (
+      <div className="border-t border-slate-800/60 bg-slate-950/40 px-3 py-4 text-center text-[10px] text-slate-600">
+        {t("sim.compareNeedsRefresh")}
+      </div>
+    );
+  }
+
+  const activeTracked = trackedLegs.filter((l) => !l.disabled);
+  const markValue = computeMarkValue(activeTracked, trackedSpot);
+  const netChange = markValue - position.costBasis;
+
+  return (
+    <div className="border-t border-slate-800/60 bg-slate-950/40 px-3 py-2">
+      <div className="h-64">
+        <ErrorBoundary>
+          <PayoffChart
+            legs={openingLegs}
+            spot={position.spot}
+            shifts={{ dS: 0, dT: 0, dV: 0 }}
+            symbol={position.symbol}
+            pop={pop}
+            breakevens={breakevens}
+            trackedLegs={activeTracked}
+            trackedSpot={trackedSpot}
+            openingLegs={openingLegs}
+            compareMode
+            netValue={markValue}
+            netChange={netChange}
+          />
+        </ErrorBoundary>
+      </div>
     </div>
   );
 }
@@ -260,6 +472,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
   const [regrets, setRegrets] = useState<Record<string, RegretState>>({});
   const [showHistory, setShowHistory] = useState(false);
   const [expandedTimeline, setExpandedTimeline] = useState<Record<string, boolean>>({});
+  const [expandedCompare, setExpandedCompare] = useState<Record<string, boolean>>({});
   const [timelines, setTimelines] = useState<Record<string, PositionSnapshot[]>>({});
   const [timelineLoading, setTimelineLoading] = useState<Record<string, boolean>>({});
   const [rollTarget, setRollTarget] = useState<{ pos: SimPosition; leg: Leg; spot: number } | null>(null);
@@ -365,15 +578,28 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
     });
   };
 
-  const toggleTimeline = useCallback(async (posId: string) => {
-    setExpandedTimeline((prev) => ({ ...prev, [posId]: !prev[posId] }));
-    if (!timelines[posId]) {
-      setTimelineLoading((prev) => ({ ...prev, [posId]: true }));
-      const snaps = await loadSnapshotsForPosition(posId);
-      setTimelines((prev) => ({ ...prev, [posId]: snaps }));
-      setTimelineLoading((prev) => ({ ...prev, [posId]: false }));
+  // Loads (and, the first time a position's panel is opened, backfills)
+  // the Timeline. backfillSnapshots needs the full position — not just its
+  // id — to know its symbol/legs/opening date/status for reconstructing
+  // estimated days from historical (open+close)/2 averages; see
+  // simAccount.ts for what "estimated" means and why today (or a closed
+  // position's close date) is deliberately left out of that reconstruction.
+  const toggleTimeline = useCallback(async (pos: SimPosition) => {
+    setExpandedTimeline((prev) => ({ ...prev, [pos.id]: !prev[pos.id] }));
+    if (!timelines[pos.id]) {
+      setTimelineLoading((prev) => ({ ...prev, [pos.id]: true }));
+      const snaps = await backfillSnapshots(pos);
+      setTimelines((prev) => ({ ...prev, [pos.id]: snaps }));
+      setTimelineLoading((prev) => ({ ...prev, [pos.id]: false }));
     }
   }, [timelines]);
+
+  // No async work here (unlike toggleTimeline) — ComparePanel reads
+  // straight off whatever's already in `marks`/the position's own closed-
+  // state fields, it doesn't fetch or backfill anything new.
+  const toggleCompare = (id: string) => {
+    setExpandedCompare((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
 
   // Fetch a live price for one leg before opening Roll/Protect (they need a
   // realistic current premium to base their suggestions on).
@@ -1008,12 +1234,14 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                         const markValue = mark?.legs && mark.spot !== null ? computeMarkValue(mark.legs, mark.spot) : null;
                         const unrealized = markValue !== null ? markValue - p.costBasis : null;
                         const strategyName = matchStrategy(p.legs, p.spot, []);
+                        const dteLeft = nearestDteRemaining(p);
                         return (
                           <div key={p.id}>
                             <div className="flex items-center justify-between gap-2 border-t border-slate-800/60 bg-slate-900/40 px-3 py-1.5">
-                              <div className="flex items-center gap-2 text-[9px] text-slate-500">
+                              <div className="flex flex-wrap items-center gap-2 text-[9px] text-slate-500">
                                 {strategyName && <StrategyBadge name={strategyName} customPresets={[]} />}
-                                <span>{daysSince(p.openedAt)} {t("compare.days")}</span>
+                                <span title={`${daysSince(p.openedAt)} ${t("compare.days")}`}>{t("sim.openedOn", { date: formatDateInput(p.openedAt) })}</span>
+                                {dteLeft !== null && <span>{t("sim.dteLeft", { days: dteLeft })}</span>}
                                 <span className="text-slate-500">{t("sim.costBasis")} {fmt(p.costBasis)}</span>
                                 {mark?.loading && (
                                   <span className="flex items-center gap-1 text-sky-400">
@@ -1030,12 +1258,22 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                               </div>
                               <div className="flex items-center gap-1">
                                 <button
-                                  onClick={() => toggleTimeline(p.id)}
-                                  title={t("sim.viewTimeline")}
+                                  onClick={() => toggleTimeline(p)}
+                                  title={t("sim.reviewHint")}
                                   className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-amber-400 transition hover:border-amber-500/50"
                                 >
-                                  <TrendingUp size={10} />
+                                  <Target size={10} />
+                                  <span>{t("sim.reviewLabel")}</span>
                                   <ChevronDown size={9} className={`transition-transform ${expandedTimeline[p.id] ? "rotate-180" : ""}`} />
+                                </button>
+                                <button
+                                  onClick={() => toggleCompare(p.id)}
+                                  title={t("sim.compareHint")}
+                                  className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-sky-400 transition hover:border-sky-500/50"
+                                >
+                                  <LineChart size={10} />
+                                  <span>{t("sim.compareLabel")}</span>
+                                  <ChevronDown size={9} className={`transition-transform ${expandedCompare[p.id] ? "rotate-180" : ""}`} />
                                 </button>
                                 <button
                                   onClick={() => handleClose(p)}
@@ -1056,10 +1294,20 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                             </div>
                             {expandedTimeline[p.id] && (
                               <TimelinePanel
+                                position={p}
                                 snapshots={timelines[p.id]}
                                 loading={!!timelineLoading[p.id]}
                                 currentPnl={unrealized}
+                                currentSpot={mark?.spot ?? null}
                                 currentLabel={t("sim.currentLabel")}
+                                t={t}
+                              />
+                            )}
+                            {expandedCompare[p.id] && (
+                              <ComparePanel
+                                position={p}
+                                trackedLegs={mark?.legs ?? null}
+                                trackedSpot={mark?.spot ?? null}
                                 t={t}
                               />
                             )}
@@ -1107,12 +1355,22 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                               {fmt(p.realizedPnl ?? 0)}
                             </span>
                             <button
-                              onClick={() => toggleTimeline(p.id)}
-                              title={t("sim.viewTimeline")}
+                              onClick={() => toggleTimeline(p)}
+                              title={t("sim.reviewHint")}
                               className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-amber-400 transition hover:border-amber-500/50"
                             >
-                              <TrendingUp size={10} />
+                              <Target size={10} />
+                              <span>{t("sim.reviewLabel")}</span>
                               <ChevronDown size={9} className={`transition-transform ${expandedTimeline[p.id] ? "rotate-180" : ""}`} />
+                            </button>
+                            <button
+                              onClick={() => toggleCompare(p.id)}
+                              title={t("sim.compareHint")}
+                              className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-sky-400 transition hover:border-sky-500/50"
+                            >
+                              <LineChart size={10} />
+                              <span>{t("sim.compareLabel")}</span>
+                              <ChevronDown size={9} className={`transition-transform ${expandedCompare[p.id] ? "rotate-180" : ""}`} />
                             </button>
                             <button
                               onClick={() => refreshRegret(p)}
@@ -1144,10 +1402,22 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                         {expandedTimeline[p.id] && (
                           <div className="-mx-3 -mb-2 mt-2">
                             <TimelinePanel
+                              position={p}
                               snapshots={timelines[p.id]}
                               loading={!!timelineLoading[p.id]}
                               currentPnl={p.realizedPnl ?? null}
+                              currentSpot={p.closedSpot ?? null}
                               currentLabel={t("sim.actualCloseLabel")}
+                              t={t}
+                            />
+                          </div>
+                        )}
+                        {expandedCompare[p.id] && (
+                          <div className="-mx-3 -mb-2 mt-2">
+                            <ComparePanel
+                              position={p}
+                              trackedLegs={p.closedLegs ?? null}
+                              trackedSpot={p.closedSpot ?? null}
                               t={t}
                             />
                           </div>

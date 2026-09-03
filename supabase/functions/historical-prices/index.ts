@@ -10,6 +10,13 @@ const corsHeaders = {
 interface HistoricalPricesResult {
   symbol: string;
   closes: number[]; // oldest first
+  // opens/timestamps are index-aligned with closes (same filtered bar set —
+  // see the alignment note below), added for the sim account's Timeline
+  // "estimate missing days" backfill (SimulatorPage.tsx / simAccount.ts),
+  // which needs each day's (open+close)/2 as a stand-in spot price, not
+  // just the closes historicalVolatility.ts already consumed this for.
+  opens: number[];
+  timestamps: number[]; // unix seconds (UTC), Yahoo's per-bar session timestamp
   source: string;
 }
 
@@ -59,10 +66,28 @@ Deno.serve(async (req: Request) => {
     }
 
     const rawCloses: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
-    // Drop nulls (Yahoo sometimes returns a null bar for a partial/no-trade
-    // day) rather than letting them corrupt the log-return calculation on
-    // the client — a gap in the series is fine, a null value inside it isn't.
-    const closes = rawCloses.filter((c): c is number => c != null && c > 0);
+    const rawOpens: (number | null)[] = result.indicators?.quote?.[0]?.open ?? [];
+    const rawTimestamps: (number | null)[] = result.timestamp ?? [];
+
+    // Build the filtered bar set from indices where BOTH open and close are
+    // valid, keeping closes/opens/timestamps index-aligned with each other.
+    // (Previously this only filtered `closes` on its own — fine when that
+    // was the only array returned, but that would silently desync opens/
+    // timestamps against it once those were added, since a null bar shifts
+    // every array's indices differently unless they're filtered together.)
+    const closes: number[] = [];
+    const opens: number[] = [];
+    const timestamps: number[] = [];
+    for (let i = 0; i < rawCloses.length; i++) {
+      const c = rawCloses[i];
+      const o = rawOpens[i];
+      const ts = rawTimestamps[i];
+      if (c != null && c > 0 && o != null && o > 0 && ts != null) {
+        closes.push(c);
+        opens.push(o);
+        timestamps.push(ts);
+      }
+    }
 
     if (closes.length < 5) {
       return new Response(
@@ -74,6 +99,8 @@ Deno.serve(async (req: Request) => {
     const out: HistoricalPricesResult = {
       symbol: symbol.toUpperCase(),
       closes,
+      opens,
+      timestamps,
       source: "yahoo-finance",
     };
 

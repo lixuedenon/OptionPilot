@@ -198,6 +198,33 @@ export const PRESET_GROUPS: PresetGroup[] = [
         ],
       },
       {
+        // Distinct from both 玉蜥蜴 (whose SOLD legs sit at two different
+        // strikes, not a true ATM straddle) and 破翅蝶式 (a single-type,
+        // 3-strike call-only structure) — this is the specific shape a
+        // real iron butterfly takes when its two protection wings can't
+        // be symmetric: both short legs still share ONE strike (a true
+        // ATM straddle sold), but the two long protection legs sit at
+        // different distances from it. This is exactly what the earnings
+        // IV-crash strategy's mid/far groups look like once real listed
+        // strikes replace the illustrative ±% targets (their sold legs
+        // are always the same ATM strike; their two wings only come out
+        // symmetric by coincidence) — caught because matchStrategy had no
+        // preset to match that real shape against and so labeled several
+        // real earnings positions as unrecognized instead of correctly
+        // calling them out as asymmetric.
+        name: { zh: "不对称铁蝶", en: "Asymmetric Iron Butterfly" },
+        desc: { zh: "卖出同一个行权价的 ATM Call+Put，两侧保护翼宽度不对称，跟铁蝶同源但两翼不等距。", en: "Sell ATM call+put at the SAME strike; the two protective wings sit at different distances — same family as Iron Butterfly, just uneven wings." },
+        market: { zh: "中性，但对某一侧的极端走势稍微多一点容忍度。", en: "Neutral, with slightly more tolerance for a move on one side than the other." },
+        stocks: { zh: "大盘指数ETF、财报后趋于稳定但两侧风险不对等的个股。", en: "Index ETFs, stocks stabilizing post-earnings with uneven tail risk on each side." },
+        direction: "中性",
+        legs: () => [
+          leg({ action: "buy", type: "put", strike: 88, premium: 0.4 }),
+          leg({ action: "sell", type: "put", strike: 100, premium: 4 }),
+          leg({ action: "sell", type: "call", strike: 100, premium: 4 }),
+          leg({ action: "buy", type: "call", strike: 107, premium: 0.8 }),
+        ],
+      },
+      {
         name: { zh: "买入铁蝶", en: "Long Iron Butterfly" },
         desc: { zh: "买入 ATM Call + Put，同时卖出更远 OTM Call + Put 融资，为大幅波动支付权利金，是铁蝶策略的相反方向。", en: "Buy ATM straddle + sell OTM straddle to offset cost; pay for large move, opposite of iron butterfly." },
         market: { zh: "预期事件驱动大幅波动，但不确定方向。", en: "Event-driven, expecting large move but unsure direction." },

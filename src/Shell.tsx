@@ -76,7 +76,7 @@ export default function Shell() {
   // it a second time from the simulator's "New Position" screen. If there's
   // no simulated account yet, send the person to the simulator instead of
   // silently failing — its own onboarding screen handles setting one up.
-  const handleAddToSimAccount = async (payload: { symbol: string; legs: Leg[]; spot: number }) => {
+  const handleAddToSimAccount = async (payload: { symbol: string; legs: Leg[]; spot: number; openingAt?: number }) => {
     const account = await loadSimAccount();
     if (!account) {
       goSimulator();

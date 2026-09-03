@@ -25,6 +25,7 @@ interface Props {
   legToolbar: ReactNode;
 
   spot: number;
+  openingAt: number;
   activeLegs: Leg[];
   effectiveTrackedSpot: number;
   activeTrackedLegs: Leg[] | null;
@@ -53,7 +54,7 @@ interface Props {
   onToggleLegSelection: (id: string) => void;
 
   simOrigin?: boolean;
-  onConfirmSimOpen?: (payload: { symbol: string; legs: Leg[]; spot: number }) => void;
+  onConfirmSimOpen?: (payload: { symbol: string; legs: Leg[]; spot: number; openingAt: number }) => void;
 }
 
 export default function LegListSection({
@@ -63,6 +64,7 @@ export default function LegListSection({
   onUpdateSnapshotTime,
   legToolbar,
   spot,
+  openingAt,
   activeLegs,
   effectiveTrackedSpot,
   activeTrackedLegs,
@@ -247,7 +249,7 @@ export default function LegListSection({
       {simOrigin && onConfirmSimOpen && (
         <div className="shrink-0 px-2 pb-2">
           <button
-            onClick={() => onConfirmSimOpen({ symbol, legs: activeLegs, spot })}
+            onClick={() => onConfirmSimOpen({ symbol, legs: activeLegs, spot, openingAt })}
             disabled={activeLegs.length === 0 || spot <= 0}
             className="flex w-full items-center justify-center gap-1.5 rounded-md border border-emerald-500 bg-emerald-600 py-2 text-[12px] font-bold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
           >

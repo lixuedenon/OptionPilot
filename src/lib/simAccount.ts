@@ -1,6 +1,17 @@
 // src/lib/simAccount.ts
 import type { Leg } from "./types";
 import { computeComboMargin, type MarginNote } from "./margin";
+import { blackScholes } from "./bs";
+import { impliedVol, classifySpotOnCurve, type CurvePosition } from "./pricing";
+import { formatDateInput, parseDateInput } from "./dateUtils";
+
+const SIM_RATE = 0.05; // matches pricing.ts's RATE — kept as a separate
+// local const rather than importing pricing.ts's private RATE (not
+// exported) so the backfill estimate below uses the same risk-free rate
+// convention as the rest of the app's option pricing.
+
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export interface SimPosition {
   id: string;
@@ -93,6 +104,13 @@ export interface PositionSnapshot {
   legs: Leg[]; // legs with premium refreshed to that moment's market price
   markValue: number;
   unrealizedPnl: number;
+  // true when this entry was reconstructed by backfillSnapshots() from a
+  // historical daily (open+close)/2 average plus theoretical Black-Scholes
+  // repricing, rather than recorded from a real market refresh the person
+  // actually did (recordSnapshot()). The Timeline UI must show these
+  // differently — they're a same-order-of-magnitude ESTIMATE (flat vol
+  // held from opening, no real bid/ask), not an actual observed price.
+  estimated?: boolean;
 }
 
 const SNAPSHOTS_KEY = "optionpilot_sim_snapshots";
@@ -157,6 +175,161 @@ export async function loadSnapshotsForPosition(positionId: string): Promise<Posi
 export async function deleteSnapshotsForPosition(positionId: string): Promise<void> {
   const snapshots = loadSnapshotsFromStorage().filter((s) => s.positionId !== positionId);
   saveSnapshotsToStorage(snapshots);
+}
+
+interface HistoricalBar {
+  dateISO: string; // local calendar day — same convention as formatDateInput/todayLocalISO
+  avgPrice: number; // (open + close) / 2 for that trading day
+}
+
+// Pulls the symbol's ~2mo daily bar history from the historical-prices Edge
+// Function and reduces it to one (date, average-price) pair per trading
+// day. A bar missing open/timestamp is dropped rather than guessed at —
+// see the Edge Function's own alignment note for why those three arrays
+// are filtered together there.
+async function fetchHistoricalBars(symbol: string): Promise<HistoricalBar[]> {
+  const url = `${SUPABASE_URL}/functions/v1/historical-prices?symbol=${encodeURIComponent(symbol)}`;
+  const resp = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      "Content-Type": "application/json",
+    },
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body.error || `Request failed (${resp.status})`);
+  }
+  const data = await resp.json();
+  const closes: number[] = Array.isArray(data.closes) ? data.closes : [];
+  const opens: number[] = Array.isArray(data.opens) ? data.opens : [];
+  const timestamps: number[] = Array.isArray(data.timestamps) ? data.timestamps : [];
+
+  const bars: HistoricalBar[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (opens[i] == null || timestamps[i] == null) continue;
+    bars.push({
+      dateISO: formatDateInput(timestamps[i] * 1000),
+      avgPrice: (opens[i] + closes[i]) / 2,
+    });
+  }
+  return bars;
+}
+
+export function daysBetweenLocalDates(fromISO: string, toISO: string): number {
+  const from = parseDateInput(fromISO);
+  const to = parseDateInput(toISO);
+  if (from == null || to == null) return 0;
+  return Math.round((to - from) / 86400000);
+}
+
+// Theoretical repricing of a position's legs at a historical point in time,
+// using the IV implied at the position's ACTUAL opening premiums (held
+// flat — the same "flat vol from opening" convention pricing.ts's
+// legShiftedPrice / decisionCompare.ts already use elsewhere in this app,
+// see CLAUDE.md §3) and a historical daily average price standing in for
+// the real spot. This is necessarily an ESTIMATE: Yahoo doesn't expose
+// historical option chain data, so there's no real historical bid/ask to
+// fall back to. Stock legs need no repricing — computeMarkValue already
+// prices them directly off the spot passed in.
+function estimateMarkValueAtDate(position: SimPosition, avgSpot: number, dateISO: string): { markValue: number; legs: Leg[] } {
+  const openedISO = formatDateInput(position.openedAt);
+  const daysElapsed = Math.max(0, daysBetweenLocalDates(openedISO, dateISO));
+
+  const repriced: Leg[] = position.legs.map((l) => {
+    if (l.kind === "stock") return l;
+    const openIv = impliedVol(position.spot, l.strike, l.dte, l.premium, l.type);
+    const newDte = Math.max(0, l.dte - daysElapsed);
+    const theoPrice = newDte <= 0
+      ? (l.type === "call" ? Math.max(0, avgSpot - l.strike) : Math.max(0, l.strike - avgSpot))
+      : blackScholes({ spot: avgSpot, strike: l.strike, dte: newDte, vol: Math.max(0.01, openIv), rate: SIM_RATE, type: l.type }).price;
+    return { ...l, premium: Math.round(theoPrice * 100) / 100, dte: newDte };
+  });
+
+  return { markValue: computeMarkValue(repriced, avgSpot), legs: repriced };
+}
+
+// Fills the gaps in a position's Timeline: for every historical trading day
+// between when it opened and today (or its close date, for a closed
+// position) that has no REAL recorded snapshot — because the person simply
+// didn't have the app open that day to trigger a refresh — this
+// reconstructs an estimated one from that day's (open+close)/2 average
+// price instead of leaving the day blank. Real snapshots always win: a day
+// that already has one from recordSnapshot() is never overwritten. Today
+// itself is deliberately left for a live refresh to fill for real, not
+// estimated (see the loop's upper bound below) — same for a closed
+// position's close date, which is already covered by its actual
+// realizedPnl/closedSpot instead of needing an estimate.
+export async function backfillSnapshots(position: SimPosition): Promise<PositionSnapshot[]> {
+  const existing = await loadSnapshotsForPosition(position.id);
+  const existingDates = new Set(existing.map((s) => s.dateISO));
+
+  const openedISO = formatDateInput(position.openedAt);
+  const endBoundISO = position.status === "closed" && position.closedAt
+    ? formatDateInput(position.closedAt)
+    : todayLocalISO();
+
+  let bars: HistoricalBar[];
+  try {
+    bars = await fetchHistoricalBars(position.symbol);
+  } catch {
+    // No historical data available (thinly-traded symbol, rate-limited,
+    // etc.) — fall back to showing whatever real snapshots exist rather
+    // than failing the whole panel.
+    return existing;
+  }
+
+  const toAdd: PositionSnapshot[] = [];
+  for (const bar of bars) {
+    if (bar.dateISO < openedISO) continue; // before this position existed
+    if (bar.dateISO >= endBoundISO) continue; // today, or on/after close — real data's job, not an estimate's
+    if (existingDates.has(bar.dateISO)) continue; // already have a real refresh for this day
+
+    const { markValue, legs } = estimateMarkValueAtDate(position, bar.avgPrice, bar.dateISO);
+    toAdd.push({
+      positionId: position.id,
+      dateISO: bar.dateISO,
+      recordedAt: Date.now(),
+      spot: bar.avgPrice,
+      legs,
+      markValue,
+      unrealizedPnl: markValue - position.costBasis,
+      estimated: true,
+    });
+  }
+
+  if (toAdd.length > 0) {
+    saveSnapshotsToStorage([...loadSnapshotsFromStorage(), ...toAdd]);
+  }
+
+  return [...existing, ...toAdd].sort((a, b) => a.dateISO.localeCompare(b.dateISO));
+}
+
+// The unified "best exit point" read for the Timeline/复盘 panel — combines
+// the historical daily P&L record (real + backfilled snapshots) with the
+// curve-shape structural signal above, so the panel can tell the person not
+// just WHICH day looked best in dollars but WHY: whether that day's (or the
+// current/actual close's) price also sat in a structurally favorable spot
+// on the strategy's own payoff curve. `comparePnl`/`compareSpot` are the
+// point being compared AGAINST the historical best — unrealized P&L + live
+// spot for a still-open position, realized P&L + closedSpot for a closed
+// one; the caller (SimulatorPage) already has both, this just reasons over
+// them rather than re-deriving them.
+export interface ExitAnalysis {
+  bestSnapshot: PositionSnapshot;
+  bestStructural: CurvePosition;
+  compareStructural: CurvePosition | null; // null only if compareSpot wasn't available (e.g. not yet refreshed)
+}
+
+export function analyzeBestExit(
+  position: SimPosition,
+  snapshots: PositionSnapshot[],
+  compareSpot: number | null,
+): ExitAnalysis | null {
+  if (snapshots.length === 0) return null;
+  const bestSnapshot = snapshots.reduce((a, b) => (b.unrealizedPnl > a.unrealizedPnl ? b : a), snapshots[0]);
+  const bestStructural = classifySpotOnCurve(position.legs, position.spot, bestSnapshot.spot);
+  const compareStructural = compareSpot != null ? classifySpotOnCurve(position.legs, position.spot, compareSpot) : null;
+  return { bestSnapshot, bestStructural, compareStructural };
 }
 
 export async function loadSimAccount(): Promise<SimAccount | null> {
@@ -239,6 +412,13 @@ export async function openSimPosition(params: {
   symbol: string;
   legs: Leg[];
   spot: number;
+  // The combo's real opening date, when it has one (e.g. carried over from
+  // a saved strategy that was actually opened days ago via analysis mode's
+  // "add to sim account" shortcut — see App.tsx's handleAddToSimAccount).
+  // Omitted (or undefined) for positions genuinely opened right now, such
+  // as ones built from scratch in the simulator's own leg builder — those
+  // correctly fall back to Date.now() below.
+  openingAt?: number;
 }): Promise<{ account: SimAccount; positions: SimPosition[] }> {
   const account = loadAccountFromStorage();
   if (!account) throw new Error("Simulated account not initialized");
@@ -253,7 +433,7 @@ export async function openSimPosition(params: {
     symbol: params.symbol,
     legs: params.legs,
     spot: params.spot,
-    openedAt: Date.now(),
+    openedAt: params.openingAt ?? Date.now(),
     costBasis,
     status: "open",
   };

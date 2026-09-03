@@ -334,6 +334,38 @@ export function probabilityOfProfit(legs: Leg[], spot: number): { pop: number; b
   return { pop: Math.max(0, Math.min(1, prob)), breakevens: sorted };
 }
 
+// ── Curve-shape ("structural") exit signal ──
+//
+// A purely geometric read of one price against a combo's OWN payoff-at-
+// expiry curve — built from the ORIGINAL opening legs, since the strategy's
+// shape doesn't change, only where spot sits on it does. This is a
+// different kind of signal than comparing dollar P&L across days: a short
+// straddle's curve peaks exactly at its strike, so a spot sitting near that
+// peak is structurally close to "as good as this trade gets" from a timing
+// standpoint, independent of what the historical daily snapshots say.
+export type CurvePosition = "near-peak" | "in-zone" | "beyond-breakeven";
+
+export function classifySpotOnCurve(legs: Leg[], openingSpot: number, testSpot: number): CurvePosition {
+  if (legs.length === 0 || openingSpot <= 0) return "in-zone";
+
+  const testPnl = pnlAtExpiry(legs, testSpot, openingSpot);
+  if (testPnl < 0) return "beyond-breakeven";
+
+  // Same spot window payoffCurvePoints/findBreakevens use, so "near" below
+  // is relative to the same scale the rest of the curve is drawn on.
+  const points = payoffCurvePoints(legs, openingSpot, 120);
+  if (points.length === 0) return "in-zone";
+  // Ties (e.g. a credit spread's flat max-profit plateau past both short
+  // strikes) resolve to the FIRST point at max pnl in scan order — i.e. the
+  // low-spot edge of the plateau, not its middle. Good enough for a rough
+  // "is this near the sweet spot" read; not meant as a precise midpoint.
+  const peak = points.reduce((a, b) => (b.pnl > a.pnl ? b : a), points[0]);
+
+  const halfRange = Math.max(20, openingSpot * 0.5);
+  const nearWindow = halfRange * 0.1; // tunable: how close counts as "near" the peak
+  return Math.abs(testSpot - peak.spot) <= nearWindow ? "near-peak" : "in-zone";
+}
+
 // Back-solve the implied spot price from tracked leg premiums.
 // Uses each leg's opening IV (from opening legs) and tracked DTE,
 // then solves for S where BS(S, strike, dte, iv, type) = tracked premium.

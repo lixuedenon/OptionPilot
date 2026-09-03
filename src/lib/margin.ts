@@ -1,3 +1,4 @@
+// src/lib/margin.ts
 import type { Leg, OptionType } from "./types";
 
 // Margin is only relevant to SHORT (sold) exposure — a long option or long
@@ -116,6 +117,31 @@ function pairVerticals(shorts: OptLeg[], longs: OptLeg[]): {
   return { spreads, unpaired };
 }
 
+// Real brokers (portfolio/risk-based margin — TIMS-style, what a platform
+// like thinkorswim actually charges) don't reserve the full worst-case
+// loss the instant a defined-risk spread opens. They reserve a small
+// floor while price sits safely at the short strike, and scale UP toward
+// the full max loss only as price actually moves toward the long strike
+// (the wing) — then scale back down if price returns. The static "always
+// reserve 100% of max loss regardless of where spot is" version below
+// this comment used to be the whole formula; it was flagged as wildly
+// overstating margin for a position that just opened at/near its own
+// short strike (caught against a real thinkorswim comparison: 4 iron-
+// butterfly units the static formula said needed way more margin than
+// TIMS actually required, at a moment when spot was sitting right on the
+// short strikes — exactly the "should be near the floor" case).
+//
+// This models that behavior with linear interpolation between a floor
+// (MARGIN_FLOOR_PCT of max loss) and the full max loss, based on how far
+// spot has already traveled from the short strike toward the long strike
+// on the side that matters for this spread's own risk direction. This is
+// a simplified stand-in for a full TIMS/portfolio-margin engine (which
+// stress-tests a position across many hypothetical price/vol scenarios) —
+// not a claim of matching any specific broker's number exactly, just the
+// same SHAPE of behavior (low-near-center, scaling toward max-at-the-wing)
+// instead of a flat worst-case reservation regardless of where price is.
+const MARGIN_FLOOR_PCT = 0.10;
+
 export function computeComboMargin(legs: Leg[], spot: number): MarginResult {
   const active = legs.filter((l) => !l.disabled && l.kind !== "stock").map(toOptLeg);
   const stockLegs = legs.filter((l) => !l.disabled && l.kind === "stock");
@@ -131,12 +157,29 @@ export function computeComboMargin(legs: Leg[], spot: number): MarginResult {
       const qty = Math.min(short.qty, long.qty);
       const width = Math.abs(short.strike - long.strike);
       const netCredit = (short.premium - long.premium) * qty;
-      const m = Math.max(0, width * 100 * qty - netCredit * 100);
+      // Only a NET CREDIT spread needs margin (width minus whatever credit
+      // was collected — even a $0-credit spread still needs the full width,
+      // hence >= 0 not > 0). A net DEBIT spread's max loss is capped at the
+      // debit paid, which is already deducted from cash via costBasis —
+      // it needs zero additional margin. Using the credit-spread formula
+      // unconditionally here was a real bug: it inflated a debit spread's
+      // margin ABOVE the width instead of recognizing it needs none.
+      const maxLoss = netCredit >= 0 ? Math.max(0, width * 100 * qty - netCredit * 100) : 0;
+
+      // Risk direction depends on which strike is the short (safe/center)
+      // one: a call spread's danger is spot rising from short toward long;
+      // a put spread's danger is spot falling from short toward long.
+      const riskFraction = maxLoss <= 0 ? 0 : Math.max(0, Math.min(1,
+        type === "call"
+          ? (spot - short.strike) / (long.strike - short.strike)
+          : (short.strike - spot) / (short.strike - long.strike)
+      ));
+      const m = maxLoss * (MARGIN_FLOOR_PCT + riskFraction * (1 - MARGIN_FLOOR_PCT));
       notes.push({
         legIds: [short.id, long.id],
         kind: "spread",
         amount: m,
-        label: `${type === "call" ? "Call" : "Put"}价差（宽度${width}×${qty}张，扣净权利金后）`,
+        label: `${type === "call" ? "Call" : "Put"}价差（宽度${width}×${qty}张，按现价离风险的距离动态计算，最坏情况上限$${maxLoss.toFixed(0)}）`,
       });
       total += m;
 

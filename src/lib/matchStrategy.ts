@@ -65,12 +65,59 @@ function patternOf(legs: Leg[]): Pattern {
   return hasStock ? `S${stockAction[0]}|${optPattern}` : optPattern;
 }
 
+// Iron-butterfly-family shapes (2 sold legs of different type at the SAME
+// strike — a true ATM straddle sold — plus 2 bought legs protecting each
+// side) can't be told apart by proportional pattern-matching against a
+// single fixed example the way other shapes can: real market strikes
+// produce essentially arbitrary wing-width RATIOS, and pattern-matching
+// only recognizes whichever exact ratio a specific preset happens to
+// illustrate. Iron Butterfly (equal wings) vs Asymmetric Iron Butterfly
+// (uneven wings) is fundamentally a STRUCTURAL question — are the two
+// widths equal or not — not a specific-shape lookup, so it's checked
+// directly here instead of relying on the generic pattern loop below to
+// happen to find a matching ratio (caught when real earnings-strategy
+// positions, whose wing widths come out essentially random once mapped
+// onto actual listed strikes, matched nothing at all — a hand-picked
+// example preset for "asymmetric" could only ever match ITS OWN specific
+// ratio, never the general category).
+function checkIronButterflyFamily(legs: Leg[]): string | null {
+  const opts = legs.filter((l) => l.kind !== "stock");
+  if (opts.length !== 4) return null;
+  const sells = opts.filter((l) => l.action === "sell");
+  const buys = opts.filter((l) => l.action === "buy");
+  if (sells.length !== 2 || buys.length !== 2) return null;
+
+  const sellCall = sells.find((l) => l.type === "call");
+  const sellPut = sells.find((l) => l.type === "put");
+  const buyCall = buys.find((l) => l.type === "call");
+  const buyPut = buys.find((l) => l.type === "put");
+  if (!sellCall || !sellPut || !buyCall || !buyPut) return null;
+  if (sellCall.strike !== sellPut.strike) return null; // not a true ATM straddle sold — e.g. 玉蜥蜴's sold legs sit at two different strikes
+  if (buyCall.strike <= sellCall.strike || buyPut.strike >= sellPut.strike) return null; // wings must actually protect outward on their own side
+  // All 4 legs must share ONE expiry — this shape concept is inherently
+  // single-expiry. A double diagonal spread (near-month sold, far-month
+  // bought, on both call and put sides) happens to match the same strike
+  // criteria above while being a completely different, multi-expiry
+  // strategy — caught by the regression check for every preset re-
+  // identifying itself: 双对角价差 started matching "不对称铁蝶" the moment
+  // this function stopped looking at dte at all.
+  if (sellCall.dte !== sellPut.dte || sellCall.dte !== buyCall.dte || sellCall.dte !== buyPut.dte) return null;
+
+  const upWidth = buyCall.strike - sellCall.strike;
+  const downWidth = sellPut.strike - buyPut.strike;
+  const symmetric = Math.abs(upWidth - downWidth) < 0.01; // tight — this is asking "genuinely equal," not "roughly similar"
+  return symmetric ? "铁蝶策略" : "不对称铁蝶";
+}
+
 export function matchStrategy(
   activeLegs: Leg[],
   _spot: number,
   customPresets: CustomPreset[]
 ): string {
   if (activeLegs.length === 0) return "";
+
+  const ironButterflyMatch = checkIronButterflyFamily(activeLegs);
+  if (ironButterflyMatch) return ironButterflyMatch;
 
   const actualPattern = patternOf(activeLegs);
 

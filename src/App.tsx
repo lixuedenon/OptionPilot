@@ -79,7 +79,7 @@ interface AppProps {
   // Returns needsSetup when there's no simulated account yet, so the caller
   // (Shell.tsx) can send the person to set one up instead of silently
   // failing.
-  onAddToSimAccount?: (payload: { symbol: string; legs: Leg[]; spot: number }) => Promise<{ ok: boolean; needsSetup?: boolean }>;
+  onAddToSimAccount?: (payload: { symbol: string; legs: Leg[]; spot: number; openingAt?: number }) => Promise<{ ok: boolean; needsSetup?: boolean }>;
   // Pre-fills the simOrigin leg builder — used when arriving here from the
   // scenario selector's "use this" button, so the person reviews/adjusts a
   // real candidate instead of starting from a blank combo. Only applied
@@ -485,14 +485,21 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     if (!onAddToSimAccount || activeLegs.length === 0 || spot <= 0) return;
     setAddingToSim(true);
     try {
-      const result = await onAddToSimAccount({ symbol: symbol.trim(), legs: activeLegs, spot });
+      // openingAt carries over the combo's real opening date (e.g. restored
+      // from a saved strategy that was actually opened days/weeks ago) so
+      // the resulting sim position's clock starts from when the position
+      // was truly opened, not from the moment this button was clicked —
+      // otherwise every DTE/P&L figure downstream in the simulator is
+      // computed against the wrong elapsed time. See simAccount.ts's
+      // openSimPosition for the other half of this.
+      const result = await onAddToSimAccount({ symbol: symbol.trim(), legs: activeLegs, spot, openingAt });
       if (!result.ok && result.needsSetup) {
         window.alert(t("sim.needSetupFirst"));
       }
     } finally {
       setAddingToSim(false);
     }
-  }, [onAddToSimAccount, activeLegs, spot, symbol, t]);
+  }, [onAddToSimAccount, activeLegs, spot, symbol, openingAt, t]);
 
   const updateLeg = (id: string, patch: Partial<Leg>) =>
     setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));

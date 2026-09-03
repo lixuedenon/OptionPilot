@@ -1,242 +1,404 @@
-# OptionPilot — 项目交接文档（第4版）
+# OptionPilot 交接文档
 
-这份文档写给下一个 Claude 会话（新窗口）。第3版里"当前未解决"的盈亏归因条形图问题，**这一轮已经定位并修复**，见第7节（原第7节的排查过程整体保留存档，方便理解排查思路，但结论已更新）。这一版是个**过渡版本**——第7节的bug刚修完，还没有开始新功能，下一个开发者接手时项目状态是"干净、待继续"，不是"半成品"。第8节是操作层面反复踩过的坑，这轮新增了一条。
+**文档目的**：让接手这个项目的人（或者下一个AI对话实例）能够无缝衔接，不需要重新翻聊天记录。这份文档分两大部分：**第一部分**是这场对话开始之前，项目已经完成的内容（来自会话开始时的交接摘要）；**第二部分**是这场对话里新做的全部工作，按功能模块组织，而不是按时间顺序——方便你按模块查找，而不用从头翻到尾。
 
----
-
-## 1. 这个项目是什么
-
-OptionPilot 是一个期权策略可视化 + 模拟交易 + AI 策略推荐的 Web 应用，面向中文用户（Xue，项目所有者，本人是有实战经验的期权交易者）。核心定位：不只是"分析当下的期权组合长什么样"，还要"理解盈亏是怎么来的、比较不同操作的结果"。
-
-**技术栈**：React + TypeScript + Vite + Tailwind CSS，后端是 Supabase（Edge Functions 做数据代理和计算，Postgres 存少量结构化数据），部署走 Supabase CLI 手动 `deploy`，没有 CI/CD。
-
-**开发环境**：Xue 本地 Windows 电脑，VS Code + PowerShell（有时候也用Git Bash，看到 `lixue@intel MINGW64` 这种提示符不用奇怪），`C:\Users\lixue\projects\optionpilote`。已经不用 Bolt 了。GitHub 仓库 `github.com/lixuedenon/OptionPilot` 是 public 的，是唯一可信的"当前状态"来源。
+**重要提醒（写在最前面）**：这份文档、以及整场对话里所有的代码交付，都是基于Claude自己维护的一份**本地沙盒副本**，不是直接读取GitHub上的真实代码。这份副本的准确性，依赖于：(1) 用户上传/粘贴的文件，(2) Claude自己生成并交付给用户的文件。如果用户在本地做过Claude不知道的手动修改，或者某次"放法"没有真的应用成功，这份本地副本就会跟真实代码库产生偏差。**接手的人第一件事，应该是拿这份文档跟GitHub仓库（`github.com/lixuedenon/OptionPilot`）的真实文件做一次全面比对，确认没有偏差，再继续开发。**
 
 ---
 
-## 2. 四个模块，目前完成度
+## 项目基本信息
 
-| 模块 | 状态 | 说明 |
-|---|---|---|
-| 分析模式 | 成熟，这几轮改动最集中的地方 | 三滑块推演盈亏；盈亏归因、决策比较、组合健康度都已加入；**这轮修复了归因条形图的显示bug（见第7节）** |
-| 跟踪对比 | 成熟 | 对比开仓 vs 当前，反推股价/IV变化 |
-| 模拟账户 | 基础功能完整，好几轮没动了 | 虚拟开平仓，悔棋模式A + B |
-| AI推荐策略 | 开发中，好几轮没有进展（开发方向切到了分析模式完善） | 见第5节 |
-
----
-
-## 3. 核心数据模型（src/lib/types.ts）
-
-```
-interface Leg {
-  id, action("buy"|"sell"), type("call"|"put"), strike, dte, premium,
-  kind?("stock"), shares?, qty?（份数，默认1）, disabled?
-}
-interface Shifts { dS, dT, dV } // 价格/天数/波动率百分点的情景偏移
-interface GreekBreakdown { delta, gamma, theta, vega, total }
-```
-
-关键约定：
-- 正股腿（kind:"stock"）盈亏按每股算，不乘 shares
-- 到期日全项目统一 snap 到最近周五，用 nearestFridayDte()，但跟踪模式加载已存策略时不会重新 snap（历史遗留，不是bug）
-- Yahoo期权链不直接提供IV，全项目统一用权利金反推IV（impliedVol()，bisection法）
-- RSI/ATR 用简单移动平均，故意对齐Python原脚本，不要"纠正"成教科书算法
-- SimAccount 公式：realizedPnl = markValue - costBasis
-- **maxProfitLoss/probabilityOfProfit 描述"到期结果"，是leg列表的固有属性，跟当前滑块无关**——这条原则被反复强调，但有个明确的例外：Position Health跟随滑块（见6.3），因为Xue明确要求"健康度也该跟着滑块的假设情景走"。**这说明这条设计原则不是铁律，是"默认值"**——新增指标时先问自己：这个指标该反映"真实现状"还是"滑块推演的假设情景"？两种都有正当理由，取决于这个指标是给"了解现状"用的还是给"预演决策"用的，拿不准要问Xue，不要自己套用旧例子想当然
+- **项目**：OptionPilot — 期权策略可视化 + 模拟交易 + AI推荐的Web应用
+- **技术栈**：React + TypeScript + Vite + Tailwind CSS + Supabase（Edge Functions, Postgres）
+- **仓库**：`github.com/lixuedenon/OptionPilot`（public，但目前只有1次commit，说明是整体推送，不是逐次提交）
+- **本地开发路径**：`C:\Users\lixue\projects\optionpilote`
+- **开发环境**：Windows + VS Code + PowerShell
+- **数据源**：Yahoo Finance `v7/finance/options`（通过Supabase Edge Function代理，cookie+crumb认证）
+- **用户背景**：Xue是资深期权交易者，对实盘细节（保证金动态计算、提前指派机制、财报交易策略等）有深入的实战经验，经常用真实交易经验纠正理论假设
 
 ---
 
-## 4. 文件结构
+# 第一部分：会话开始前已完成的工作
 
-```
-src/
-  App.tsx              — 分析/跟踪对比模式主界面（约1649行，持续增长中，
-                          App.tsx拆分仍是待办，见第10节）
-  Shell.tsx / HomePage.tsx / SimulatorPage.tsx / AIStrategyPage.tsx /
-  ComingSoonPage.tsx（未使用但保留）/ main.tsx
+这部分内容来自会话最开始的交接摘要，是这场对话开始之前项目已经达到的状态。
 
-  hooks/
-    useSavedStrategies.ts / useCustomPresets.ts / useAutoSync.ts
-    — 腿位组合+跟踪对比这两撮状态依然没拆，耦合更深了
+## 已完成的主要模块
 
-  lib/
-    types.ts / bs.ts / dateUtils.ts / matchStrategy.ts / presets.ts /
-      customPresets.ts / savedStrategies.ts / simAccount.ts /
-      recentSymbols.ts / useStockQuote.ts / dataTransfer.ts / autoSync.ts
-    pricing.ts — 核心计算文件，导出：impliedVol / legShiftedPrice /
-      legGreekBreakdown / priceCombo / pnlAtExpiry / maxProfitLoss /
-      payoffCurvePoints / findBreakevens / probabilityOfProfit /
-      impliedSpotFromPremiums / weightedAvgIV / attributePnl
-    positionHealth.ts — 组合健康度评分，会构造"滑块情景下的假想腿位列表"
-      再评分，不是简单读breakdown（见6.3）
-    decisionCompare.ts — 决策比较，跟随滑块，展期用真实期权链数据
-    optionChain.ts — 期权链客户端缓存 + 拉取封装，配合下面
-      supabase/functions/option-chain 使用（服务端共享缓存15分钟TTL）
-    miniMarkdown.tsx
+### 场景引擎（`scenarioEngine.ts`）
+- 从打分算法改为固定查表（`SCENARIO_RULES`），覆盖30种桶组合的完整对照表
+- 三标签结构：方向/财报/待定
+- 财报标签内部层级：IV Crash vs 方向判断 → IV Crash内部又分90%/80%/70%三档阈值层级
+- `BUY_DTE_EXTENSION`：纯买方结构的DTE延展逻辑
+- 屏蔽组合检测（`isScenarioBlocked`）
 
-  components/
-    LegRow.tsx（约671行）— 腿位行组件。除了基础字段编辑，已包含：
-      · 行权价/到期日下拉选择，数据来自真实期权链（getOptionChain）
-      · 权利金自动填充（strike+dte都设好后600ms防抖拉取，仅在
-        premium===0时触发，不会覆盖用户已改的值）
-      · "恢复市场价"按钮（handleRestorePrice，强制重新拉取）
-      · "..."菜单里"比较方案"跟随情景滑块
-    PayoffChart.tsx / ShiftSliders.tsx / PresetPicker.tsx / StrategyBadge.tsx
-    RollDialog.tsx / HedgeDialog.tsx / ProtectDialog.tsx
-    DecisionCompareDialog.tsx — SVG payoff曲线叠加图，跟随情景滑块
-    PnlAttributionPanel.tsx — 接受外部传入的`maxAbs`（固定尺子）prop。
-      **这轮修复了内部`Bar`子组件的百分比换算bug**（见第7节）——现在
-      pct已正确对半（`visualPct = pct / 2`）再用作左右两半容器内的
-      width/left，不会再出现"数值没到上限但视觉已经顶格、且后续拖动
-      滑块条形完全不动"的现象
-    PositionHealthBadge.tsx — 用`createPortal`渲染（见6.4），跳出滚动
-      容器的裁切
-    ErrorBoundary.tsx — 已经真实发挥过作用（见8.7）
-    ManageStrategiesDialog.tsx / SaveStrategyDialog.tsx / SavePresetDialog.tsx
-    LanguageSwitcher.tsx / DropdownMenu.tsx
-    dialogs/ — index.ts统一导出
+### 财报IV Crash策略端到端流程（早期版本）
+- `earningsStrategy.ts`：真实期权链查询（近/中/远三组）、根据账户风险预算反推仓位大小
+- `EarningsIvCrashTab.tsx`：开仓流程UI
+- `EarningsPositionsPanel.tsx` + `earningsClosing.ts`：财报后平仓指导（三分支：波动小/居中/很大）
 
-  i18n/
-    I18nContext.tsx — 变量插值用单花括号 `{varName}`，不是双花括号
-    translations.ts / locales/zh.ts / locales/en.ts
+### 动态保证金模块（`margin.ts`）
+- 从静态"预留最坏情况"重新设计为10%地板到最大亏损之间的动态插值，匹配真实券商行为
 
-supabase/functions/
-  option-chain/index.ts — Yahoo期权链代理，服务端Postgres共享缓存
-    （option_chain_cache表，15分钟TTL），保护Yahoo限流
-  stock-quote/index.ts — 实时报价代理
-  market-context/ — fear/greed指数（CNN，VIX兜底）、宏观指标、新闻
-    （Finnhub + RSS），AI推荐策略用
-  strategy-analysis/ — 并行调用Claude/GPT-4o/Grok/Gemini四模型，
-    AI推荐策略用，见第5节
-```
+### 分析模式增强
+- P/L归因面板（滑块驱动 + 跟踪对比两种模式）
+- 决策对比功能（`decisionCompare.ts`、`DecisionCompareDialog.tsx`）：针对单条腿对比"不动/平仓/展期"三种结果，用真实期权链数据
+- 组合健康度评分（`positionHealth.ts`、`PositionHealthBadge.tsx`）：四个维度各25分——到期盈利概率(POP)、距盈亏平衡点距离、临近到期的Gamma风险、每张合约平均Delta归一化
+
+### 期权链集成
+- `option-chain` Supabase Edge Function代理Yahoo Finance（cookie+crumb认证）
+- 服务端共享缓存（`option_chain_cache` Postgres表，15分钟TTL）
+- 客户端`optionChain.ts`带promise级缓存和最近行权价匹配
+
+### 模拟器
+- `simAccount.ts`（localStorage存储）
+- `SimulatorPage.tsx`
+- 批量平仓功能（按仓位分组的复选框）
+
+## 会话开始前的关键设计原则（这些原则在整场对话中被反复引用和遵守）
+
+- **"到期结果"类指标（maxProfit/maxLoss、POP、健康度评分）默认不跟随情景滑块**——这些描述的是组合的内在属性。组合健康度是刻意做的例外，它跟随滑块
+- **决策对比停留在分析模式**：滑块代表对未来情景的预演；从假设情景对比持有/平仓/展期，是设计上的用例
+- **IV/HV比值逻辑**：比值低不代表权利金便宜，如果绝对IV仍然很高——三分类：`sellRich`/`buyCheap`/`stillRich`
+- **中远期组按近期组的2倍开仓**（财报策略）
+- **动态保证金优于静态**：真实券商是动态插值的，静态最坏情况预留是错的
+- **`App.tsx`的TDZ（暂时性死区）风险**：新插入的`useMemo`必须手动核实声明顺序，esbuild抓不出这类错误
+- **风险回报比这个维度从组合健康度里删掉了**：因为会系统性惩罚卖方策略，不管行权价质量如何
+- **`createPortal`用于弹出层**：需要用来逃出滚动面板的overflow裁剪
+- **跨式/宽跨式行权价规则**：跨式两腿锁定同一个ATM行权价；宽跨式两腿都要保持OTM
+- **`matchStrategy.ts`里的到期日分桶**：需要正确区分对角价差和垂直价差
+- **预设库标准**：只收录真正常见、成熟的策略，不为了凑数量加边缘变体
+
+## 会话开始前的代码交付规范（这些规范在本场会话中继续沿用）
+
+- **代码第一行放路径注释**（如`// src/lib/margin.ts`）
+- **交付完整文件，不是diff**，减少复制粘贴出错
+- **明确说明每个文件是新建还是替换**，以及确切路径
+- **交付前彻底核对语法和import**——之前有过漏import导致运行时崩溃的教训
+- **直接给结论，不用多选题**
+- **GitHub是真理来源**，本地和Bolt的副本可能会分叉
 
 ---
 
-## 5. AI推荐策略模块——继续暂停，状态原地不动
+# 第二部分：这场会话里做的全部工作
 
-跟上一版交接文档完全一致，这几轮**没有任何进展**。核心内容（不重复展开，需要时翻上一版）：技术指标、Delta匹配、市场环境数据、prompt拼装、四模型并行调用都已验证过能跑通；TQQQ参数匹配方案已想清楚没写代码；数据库持久化和Cron定时任务没做；**架构上"必须是每天自动生成一次、不能用户点按钮就调用"这个决定不要动摇**。AIStrategyPage.tsx现在的按钮仍是临时开发预览用，页面有橙色警告条说明。
+## 一、财报IV Crash策略——从0到完整可用（这是本场会话的主线）
+
+### 1.1 策略设计本身（先讨论清楚，再写代码）
+
+策略核心思路：财报公布前，期权价格里包含"不确定性溢价"，财报一公布这份溢价通常迅速消失——策略赚的是这份溢价消失的钱，不赌方向。
+
+**三组结构**（每组4条腿：卖ATM Call、卖ATM Put、买两侧保护）：
+
+| 组别 | 保护宽度 | 到期日 | 仓位倍数 |
+|---|---|---|---|
+| 近期组 | ±10% | 本周五（最近到期日） | 1x |
+| 中期组 | ±15% | 下个月月期权到期日 | 2x |
+| 远期组 | ±20% | 两个月后月期权到期日 | 2x |
+
+**选股条件**：大盘股/热门股，**必须有周期权**（硬性前提），过去3年90%以上的财报后极值波动（最高最低，不是开盘收盘）在10%以内
+
+**下单时机**：盘后财报→当天收盘前建仓；盘前财报→前一天收盘前建仓
+
+**仓位大小**：不是固定份数，是**按账户可用资金的一个百分比（用户输入，默认3%）反推近期组该开几份**，中远期组自动2倍跟随。这个反推逻辑：`预算 = 可用资金 × 风险比例`，`近期组份数 = floor(预算 ÷ 近期组每份最大亏损)`
+
+**平仓规则**：
+- 近期组：财报公布开盘后，**尽快平掉保护腿**，两条平值腿（不管盈亏）**2小时内平掉**，除非对方向有明确判断
+- 中远期组：按财报后实际波动幅度分三支——
+  - 波动<10%：大概率盈利，给"平仓落袋"或"再等等"的选择
+  - 波动10%~保护宽度之间：大概率小亏，需要判断趋势，引导去分析模式看图
+  - 波动≥保护宽度：亏损已封顶，不急，可以放到期也可以去分析模式看要不要提前离场
+
+**风险提示（写进了用户可见的说明文字里）**：
+- 提前指派风险——Call被指派通常跟临近除息日有关（对方图分红）；Put被指派通常跟当前利率环境有关（对方图提前拿现金吃利息），跟除息日无关
+- 这不是稳赚不赔策略——极少数情况财报本身制造了新的更大不确定性，IV可能不跌反涨
+
+**明确搁置、没有做的部分**（不是忘了，是这次会话里明确决定先不做）：
+- 历史财报涨跌**极值**数据（真正的最高最低，不是开盘收盘）——免费网络搜索查不到这么细的数据，需要用户自己开通类似市场变色龙(MarketChameleon)这样的付费平台账号手动导出
+- 历史IV/IV Percentile数据——同样需要付费历史期权数据源
+- "过去出现类似幅度波动后接下来1-2个月怎么走"的统计参考——依赖上面两项数据，也搁置
+- 用AI（本Claude或其他大模型API）去网上现查历史数据这条路，**已经实测证明走不通**——查到的是定性描述（比如"MSFT这次财报反常"），查不到需要的精确数字（历史极值、历史IV），因为这类数据在付费平台（如市场变色龙）后面，普通网页搜索抓不到表格内容
+- 财报"方向判断"分支（跟IV Crash并列的另一条路，用户提过但明确说"等做的时候再告诉你"）——UI占位已经搭好（见`EarningsTabRoot.tsx`），内容没做
+- IV Crash策略的80%/70%阈值档（跟90%档并列，同样的策略框架但历史筛选标准更宽松）——UI占位已经搭好，选择90%以外的档位会显示"敬请期待"，逻辑没做
+
+### 1.2 具体实现的文件
+
+**`src/lib/earningsStrategy.ts`**（新文件）——策略核心计算
+- `EARNINGS_GROUPS`：三组的规格定义（保护宽度%、仓位倍数、目标DTE）
+- `pickGroupExpiries(symbol)`：拉一次期权链（覆盖足够远的到期日范围），从真实存在的到期日列表里分别给三组挑最接近目标天数的真实日期——保证三组不会意外撞到同一个到期日
+- `buildGroupLegs(symbol, spot, spec, expiryDate, units)`：用真实报价搭出某一组的4条腿，同时算出这一组"每1份"的净收权利金和最大亏损（两翼分别算，取更差的那个，不是假设对称）
+- `computeUnitsFromRiskBudget(availableCapital, riskPct, maxLossPerUnitNear)`：仓位大小反推
+- `computeEarningsPreview(groupLegs, spot)`：三组聚合预览，复用`margin.ts`的`computeComboMargin`（不是重新发明保证金计算）
+
+**`src/lib/optionChain.ts`**（修改）——导出了原本私有的`nearestStrikeQuote`函数，供`earningsStrategy.ts`复用，避免重复实现同一段逻辑
+
+**`src/components/EarningsTabRoot.tsx`**（新文件）——财报标签的顶层层级导航
+- 第一层：IV Crash vs 方向判断（方向判断是占位"敬请期待"）
+- 第二层（选了IV Crash后）：90%/80%/70%三档筛选标准（只有90%可点，另外两档标"敬请期待"）
+- 第三层（选了90%后）：渲染`EarningsIvCrashTab`
+
+**`src/components/EarningsIvCrashTab.tsx`**（新文件）——90%档IV Crash的完整开仓流程UI
+- 标的输入、实时现价、风险比例输入（带详细解释文字，说明这个比例算的是"近期组冲出保护、亏到最坏情况"时愿意亏账户资金的百分比，不是保证金占用比例）
+- "生成预览"：调用`earningsStrategy.ts`的函数链，展示三组明细+聚合总计（总最大亏损、总保证金、总净收权利金）
+- 保证金超过可用资金时，"确认开仓"按钮自动禁用
+- "确认开仓"：依次调用`openSimPosition`三次，把三组分别开成三个独立的模拟仓位，每个都打上标记（见下面"仓位标记机制"），成功后跳转回模拟账户
+
+**`src/lib/earningsClosing.ts`**（新文件）——平仓阶段的核心判断逻辑
+- `parseEarningsNote(note)`/`groupEarningsPositions(positions)`：从仓位的`note`字段解析出"这是财报策略的哪一组、属于哪一批"，把属于同一批的仓位重新分组
+- `isNearGroupPastWindow(position)`/`nearGroupHoursElapsed(position)`：近期组的2小时窗口判断（按仓位自己的`openedAt`算，不是精确的"财报后市场开盘时间"，这个是已知的简化，因为没有真实的市场日历数据）
+- `computeClosingGuidance(position, currentSpot, group)`：中远期组的三分支判断（`small`/`medium`/`large`），边界是10%和这一组自己的保护宽度
+
+**`src/components/EarningsPositionsPanel.tsx`**（新文件，这次会话里改动最多的文件之一）——财报仓位的专属管理面板
+- 把同一批的三组仓位聚合展示，不再散落在常规持仓列表里
+- 每组显示完整的腿位明细表格（见下面"腿位表格字段"这一节，这是本次会话最后修的）
+- 近期组：显示距2小时窗口还剩多久，三个操作按钮（只平保护腿/只平平值腿/全平）
+- 中远期组：显示波动百分比+对应分支的指导文字，**永远显示腿位表格和一个通用"平仓"按钮**，分支专属的按钮（平仓落袋/去分析模式）只在实时数据到位后才出现——这是应用"永远展示框架，缺什么就说清楚"这条原则后的结果，之前有一版是"数据没到位就整个隐藏"，被认定为不对的做法
+
+### 1.3 仓位标记机制（`note`字段）
+
+`SimPosition`的`note`字段原本定义了但完全没人用。这次用来标记"这个仓位属于财报策略的哪一批、哪一组"，格式：`earnings-iv-crash:{group}:{batchId}`（`group`是`near`/`mid`/`far`，`batchId`格式是`{symbol}-{时间戳}`）。
+
+**这个字段后来因为另一个功能（添加到对比模式）差点产生冲突**——见下面"三、跟踪对比模式集成"这一节，最终方案是**没有复用这个字段**，而是给`SimPosition`加了第二个独立字段`linkedStrategyId`，两个字段各管各的，不会互相覆盖。
+
+### 1.4 腿位表格字段（本次会话最后一次修改，重要）
+
+`EarningsPositionsPanel.tsx`里的腿位表格，最初版本只有行权价/数量/权利金三个字段，被用户指出"改少了"（对比真实券商thinkorswim的持仓表格截图）。最终版本对齐了真实券商表格的字段：
+
+**到期日、行权价、类型、数量、开仓价（Trade Price）、实时价（Mark）、市值（Mark Value）、未实现盈亏（P/L Open）、盈亏%（P/L %）、期权代码（Option Code）**
+
+- 实时价/市值/未实现盈亏/盈亏%需要拉活的报价才能算，复用了`SimulatorPage.tsx`里已经写好的`fetchLiveLegsAndSpot`函数（通过新增的`onFetchLive`prop传进来，不是在面板组件里重复实现一套拉取逻辑）
+- 期权代码是简化版OCC格式（`occCode`函数），比如`AMD260918P400`，不是标准21字符带补零的完整OCC格式，是匹配真实券商界面上显示的那种简写形式
+- 市值的正负号方向用用户截图里的真实数字核对过（卖出仓位显示负数，格式对得上"($305.00)"这种会计记法）
+- **`P/L Day`（当日盈亏）这一列没有做**——需要"昨天收盘时的权利金"作为基准，项目里没有存这个每日基准数据，这是明确说清楚的、不是漏做的缺口
+
+## 二、动态保证金重新设计（`margin.ts`）
+
+### 背景
+
+用户实测发现：一个刚开仓、现价恰好卡在卖出行权价附近的铁蝶组合，系统算出来的保证金远超真实券商（thinkorswim）的实际占用，导致"明明账户有10万美金，却连最小规模都开不起"。
+
+### 根本原因
+
+原来的价差/铁鹰保证金公式，是**不管现价在哪里，永远按"最坏情况全额预留"**（`width × 100 × qty - 净权利金`）。真实券商用的是**风险度量式保证金**（比如thinkorswim的TIMS）：开仓时如果现价离风险区很远，只收一小部分（大概10%左右）；现价往风险区靠近，保证金逐渐增加；现价又远离风险区，保证金又退回来。
+
+### 解决方案
+
+`computeComboMargin`里价差/铁鹰这部分的公式，从静态改成动态插值：
+- `riskFraction`：现价从卖出行权价（安全区）往买入保护行权价（风险区）移动了多少比例，clamp在0到1之间，按方向区分（Call价差的风险在现价往上涨，Put价差的风险在现价往下跌）
+- `margin = maxLoss × (MARGIN_FLOOR_PCT + riskFraction × (1 - MARGIN_FLOOR_PCT))`，`MARGIN_FLOOR_PCT = 0.10`（10%地板）
+
+用真实数字验证过：MSFT现价507.29、卖出行权价507.5的近期组，保证金从"最坏情况全额$13800"降到了$1380，正好是10%地板，跟thinkorswim描述的行为吻合。
+
+### 明确没做的部分
+
+**保证金只在"生成预览/开仓"那一刻算得对，仓位开完之后不会跟着股价变动动态调整**——原因是`simAccount.ts`里`computeMarginUsed`用的是每个仓位**开仓时冻结的股价**（`p.spot`），不是实时股价。要做到"持仓过程中动态跟涨跌"，需要在保证金检查的地方改成查实时股价，这牵涉到好几个调用点，属于更大的一次改动，明确留给了以后。
+
+## 三、跟踪对比模式集成——模拟账户持仓可以"添加到对比模式"
+
+### 需求背景
+
+用户观察到：分析模式的"跟踪对比模式"本质上跟模拟账户的持仓管理很像，都是"输入一个组合、看各项指标随时间变化"。希望模拟账户里的某个持仓，能一键"添加到对比模式"，用分析模式那套更丰富的图表/情景滑块工具去分析。
+
+### 底层机制（这个必须先完全搞清楚才能做）
+
+一条`SavedStrategy`记录 = **1个固定不变的"开仓组合"**（腿位/现价/开仓时间，存了就不再变）+ **一串会增长的"快照"**（`trackedSnapshots`，每条是某天的"今日组合"）。
+
+### 实现的逻辑
+
+`SimPosition`加了新字段`linkedStrategyId?: string`（**没有复用`note`字段**，因为`note`已经被财报策略占用，两个功能需要能在同一个仓位上共存，不能有格式冲突风险）。
+
+点击"添加到对比模式"：
+- 如果`linkedStrategyId`为空（第一次）：新建一条`SavedStrategy`（开仓组合=这个持仓最初开仓时的数据），**同时**立刻拉实时数据存成第一条快照，把新建的`SavedStrategy`的ID写回`linkedStrategyId`
+- 如果`linkedStrategyId`已经有值（不是第一次）：只拉实时数据追加一条新快照，不新建、不覆盖开仓组合
+
+按钮文字会根据`linkedStrategyId`是否已存在，在"添加到对比模式"和"追加快照到对比"之间切换。
+
+### 过程中发现并修复的一个真bug（不是这次新功能引入的，是一直存在的老问题）
+
+`App.tsx`的`handleTrack`函数（点击"跟踪"触发）**从来没有读取任何快照数据**——直接拿"开仓组合"的腿位，只把到期日按经过天数减一减就当"今日组合"显示，代码里甚至显式设置了`activeSnapshotId = null`。这导致不管一个策略有没有快照，点"跟踪"进去的第一眼永远显示"开仓组合的权利金原样复制一份"，需要手动从下拉列表里选中快照才能看到真实数据。
+
+**已修复**：`handleTrack`现在会检查`trackedSnapshots`，如果有快照，默认加载**最新那一条**的真实数据；如果确实没有快照（比如很早以前用"保存策略"存的、从没跟踪过的老记录），才退回到原来那种"用开仓数据现算"的兜底方式。
+
+## 四、"确认开仓"没有正确传递开仓日期——已修复
+
+### 问题
+
+用户发现：从分析模式点"确认开仓"转到模拟账户，**开仓日期应该是分析模式里设置的`openingAt`，但实际上永远是点击那一刻的`Date.now()`**。这导致"经过天数"显示不对，也连带影响财报策略近期组的2小时窗口计算、悔棋模式时间线的起点。
+
+### 根本原因
+
+`LegListSection.tsx`里"确认开仓"按钮的payload只有`{symbol, legs, spot}`，`openingAt`从来没有被带上；`openSimPosition`内部永远用`Date.now()`，没有接受覆盖的入口。
+
+### 修复涉及的完整链路
+
+`App.tsx`（把`openingAt`状态传给`LegListSection`）→ `LegListSection.tsx`（新增`openingAt`prop，payload里带上）→ `Shell.tsx`的`handleConfirmSimOpen`（类型更新，映射`openingAt`→`openedAt`）→ `simAccount.ts`的`openSimPosition`（新增可选的`openedAt`参数，覆盖默认的`Date.now()`）。
+
+**另一个独立的入口`handleAddToSimAccount`（在`Shell.tsx`里，是一条不同的"快速添加到模拟账户"路径）没有做这个修复**，仍然用`Date.now()`，因为不确定这个入口具体从哪个界面触发、要不要也接上开仓日期，留给用户后续确认。
+
+## 五、一键跳转"去分析模式看看"——从临时方案升级成真正的跳转
+
+### 背景
+
+财报仓位面板的"去分析模式看看"按钮，最初的实现是"把当前腿位存进策略库，提示用户去策略库手动打开"，是个临时的、多一步操作的方案。
+
+### 升级方案
+
+发现`App.tsx`的`simOriginInitial`预填机制（"从场景开始"流程用的那套）实际上是**通用的**——只是用来给`symbol`/`spot`/`legs`这几个`useState`设初始值，跟`simOrigin`这个布尔开关完全独立，没有任何地方写死"只有simOrigin模式才能用"。
+
+于是给`Shell.tsx`加了一份独立的`workspaceInitial`状态，复用`App.tsx`的`simOriginInitial`prop（但这次用在**普通**分析模式视图上，不是simOrigin那个"确认开仓"界面），实现真正的一键跳转：点击后现拉实时报价，直接把腿位/现价灌进普通分析模式，落地就是一个可以正常编辑的组合。`workspaceInitial`在离开分析模式时会被清空（`handleBackFromWorkspace`），避免下次普通点开"分析模式"卡片时误加载了这条陈旧数据。
+
+## 六、`matchStrategy.ts`——新增"不对称铁蝶"结构识别
+
+### 问题
+
+财报策略搭出来的近期组/远期组（真实市场行权价，两翼保护宽度几乎不可能精确对称），在UI上显示不出策略名字（空白），只有恰好对称的那一组能被认成"铁蝶策略"。
+
+### 排查过程
+
+先尝试"加一个新预设"（"不对称铁蝶"，示例数字是某个特定比例），发现**这条路走不通**——`matchStrategy.ts`是靠"跟某个具体预设的比例做精确匹配"，一个固定示例只能匹配到跟它比例完全一样的组合，真实市场随便搭出来的不对称比例几乎不可能跟这一个固定示例的比例吻合。
+
+### 最终方案
+
+在`matchStrategy`函数里加了一条**结构判断规则**（`checkIronButterflyFamily`），运行在通用的预设匹配循环之前——专门识别"两条卖出腿卡在同一个行权价（真正的ATM）+两条保护腿分居两侧"这个形状族：**两翼宽度相等就判"铁蝶策略"，不相等就判"不对称铁蝶"**，不依赖跟某个固定预设的比例是否吻合。这条规则同时检查了到期日必须一致（否则会把"双对角价差"这种到期日不同但行权价形状相似的结构也误判进来——这个问题在测试过程中被抓到并修复了）。
+
+`presets.ts`里仍然新增了"不对称铁蝶"这个预设条目，但它现在的作用只是给预设选择器/策略库用（方便用户手动选一个模板开始搭建），实际的**识别**靠上面那条结构规则，不靠这个预设本身的比例匹配。
+
+全部41个预设（40个原有+1个新增）跑过自我识别回归测试，0失败。
+
+## 七、模拟账户界面的一系列小修复
+
+这些是用户在实际测试过程中发现、逐个修复的问题，按发现顺序列出：
+
+1. **重置账户对话框错位**（这个其实是会话开始前遗留的问题，这次会话早期修复）：`ConfirmResetAccountDialog`的渲染代码被错放在`TimelinePanel`子组件内部，导致重置功能长期不工作
+2. **`openSimPosition`的ID生成有碰撞风险**：原来用`Date.now()`生成仓位ID，财报策略连续开3个仓位的场景下，如果执行够快可能落在同一毫秒导致ID重复。已修复为`Date.now() + 随机后缀`
+3. **财报仓位在常规持仓列表里重复显示**：财报策略的仓位既在专属面板显示，又在下面的常规分组列表里显示了一遍。已修复为常规列表排除掉带财报标记的仓位，但"持仓中(N)"这个计数保留统计全部持仓（包括财报的），避免"计数说4、下面列表只看到1"这种视觉上的不一致
+4. **"趋势"面板（`TimelinePanel`）静默隐藏对比文字**：当仓位还没有被刷新过（`marks`缓存为空）时，"最佳点位vs当前"这段对比文字直接不渲染，看起来像功能不存在。已修复为**永远显示某种文字**——数据不够就明确提示"需要先刷新才能看到对比"，不是留白
+
+## 八、这次会话应用的一条通用设计原则（用户明确提出，要求后续都遵守）
+
+> 功能框架要永远展示出来，哪怕当前数据或条件不满足导致功能暂时没有意义，只需要在界面上解释清楚原因即可——不能因为某个前置条件没满足就把整个功能/按钮/文字隐藏掉，否则用户可能很久都不会发现这个功能存在，甚至在发现之前就已经放弃了。
+
+这条原则已经应用在：`TimelinePanel`的最佳点位对比文字、`EarningsPositionsPanel`里中远期组的腿位表格和平仓按钮（不再因为实时数据没加载就整体隐藏）。**接手的人在后续开发中遇到类似"某个条件不满足就隐藏UI"的写法，应该默认改成"展示框架+解释原因"，除非有明确理由不这么做。**
 
 ---
 
-## 6. 分析模式完善——历史改动存档
+# 三、垃圾代码清理情况
 
-### 6.1 盈亏归因——刻度算法（数据层）
+这场会话中途做过一次全面的死代码扫描，确认的清单（**用户说了要自己手动清理，Claude没有交付删除后的文件**）：
 
-**背景**：原来的条形图是"四个数字（价格/时间/IV/交叉项贡献）里最大的那个当满格"，这种"自相对"刻度会导致：拖滑块时哪怕数字持续增长，最大的那根条永远是100%满格，看起来像是"图不动但数字在动"。
+1. `src/components/LegRolesPanel.tsx`——整个文件是死代码。这是"腿位作用解释"功能最早的实现方式（悬浮面板一次性列出所有腿位说明），后来改成了"每条腿自己菜单里显示"（这个逻辑现在在`legRoles.ts`里，还在用），旧的展示组件被弃用但没删
+2. `src/lib/autoSync.ts`里的`isAutoSyncActive`函数——定义了但整个项目哪里都没调用过
+3. `src/i18n/locales/zh.ts`和`en.ts`里11个失效的翻译key（`common.confirm`/`common.delete`/`common.none`/`common.save`/`error.appCrashDesc`/`error.appCrashTitle`/`error.reloadPage`/`leg.deselectAll`/`preset.shortStockWarning`/`roll.plusDays`/`sim.templateComingSoon`）——多数是"改了实现方式但没删旧文案"造成的
 
-**改法**：换成"固定尺子"——用**这个组合本身的最大盈利/最大亏损**（`maxProfitLoss()`）中绝对值较大的那个当满格，这两个数字不随滑块变化。`PnlAttributionPanel.tsx`接受外部传入的`maxAbs`这个prop，`App.tsx`里的`attributionMaxAbs`这个useMemo负责算，分析模式、跟踪对比模式共用同一把尺子。
-
-**这个"数据层"的改动本身是对的，验证过（见第7节手算过程）。但这个改动之后，条形图视觉表现依然像顶格——原因不在这里，是下面这层的显示bug（见第7节）。**
-
-### 6.2 决策比较——设计定型，留在分析模式
-
-核心设计：跟随情景滑块、SVG图形化叠加"不动/平掉/展期"三条到期payoff曲线、展期用真实期权链数据（弹窗打开时查一次，之后拖滑块不重新查）、最大盈利/最大亏损/到期概率三个数字不跟随滑块（延续第3节的默认原则）。
-
-### 6.3 组合健康度——重构存档
-
-1. **健康度跟随情景滑块**——不只是Delta，到期盈利概率/距盈亏平衡点/剩余天数**这三项也会基于"滑块推演到的假设时点"重新算**。做法：`buildShiftedLegs()`（positionHealth.ts内部）构造一份"如果滑块的情景真的发生了，这些期权腿会变成什么样"的假想腿位列表，再拿这份假想列表去跑到期概率/盈亏平衡点计算。Delta直接用`priceCombo`已经算好的`result.breakdown`（本身就是shift-aware的）。**这是"到期类指标该不该跟随滑块"这条设计默认值被明确打破的一次**，记在第3节了
-
-2. **加了总结句**——`HealthResult`的`summary`字段，根据四项里有没有"bad"/"warning"状态，自动生成一句人话总结
-
-3. **Delta按张数归一化**——用"平均每张合约的Delta"（净Delta ÷ 总张数），避免张数越多的仓位被误判成风险越大
-
-**同时处理的一个UI bug**：健康度弹窗一开始用普通`position:absolute`渲染，被"整体滚动的左侧栏"的`overflow-y-auto`裁切。**修法是用`createPortal`把弹窗传送到`document.body`下渲染**，用按钮的`getBoundingClientRect()`手动计算弹窗该出现在屏幕的什么位置。
-
-### 6.4 关于Portal模式——技术决定存档
-
-`PositionHealthBadge.tsx`用`createPortal`渲染，是这个项目第一次用这个模式。背景：App.tsx的左侧栏是"整体滚动"（外层容器`overflow-y-auto`），**任何普通的`position:absolute`弹窗/下拉菜单，只要嵌套在这个滚动容器内部，理论上都有被裁切的风险**。
-
-项目里还有几个类似组件是**普通absolute定位、没有用Portal**：`LegRow.tsx`里的`LegMenu`、行权价/到期日选择下拉、`DropdownMenu.tsx`、`PresetPicker.tsx`、头部的股票代码历史下拉等。**目前没有被报告出问题**，但如果以后反馈"某个下拉菜单显示不全/被切掉"，大概率是同一类问题，直接抄`PositionHealthBadge.tsx`的Portal写法即可。
-
-### 6.5 期权链自动填充——已完成，非本轮新增（补记）
-
-上一版交接文档遗漏了这部分该写入"已完成"清单，这里补记，避免以后又被当成待办重新做一遍：`LegRow.tsx`已集成`src/lib/optionChain.ts`，行权价/到期日可从真实期权链下拉选择，权利金在strike+dte都设好后自动防抖拉取（不覆盖用户已有值），并提供"恢复市场价"按钮强制刷新。后端是`supabase/functions/option-chain`，Postgres共享缓存15分钟TTL。
+**这三类东西，截至本文档写就的时候，可能还没有被清理**（用户说自己清理，Claude没有跟进确认是否已经完成），接手的人可以核实一下现状。
 
 ---
 
-## 7. 盈亏归因条形图"疑似顶格"问题——已定位并修复
+# 四、当前已知的、明确留待后续处理的事项
 
-**这是上一版文档里"当前未解决"的问题，这一轮排查清楚了，根因和6.1的刻度算法完全无关。**
+按之前几轮对话里明确提到、但还没做的顺序列出：
 
-### 7.1 现象回顾
-
-Xue用Sell Call 220 + Sell Put 220（52天，权利金29.7+30.45）实测，价格贡献条形图看起来始终顶格，哪怕数值（如-31.69、-36.64）按`maxAbs`（60.15）计算出的比例明明只有52.7%、60.9%，远没到100%。继续拖滑块，数字持续变化，但条形图不再有任何视觉变化。
-
-### 7.2 排查过程（存档，避免以后遇到类似"数字对但界面错"的问题时重复走弯路）
-
-1. 逐行核对`attributionMaxAbs`的计算、两处`PnlAttributionPanel`调用点、`maxProfitLoss()`本身——**全部确认逻辑正确**，用文档里的具体例子手算过，60.15/-49.85跟代码算出来的完全吻合
-2. 排除了"两份重复渲染逻辑"——全仓库搜索确认`PnlAttributionPanel`只有一份
-3. 一度怀疑是Vite HMR缓存导致浏览器没跑上最新代码——按标准流程清了`node_modules/.vite`缓存、重启dev server、硬刷新浏览器，**问题依旧**
-4. **关键验证步骤**：直接在浏览器DevTools的Sources面板里搜索`attributionMaxAbs`字符串，**确认浏览器实际加载、执行的就是最新代码**（能搜到`maxAbs: attributionMaxAbs`这行）。这一步排除了"代码没更新到浏览器"这整条方向，把问题范围从"构建/缓存层"收窄到"运行时的具体计算或渲染逻辑"
-
-### 7.3 真正的根因：`Bar`子组件的百分比换算bug（显示层，不是数据层）
-
-`PnlAttributionPanel.tsx`内部的`Bar`组件设计是"以中线（50%）为轴心，正值往右长、负值往左长"的双向条形图。bug出在：
-
-```tsx
-// 修复前
-const pct = maxAbs > 0 ? Math.min(100, (Math.abs(value) / maxAbs) * 100) : 0;
-// ...
-style={{ width: `${pct}%`, left: positive ? "50%" : `${50 - pct}%` }}
-```
-
-`pct`是"相对整条maxAbs的0~100比例"，但容器以中线为轴，**每一侧实际只有50个百分点的可视空间**。当`pct`超过50（也就是数值超过maxAbs一半，很容易发生），负值分支`left = 50 - pct`会算出负数，超出容器左边界，被`overflow-hidden`直接裁掉——视觉上就是"从裁切处一路填到中线，正好填满整个左半边"，跟真正顶格（100%）在视觉上**完全无法区分**。而且`pct`一旦超过50继续增大，`left`只会更负，裁切后可见部分不再变化——这精确对应了"数字在变、条形图不动"的现象。
-
-**修复**：把`pct`再除以2，映射到每侧实际拥有的50个百分点空间里：
-
-```tsx
-// 修复后
-const pct = maxAbs > 0 ? Math.min(100, (Math.abs(value) / maxAbs) * 100) : 0;
-const visualPct = pct / 2;
-// ...
-style={{ width: `${visualPct}%`, left: positive ? "50%" : `${50 - visualPct}%` }}
-```
-
-代入验证：value=-31.69时，`visualPct=26.35`，`left=23.65%`——条形落在左半边内部，不再触碰边界；只有当`|value|`真正逼近`maxAbs`时（`pct`接近100，`visualPct`接近50），条形才会触到最左/最右边缘，这才是"固定尺子"该有的行为。
-
-### 7.4 这次排查留下的经验（已写入第8节）
-
-"代码逻辑正确"、"浏览器加载的是最新代码"，都不等于"界面表现正确"——中间还有一层纯CSS/布局的百分比换算，是逻辑review和"搜字符串确认新代码"这两步都查不出来的，必须真的把数值代入具体的CSS属性里手算一遍，或者靠视觉实测。以后遇到"数字看着对、但界面表现明显不对"的问题，除了缓存/构建层，一定要单独怀疑一遍纯展示层的计算（百分比、坐标、单位换算）。
+1. **保证金持仓后不会动态跟涨跌**——只有开仓/预览那一刻算得对，需要把`computeMarginUsed`改成用实时股价而不是开仓时冻结的股价，牵涉多个调用点
+2. **财报策略80%/70%阈值档**——UI占位已搭好，逻辑没做
+3. **财报"方向判断"分支**——UI占位已搭好，内容没做，用户说"等做的时候会告诉你"
+4. **IV Rank/Percentile真实数据**——卡在要不要接付费历史数据源，用户还没决定
+5. **期限结构（Term Structure）可视化**——同一标的不同到期日的IV放一张图上对比，主要用于日历价差选到期日，提过想法但没开始做
+6. **历史快照不会自动积累，只在手动点"刷新全部持仓"时记录**——讨论过"每次打开模拟账户页面自动记一次快照"这个改进方向，但因为涉及组件内部函数声明顺序（TDZ风险），特意没有在当时顺手做，留给单独一轮专门处理
+7. **`handleAddToSimAccount`这个独立的"快速添加到模拟账户"入口，没有像主流程那样接上`openingAt`**，因为不确定这个入口具体从哪里触发
+8. **分析模式的决策对比（`DecisionCompareDialog`）没有"对冲"这第四个对比分支**——代码注释里说是因为"对冲没有唯一确定的默认动作"，但`HedgeDialog.tsx`已经是成熟功能了，理论上可以复用它的默认方案逻辑做成四选一对比，这个是聊天中提过的改进建议，没有动手做
+9. **`PayoffChart.tsx`里有4份几乎一样的情景偏移计算逻辑，是重复代码**，是修复日历价差定价bug的时候顺手发现的，不是新问题，属于技术债，没有处理
+10. **IV/HV这套指标目前只在场景选择器里用**，建议接入分析模式手动搭建组合的场景，这个是聊天中提过的改进建议，没有动手做
 
 ---
 
-## 8. 反复出现、必须知道的"操作层面"教训
+# 五、文件清单速查（本次会话新建/修改的所有文件）
 
-1. Bolt已经不用了
-2. Xue在本地用VS Code + PowerShell/Git Bash + npm run dev，每次改完文件提醒他保存、确认dev server还在跑
-3. 一定要按文件路径给完整文件内容（不是diff）
-4. **反复发生"文件之前建过，但后来发现本地没有"的情况**——每次改动前如果依赖某个之前做过的文件，最好先用`Select-String`确认它真的存在
-5. 代码交付前，永远先用esbuild做语法检查，能用真实数据交叉验证的一定要验证——但"语法正确"、"逻辑经过确认存在于文件里"，都不等于"浏览器里跑的就是这份代码"，也不等于"界面表现正确"（见第7节，这轮暴露了后者）
-6. 部署流程：改前端文件 → 保存 → npm run dev本地过一遍 → 涉及Edge Function的额外`supabase functions deploy` → 涉及数据库改动的额外`supabase secrets set`或`supabase db push` → 确认无误后 → `git add . && git commit && git push`
-7. ErrorBoundary这几轮真实发挥过作用（运行时崩溃时只影响局部，没有变成完全白屏），印证了这个防护的价值
-8. **"暂时性死区"（TDZ）报错**：App.tsx里几十个`useMemo`/`const`前后互相依赖，往文件中间插入新代码时如果引用了在插入点之后才声明的变量，会导致`Uncaught ReferenceError: Cannot access 'xxx' before initialization`，esbuild查不出来。**每次往App.tsx中间插入新的useMemo/const，必须手动确认引用的每个变量是否都排在它前面**
-9. Portal是解决"弹窗被滚动容器裁切"的标准方案——见6.4，目前只在`PositionHealthBadge.tsx`用过一次，如果后续还有其他下拉/弹窗被反馈"显示不全"，大概率是同一类问题，直接复用这个写法
-10. Supabase项目当初是从Bolt认领过来的，认领时Bolt保留了对整个Supabase组织的大范围API权限，Xue还没去检查/收回，如果他问起可以提醒
-11. **新增：排查"数字对但界面表现不对"的问题时，缓存/构建层排查完之后，别忘了单独审查纯CSS/布局的百分比、坐标、单位换算逻辑**——这类bug逻辑review容易看漏（因为数据本身是对的），必须把具体数值代入CSS属性手算，或者靠实际视觉效果验证。第7节这次排查在排除缓存问题后才找到真正原因，走了不少弯路，下次遇到类似"看着像旧代码在跑"的现象，可以把这层检查提前
+## 新建文件
+- `src/lib/earningsStrategy.ts`
+- `src/lib/earningsClosing.ts`
+- `src/lib/historicalVolatility.ts`（历史波动率相关，早期财报模块讨论中建的）
+- `src/components/EarningsTabRoot.tsx`
+- `src/components/EarningsIvCrashTab.tsx`
+- `src/components/EarningsPositionsPanel.tsx`
+- `src/components/AppHeader.tsx`（App.tsx拆分出来的）
+- `src/components/LegListSection.tsx`（App.tsx拆分出来的）
+- `src/components/dialogs/ConfirmResetAccountDialog.tsx`
+- `src/components/dialogs/ConfirmLeaveDialog.tsx`
+- `src/components/dialogs/MarginErrorDialog.tsx`
+- `src/lib/legRoles.ts`
+- `src/lib/dateUtils.ts`（部分函数从App.tsx移出来的）
+- `supabase/functions/historical-prices/index.ts`（⚠️需要手动`supabase functions deploy`部署）
 
----
+## 本次会话修改过的主要文件
+`App.tsx`、`Shell.tsx`、`SimulatorPage.tsx`、`ScenarioSelectorPage.tsx`、`lib/simAccount.ts`、`lib/margin.ts`、`lib/matchStrategy.ts`、`lib/presets.ts`、`lib/pricing.ts`、`lib/optionChain.ts`、`lib/scenarioEngine.ts`、`components/LegRow.tsx`、`components/StrategyBadge.tsx`、`components/ShiftSliders.tsx`、`components/ProtectDialog.tsx`、`components/RollDialog.tsx`、`components/HedgeDialog.tsx`、`i18n/locales/zh.ts`、`i18n/locales/en.ts`
 
-## 9. 环境变量 / Secrets 清单
-
-前端 .env（本地文件，从没推送到GitHub）：
-```
-VITE_SUPABASE_URL=https://oyotvdhlffxodyfzqfxt.supabase.co
-VITE_SUPABASE_ANON_KEY=<已知，需要时Xue可以直接给，这个key设计上可以公开>
-```
-
-Supabase Secrets（已确认配置完成）：
-```
-ANTHROPIC_API_KEY / OPENAI_API_KEY / XAI_API_KEY / GEMINI_API_KEY  — 四个AI模型
-FINNHUB_API_KEY  — market-context用
-```
+## 明确标记为死代码、用户说自己清理的
+`src/components/LegRolesPanel.tsx`（整个文件）、`src/lib/autoSync.ts`里的`isAutoSyncActive`函数、`zh.ts`/`en.ts`里的11个失效翻译key（清单见上面第三节）
 
 ---
 
-## 10. 建议的下一步（按优先级）
+# 六、给接手的人的建议
 
-1. **Leg Purpose**——分析模式完善清单最后一项还没做
-2. **重新评估AI推荐策略那条线的优先级**——技术方案都想清楚了，随时可以捡起来（TQQQ匹配 → 数据库持久化 → Cron）
-3. **App.tsx拆分**——文件持续增长（约1649行），第8.8节的教训说明可维护性在下降
-4. 其他的看Xue想先做哪个，不确定的地方直接问他，不要自己瞎猜着往下做
+1. **第一步，先跟GitHub真实代码做一次全面比对**，确认这份文档反映的状态和实际代码库一致，再开始改动——这份文档和之前所有的代码交付，都基于Claude自己维护的本地副本，不是直接读取GitHub
+2. 第四节"已知留待后续处理的事项"是最直接能接手的任务列表，按优先级或者用户当下的兴趣挑一项开始
+3. 遇到"某个条件不满足就整个隐藏UI"的写法，参考第八节那条设计原则，默认改成"展示框架+解释原因"
+4. 涉及`App.tsx`内部新增`useMemo`/`useCallback`的时候，注意声明顺序的TDZ风险（第一部分"关键设计原则"提过），esbuild语法检查不会抓出这类问题，需要手动核对
+5. 财报策略相关的改动，注意`note`字段（财报组标记）和`linkedStrategyId`字段（对比模式关联）是两个独立字段，不要混用
 
-**本版本状态**：第7节的bug已修复并等待Xue本地验证+提交，除此之外没有其他进行中的改动——这是个干净的过渡点，下一步是上面1-3里任选一个开始新一轮开发。
+已知问题：GitHub同步范围与CLAUDE.md滞后（2026-09-02发现）
+问题
+
+这个project的GitHub同步源（lixuedenon/OptionPilot, main分支）设置了文件过滤白名单，目前只包含：
+
+/src/App.tsx
+/src/lib/types.ts
+/src/lib/pricing.ts
+/src/lib/dateUtils.ts
+/src/lib/useStockQuote.ts
+/src/components/LegRow.tsx
+/supabase/functions/stock-quote/index.ts
+
+这份白名单已经过期 —— 权利金自动填充功能已经在main分支实际开发完成并上线，但相关的两个核心文件不在同步范围内，导致project内的project_search/project_read会返回旧版LegRow.tsx（没有自动填充逻辑），产生误判：
+
+/src/lib/optionChain.ts —— 新建的客户端库，导出 fetchLegPremium / getOptionChain / premiumFromQuote，调用 option-chain Edge Function
+/supabase/functions/option-chain/index.ts —— 新建的Edge Function，走Yahoo Finance期权链接口（v7/finance/options/{symbol}，含cookie+crumb令牌获取），15分钟共享缓存
+
+已确认的实现细节：LegRow.tsx里有600ms防抖的useEffect，行权价+到期日填好且premium为0时自动调用fetchLegPremium；配一个RefreshCw图标的"恢复市场价"按钮（handleRestorePrice，force参数绕过缓存）；行权价/到期日无精确匹配时自动"贴"到最近可用值并通过priceNote提示用户。
+
+待办（需要xue在claude.ai网页端project设置里手动操作，Claude没有改sync filter的工具权限）
+在project的GitHub同步源设置里，把上面两个新文件加入过滤白名单，让project索引跟上main分支实际状态。
+CLAUDE.md（第4版）里完全没提这个已上线的功能，"下一步优先级"三条（Leg Purpose收尾、AI推荐策略重新评估、App.tsx拆分）也应该在改的时候顺手确认这个功能已完成、不用再排期。
+以后有新文件加入src/lib或supabase/functions但没同时加进同步白名单时，Claude在这个project里给出的"功能是否已完成"判断可能基于过期快照 —— 遇到关键判断时优先用WebFetch直接读GitHub raw内容核实，而不是只信project_search。
+建议追加到CLAUDE.md的内容（草稿，供xue复制粘贴/改写后提交）
+
+在"模块完成度"表格的分析模式一行备注里可以加一句：期权链权利金自动填充（LegRow行权价+到期日→自动拉市场权利金+恢复按钮）已完成并上线，数据源为Yahoo Finance期权链（供参考，具体措辞由你定）。
+
+# 模拟账户改动记录（2026-09-02）
+
+对应对话里排查的两个问题里的前两项（第三项"悔棋模式"单独处理，本轮未动）。改动已在Claude沙箱里clone仓库、实际改代码、跑esbuild+完整tsc类型检查（无新增错误，pre-existing的8个类型错误跟这次改动无关，改动前后对比过），完整文件已通过SendUserFile交付给xue，本地覆盖对应路径即可。**这些改动还没有推送到GitHub**，需要xue在本地跑`npm run dev`验证、涉及Edge Function的部分要`supabase functions deploy historical-prices`，确认无误后自己`git add && git commit && git push`。
+
+## 改动1：分析模式→模拟账户 开仓日期丢失（已修复）
+
+**根因**：`onAddToSimAccount`/`openSimPosition`整条payload类型链（App.tsx → Shell.tsx → simAccount.ts）从来没有`openingAt`字段，`openSimPosition`第256行写死`openedAt: Date.now()`。分析模式的`openingAt`状态本身是对的（`handleOpenStrategy`正确从保存的策略里恢复），只是没被带到模拟账户这一步。
+
+**修法**：payload类型加`openingAt?: number`（可选），App.tsx的`handleAddToSimAccount`把当前`openingAt`状态传过去；`openSimPosition`改成`openedAt: params.openingAt ?? Date.now()`。模拟账户自己新建仓位那条路径（`handleConfirmSimOpen`，simOrigin流程）没传这个字段，继续正确落回`Date.now()`，不用动。
+
+**涉及文件**：`src/App.tsx`、`src/Shell.tsx`、`src/lib/simAccount.ts`
+
+## 改动2：趋势面板（Regret Mode B）缺口自动回填
+
+**原状态**：`TimelinePanel`只显示`recordSnapshot()`记录过的真实刷新数据，没手动刷新过的日子完全没有数据点。
+
+**新逻辑**：新增`backfillSnapshots(position)`（simAccount.ts），打开"趋势"面板时触发（`SimulatorPage.tsx`的`toggleTimeline`，改成接收整个`SimPosition`而不只是id）。对开仓日到今天（已平仓则到平仓日，两端都不含）之间、没有真实快照的每个交易日：
+
+1. 调用`historical-prices` Edge Function拿(open+close)/2作为当日估算spot（**Edge Function本身也改了**：原来只返回`closes`，现在同时返回index对齐的`opens`和`timestamps`，供前端换算(open+close)/2 —— `historicalVolatility.ts`现有的HV计算只读`closes`字段，不受影响，已确认）
+2. 用开仓时反推的IV（`impliedVol`，flat vol假设，跟`legShiftedPrice`/`decisionCompare.ts`同一套约定）+ 调整后的dte + 估算spot，走`blackScholes`算理论权利金
+3. 存成`PositionSnapshot`，打上`estimated: true`标记，真实快照不会被覆盖
+
+**UI**：`estimated`的快照用虚线边框+"(估)"标签区分，"最佳平仓点"文案如果落在估算日也会额外提示"该最佳点为估算值"。避免用户把理论估算当成真实市场成交价。
+
+**已知限制**：这是理论BS重定价，不是真实历史期权成交价（Yahoo不提供历史期权链数据）；`historical-prices`只保留2个月窗口，仓位开仓超过2个月的更早的日子仍然回填不了；今天和已平仓日当天本身不回填（留给真实刷新/`realizedPnl`）。
+
+## 待办（下一轮对话前情提要）
+
+- 悔棋模式（Regret Mode A，"如果没平仓"按钮）——xue反馈"问题比较大，需要单独更改"，具体怎么改还没讨论，下次对话要先问清楚设计诉求再动手
+- 本轮改动xue还没在本地验证/部署/提交

@@ -1,3 +1,4 @@
+// src/lib/optionChain.ts
 import type { OptionType } from "./types";
 import { dateFromDte, dteFromDate } from "./dateUtils";
 
@@ -139,7 +140,12 @@ export function resolveFromCache(symbol: string, type: OptionType, targetStrike:
   return { strike, premium, dte: actualDte };
 }
 
-function nearestStrikeQuote(quotes: OptionQuote[], targetStrike: number): OptionQuote | null {
+// Exported so other modules that already resolved a specific chain
+// (getOptionChain) can find the nearest listed strike themselves — e.g.
+// the earnings IV-crash strategy builder, which needs to place several
+// legs (ATM + two protection strikes) on chains it already fetched,
+// rather than re-fetching per leg through fetchLegPremium.
+export function nearestStrikeQuote(quotes: OptionQuote[], targetStrike: number): OptionQuote | null {
   if (quotes.length === 0) return null;
   let best = quotes[0];
   let bestDiff = Math.abs(best.strike - targetStrike);

@@ -19,6 +19,7 @@ import { fetchLegPremium } from "@/lib/optionChain";
 import { impliedVol } from "@/lib/pricing";
 import { fetchHistoricalCloses, computeHV, computeIvHvNote, RICH_THRESHOLD, type IvHvNote } from "@/lib/historicalVolatility";
 import { dirKeyMap } from "@/components/StrategyBadge";
+import EarningsTabRoot from "@/components/EarningsTabRoot";
 import { useI18n } from "@/i18n/I18nContext";
 import type { Leg } from "@/lib/types";
 
@@ -291,9 +292,7 @@ export default function ScenarioSelectorPage({ onBack, onUseCandidate, persisted
 
       <div className="flex-1 overflow-y-auto px-4 py-4">
         {activeTab === "earnings" && (
-          <div className="mx-auto max-w-2xl rounded-lg border border-slate-800 bg-slate-900/40 p-8 text-center text-sm text-slate-500">
-            {t("scenario.tab.comingSoon")}
-          </div>
+          <EarningsTabRoot onOpened={onBack} />
         )}
         {activeTab === "pending" && (
           <div className="mx-auto max-w-2xl rounded-lg border border-slate-800 bg-slate-900/40 p-8 text-center text-sm text-slate-500">
