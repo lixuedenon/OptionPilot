@@ -40,6 +40,11 @@ const en: Dict = {
   "leg.switchSourceSnapshot": "Or pick a snapshot",
   "leg.pop": "POP",
   "leg.breakeven": "Breakeven",
+  "greeks.netDelta": "Net Delta",
+  "greeks.netTheta": "Net Theta",
+  "greeks.netVega": "Net Vega",
+  "greeks.netGamma": "Net Gamma",
+  "greeks.hint": "Net Greeks for the whole combo: Delta = directional exposure, Theta = $/day time-decay P&L, Vega = exposure per 1 vol point, Gamma = how fast Delta itself moves with the stock price. Follows the scenario sliders in Analysis Mode; the real current value of \"今日组合\" in Compare Mode.",
   "health.title": "Position Health",
   // ── position health (src/lib/positionHealth.ts) ── computeHealth() takes
   // `t` and builds every label/note/meaning/summary string from these keys
@@ -160,6 +165,8 @@ const en: Dict = {
   "attribution.total": "Total Change",
   "attribution.residualHint": "Price/time/IV effects aren't simply additive in option pricing (e.g. the price effect itself changes as time decays), so the three rarely add up exactly to the real total change. The gap shown here is that interaction effect, not a calculation error.",
   "compare.snapshots": "snapshots",
+  "compare.estimatedTag": "(est.)",
+  "compare.estimatedHint": "Snapshots marked (est.) are theoretically repriced from historical stock prices (auto-filled for trading days nobody manually refreshed) — not real market fills",
   "compare.keepOne": "Keep at least one snapshot",
   "compare.deleteSnap": "Delete current snapshot",
   "compare.clickModifyDate": "Click to modify entry date",

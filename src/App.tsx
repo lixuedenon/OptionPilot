@@ -13,7 +13,7 @@ import ShiftSliders from "@/components/ShiftSliders";
 import PayoffChart, { type AlertInfo } from "@/components/PayoffChart";
 import { useStockQuote } from "@/lib/useStockQuote";
 import { loadRecentSymbols, addRecentSymbol } from "@/lib/recentSymbols";
-import { saveStrategy, overwriteStrategy, addTrackedSnapshot, updateSnapshotTime, deleteTrackedSnapshot, serializeStrategyState, findDuplicate, type SavedStrategy, type TrackedSnapshot } from "@/lib/savedStrategies";
+import { saveStrategy, overwriteStrategy, addTrackedSnapshot, updateSnapshotTime, deleteTrackedSnapshot, backfillTrackedSnapshots, serializeStrategyState, findDuplicate, type SavedStrategy, type TrackedSnapshot } from "@/lib/savedStrategies";
 import DropdownMenu from "@/components/DropdownMenu";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
@@ -365,6 +365,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const liveTrackedSpot = quote && quote.price > 0 ? quote.price : null;
 
   const activeLegs = useMemo(() => legs.filter((l) => !l.disabled), [legs]);
+  const activeTrackedLegs = useMemo(() => trackedLegs?.filter((l) => !l.disabled) ?? null, [trackedLegs]);
+  const isCompareMode = trackedLegs !== null;
   const strategyName = useMemo(() => matchStrategy(activeLegs, spot, customPresets), [activeLegs, spot, customPresets]);
   const canSaveStrategy = activeLegs.length > 0 && serializeStrategyState(symbol, legs, shifts, openingAt) !== strategyBaseline;
   const result = useMemo(() => priceCombo(activeLegs, shifts, spot), [activeLegs, shifts, spot]);
@@ -375,22 +377,61 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     return m;
   }, [result]);
 
-  // Position Health deliberately reads the REAL current Greeks (zero
-  // shift), not result.breakdown — same reasoning as decision-compare's
-  // maxProfit/maxLoss/pop staying shift-independent: health describes
-  // "how is my actual position doing right now", not a hypothetical
-  // slider scenario. Recomputing at {dS:0,dT:0,dV:0} is cheap and keeps
-  // this from flickering as someone plays with the sliders.
+  // In compare mode, back-solve the implied stock price from the premiums the user
+  // enters for each tracked leg. Different premiums imply different stock prices —
+  // e.g. if a short straddle's call premium drops while put premium rises, the stock
+  // has fallen. Falls back to the live quote when back-solve fails (e.g. only stock legs).
+  const impliedSpot = useMemo(() => {
+    if (!isCompareMode || !activeTrackedLegs || !activeLegs || spot <= 0) return null;
+    return impliedSpotFromPremiums(activeLegs, activeTrackedLegs, spot);
+  }, [isCompareMode, activeTrackedLegs, activeLegs, spot]);
+
+  const effectiveTrackedSpot = correctedSpot ?? impliedSpot ?? trackedSpot ?? spot;
+
+  // Real Black-Scholes combo Greeks (delta/gamma/theta/vega) for "今日组合"
+  // at ITS OWN current spot/premiums, zero shift — compare mode's sliders
+  // are frozen read-only telemetry, not a scenario to rehearse (see
+  // ShiftSliders.tsx), so there's no "shifted" version of this to compute.
+  // Deliberately a separate memo from trackedResult below (which only does
+  // raw premium-difference P&L — no Black-Scholes needed for that — and
+  // still carries its own hardcoded-zero breakdown, unused elsewhere) so
+  // this doesn't disturb that already-working P&L math. Feeds both Position
+  // Health's delta factor and the net-Greeks readout, in compare mode.
+  const trackedGreeks = useMemo(() => {
+    if (!isCompareMode || !activeTrackedLegs || activeTrackedLegs.length === 0 || effectiveTrackedSpot <= 0) return null;
+    return priceCombo(activeTrackedLegs, { dS: 0, dT: 0, dV: 0 }, effectiveTrackedSpot);
+  }, [isCompareMode, activeTrackedLegs, effectiveTrackedSpot]);
+
+  // Position Health follows whichever combo is actually on screen: analysis
+  // mode's shifted opening combo (rehearsing the sliders — result.breakdown
+  // is itself computed at the live shifts, so all four factors, delta
+  // included, move together as the sliders move), or compare mode's real
+  // CURRENT tracked combo at zero shift — never the stale opening combo
+  // once something is actually being tracked. (Previously this always read
+  // the opening combo/`result` even in compare mode; fixed 2026-09-06 —
+  // see claude/analysis-compare-mode-review-2026-09-06.md.) Because this
+  // now keys off `activeTrackedLegs`/`effectiveTrackedSpot` — which change
+  // with whichever snapshot is selected — switching snapshots naturally
+  // gives each one its own health score, with no separate per-snapshot
+  // storage needed.
   const positionHealth = useMemo(() => {
+    if (isCompareMode) {
+      if (!activeTrackedLegs || activeTrackedLegs.length === 0 || effectiveTrackedSpot <= 0 || !trackedGreeks) return null;
+      return computeHealth(activeTrackedLegs, effectiveTrackedSpot, { dS: 0, dT: 0, dV: 0 }, trackedGreeks.breakdown, t);
+    }
     if (activeLegs.length === 0 || spot <= 0) return null;
     return computeHealth(activeLegs, spot, shifts, result.breakdown, t);
-  }, [activeLegs, spot, shifts, result, t]);
+  }, [isCompareMode, activeTrackedLegs, effectiveTrackedSpot, trackedGreeks, activeLegs, spot, shifts, result, t]);
+
+  // Net combo Greeks actually shown to the user (see the small Greeks
+  // readout next to the Health badge below) — same source data
+  // positionHealth's delta factor already reads, just also surfacing
+  // gamma/theta/vega, which until now were computed by priceCombo but never
+  // displayed anywhere in either mode.
+  const displayGreeks = isCompareMode ? trackedGreeks?.breakdown ?? null : result.breakdown;
+  const fmtGreek = (v: number | undefined, decimals = 2) => (v == null ? "-" : `${v >= 0 ? "+" : ""}${v.toFixed(decimals)}`);
 
   const { pop, breakevens } = useMemo(() => probabilityOfProfit(activeLegs, spot), [activeLegs, spot]);
-
-  const activeTrackedLegs = useMemo(() => trackedLegs?.filter((l) => !l.disabled) ?? null, [trackedLegs]);
-
-  const isCompareMode = trackedLegs !== null;
 
   // Analysis-mode P/L attribution — same attributePnl() used in tracking
   // mode, just fed the slider's own dS/dT/dV instead of a tracked-vs-
@@ -415,17 +456,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     const { maxProfit, maxLoss } = maxProfitLoss(activeLegs, spot);
     return Math.max(Math.abs(maxProfit), Math.abs(maxLoss), 0.01);
   }, [activeLegs, spot]);
-
-  // In compare mode, back-solve the implied stock price from the premiums the user
-  // enters for each tracked leg. Different premiums imply different stock prices —
-  // e.g. if a short straddle's call premium drops while put premium rises, the stock
-  // has fallen. Falls back to the live quote when back-solve fails (e.g. only stock legs).
-  const impliedSpot = useMemo(() => {
-    if (!isCompareMode || !activeTrackedLegs || !activeLegs || spot <= 0) return null;
-    return impliedSpotFromPremiums(activeLegs, activeTrackedLegs, spot);
-  }, [isCompareMode, activeTrackedLegs, activeLegs, spot]);
-
-  const effectiveTrackedSpot = correctedSpot ?? impliedSpot ?? trackedSpot ?? spot;
 
   // Days elapsed: derived from the DTE difference between opening and tracked legs,
   // so it stays in sync when the user manually adjusts the tracked legs' DTE.
@@ -758,16 +788,27 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     legBaseSymbol.current = s.symbol;
     spotManuallySet.current = true;
 
+    // Fill in any missed trading days since this strategy was last tracked
+    // before deciding what "最新快照" even means — reuses the Simulator
+    // Timeline's theoretical-backfill approach (historicalBackfill.ts) so
+    // "今日组合" doesn't default to a snapshot from days or weeks ago just
+    // because nobody happened to have the app open in between. Backfilled
+    // days are marked `estimated` and never overwrite a real, manually-saved
+    // snapshot for the same day (see backfillTrackedSnapshots).
+    const refreshedStrategies = await backfillTrackedSnapshots(s.id);
+    setSavedStrategies(refreshedStrategies);
+    const refreshed = refreshedStrategies.find((st) => st.id === s.id) ?? s;
+
     // "今日组合" should open on whatever the person actually saw and saved
-    // last time (the newest real trackedSnapshot), not a fresh copy of the
-    // opening combo with the DTE merely decremented — that "recompute from
-    // opening" fallback is only correct the FIRST time a strategy is
-    // tracked, before any snapshot exists. Loading the opening combo here
-    // when a snapshot already exists would silently discard whatever the
-    // person had edited/recorded into that snapshot, which is exactly what
-    // this branch exists to avoid (see handleSelectSnapshot below, whose
-    // decay logic this mirrors).
-    const snaps = s.trackedSnapshots ?? [];
+    // last time (the newest real OR backfilled trackedSnapshot), not a
+    // fresh copy of the opening combo with the DTE merely decremented —
+    // that "recompute from opening" fallback is only correct when NO
+    // snapshot exists at all. Loading the opening combo here when a
+    // snapshot already exists would silently discard whatever the person
+    // had edited/recorded into that snapshot, which is exactly what this
+    // branch exists to avoid (see handleSelectSnapshot below, whose decay
+    // logic this mirrors).
+    const snaps = refreshed.trackedSnapshots ?? [];
     const latestSnap = snaps.length > 0 ? snaps[snaps.length - 1] : null;
     if (latestSnap) {
       // Two different "days" here, easy to conflate (2026-09-04 bug): the
@@ -933,7 +974,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // elapsed yet (we're switching right now), so trackedLegs starts as an
   // exact copy of legs with no DTE reduction — "today" and "opening" are
   // the same combo until the person edits the tracked side or time passes.
-  const handleSwitchToCompare = useCallback(() => {
+  const handleSwitchToCompare = useCallback(async () => {
     if (isCompareMode || legs.length === 0) return;
     // The opening combo being edited right now might already BE an existing
     // saved strategy — e.g. it was opened via "打开策略" (handleOpenStrategy
@@ -947,7 +988,14 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     // already saved for it, instead of looking like a brand-new untracked
     // combo just because compare mode was entered via this direct-switch
     // button instead of "跟踪" from the strategy library.
-    const existing = findDuplicate({ symbol, spot, legs, shifts }, savedStrategies);
+    let existing = findDuplicate({ symbol, spot, legs, shifts }, savedStrategies);
+    if (existing) {
+      // Same missed-trading-days backfill as handleTrack — see its comment
+      // for why this needs to happen before "latest snapshot" is decided.
+      const refreshedStrategies = await backfillTrackedSnapshots(existing.id);
+      setSavedStrategies(refreshedStrategies);
+      existing = refreshedStrategies.find((st) => st.id === existing!.id) ?? existing;
+    }
     const snaps = existing?.trackedSnapshots ?? [];
     const latestSnap = snaps.length > 0 ? snaps[snaps.length - 1] : null;
     if (latestSnap) {
@@ -1234,7 +1282,16 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   </div>
                 </div>
               )}
-            <div className="col-start-2 row-start-1 ml-auto flex min-w-0 shrink-0 items-center gap-2 whitespace-nowrap">
+            {/* flex-wrap (not nowrap+shrink-0): the health badge is the last
+                item here, and once the net-Greeks readout was added
+                alongside pop/breakeven, the row's min-content width could
+                exceed this column's width — with nowrap that silently
+                pushed the badge outside the panel's clipped/auto-scrolling
+                bounds, hiding it with no visual sign anything was missing.
+                Wrapping keeps every item visible, just on a second line
+                when the column is too narrow. Fixed 2026-09-06 — see
+                claude/analysis-compare-mode-review-2026-09-06.md. */}
+            <div className="col-start-2 row-start-1 ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
               {activeLegs.length > 0 && pop > 0 && (
                 <div className="flex shrink-0 items-center gap-2 border-r border-slate-800 pr-2">
                   <div className="flex items-baseline gap-1">
@@ -1251,6 +1308,32 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                       </span>
                     </div>
                   )}
+                </div>
+              )}
+              {displayGreeks && (activeLegs.length > 0 || activeTrackedLegs) && (
+                // flex-wrap (not shrink-0): on a narrow left panel these 4
+                // stats plus the pop/breakeven block and the health badge
+                // no longer fit on one line — letting this group itself
+                // break into two rows keeps everything visible instead of
+                // this one block alone forcing the whole row past the
+                // panel's right edge (see the wrap note above).
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 border-r border-slate-800 pr-2" title={t("greeks.hint")}>
+                  <div className="flex items-baseline gap-1">
+                    <span className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netDelta")}</span>
+                    <span className="whitespace-nowrap text-xs font-semibold tabular-nums text-sky-300">{fmtGreek(displayGreeks.delta)}</span>
+                  </div>
+                  <div className="flex items-baseline gap-1">
+                    <span className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netTheta")}</span>
+                    <span className={`whitespace-nowrap text-xs font-semibold tabular-nums ${displayGreeks.theta >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{fmtGreek(displayGreeks.theta)}</span>
+                  </div>
+                  <div className="flex items-baseline gap-1">
+                    <span className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netVega")}</span>
+                    <span className="whitespace-nowrap text-xs font-semibold tabular-nums text-sky-300">{fmtGreek(displayGreeks.vega)}</span>
+                  </div>
+                  <div className="flex items-baseline gap-1">
+                    <span className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netGamma")}</span>
+                    <span className="whitespace-nowrap text-xs font-semibold tabular-nums text-sky-300">{fmtGreek(displayGreeks.gamma, 3)}</span>
+                  </div>
                 </div>
               )}
               {positionHealth && <PositionHealthBadge health={positionHealth} />}

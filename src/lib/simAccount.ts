@@ -1,23 +1,15 @@
 // src/lib/simAccount.ts
 import type { Leg } from "./types";
 import { computeComboMargin, type MarginNote } from "./margin";
-import { blackScholes } from "./bs";
-import { impliedVol, classifySpotOnCurve, type CurvePosition } from "./pricing";
+import { classifySpotOnCurve, type CurvePosition } from "./pricing";
 import { formatDateInput, daysBetweenLocalDates } from "./dateUtils";
+import { fetchHistoricalBars, repriceLegsAtDate, type HistoricalBar } from "./historicalBackfill";
 
 // Re-exported for existing callers (SimulatorPage.tsx) — the actual
 // implementation now lives in dateUtils.ts as the app-wide canonical
 // calendar-day-difference helper (App.tsx's compare-mode tracking uses it
 // too, see dateUtils.ts's comment on daysBetweenLocalDates for why).
 export { daysBetweenLocalDates };
-
-const SIM_RATE = 0.05; // matches pricing.ts's RATE — kept as a separate
-// local const rather than importing pricing.ts's private RATE (not
-// exported) so the backfill estimate below uses the same risk-free rate
-// convention as the rest of the app's option pricing.
-
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export interface SimPosition {
   id: string;
@@ -183,67 +175,15 @@ export async function deleteSnapshotsForPosition(positionId: string): Promise<vo
   saveSnapshotsToStorage(snapshots);
 }
 
-interface HistoricalBar {
-  dateISO: string; // local calendar day — same convention as formatDateInput/todayLocalISO
-  avgPrice: number; // (open + close) / 2 for that trading day
-}
-
-// Pulls the symbol's ~2mo daily bar history from the historical-prices Edge
-// Function and reduces it to one (date, average-price) pair per trading
-// day. A bar missing open/timestamp is dropped rather than guessed at —
-// see the Edge Function's own alignment note for why those three arrays
-// are filtered together there.
-async function fetchHistoricalBars(symbol: string): Promise<HistoricalBar[]> {
-  const url = `${SUPABASE_URL}/functions/v1/historical-prices?symbol=${encodeURIComponent(symbol)}`;
-  const resp = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      "Content-Type": "application/json",
-    },
-  });
-  if (!resp.ok) {
-    const body = await resp.json().catch(() => ({}));
-    throw new Error(body.error || `Request failed (${resp.status})`);
-  }
-  const data = await resp.json();
-  const closes: number[] = Array.isArray(data.closes) ? data.closes : [];
-  const opens: number[] = Array.isArray(data.opens) ? data.opens : [];
-  const timestamps: number[] = Array.isArray(data.timestamps) ? data.timestamps : [];
-
-  const bars: HistoricalBar[] = [];
-  for (let i = 0; i < closes.length; i++) {
-    if (opens[i] == null || timestamps[i] == null) continue;
-    bars.push({
-      dateISO: formatDateInput(timestamps[i] * 1000),
-      avgPrice: (opens[i] + closes[i]) / 2,
-    });
-  }
-  return bars;
-}
-
-// Theoretical repricing of a position's legs at a historical point in time,
-// using the IV implied at the position's ACTUAL opening premiums (held
-// flat — the same "flat vol from opening" convention pricing.ts's
-// legShiftedPrice / decisionCompare.ts already use elsewhere in this app,
-// see CLAUDE.md §3) and a historical daily average price standing in for
-// the real spot. This is necessarily an ESTIMATE: Yahoo doesn't expose
-// historical option chain data, so there's no real historical bid/ask to
-// fall back to. Stock legs need no repricing — computeMarkValue already
-// prices them directly off the spot passed in.
+// Theoretical repricing of a position's legs at a historical point in time —
+// thin wrapper over historicalBackfill.ts's shared repriceLegsAtDate (see
+// that file for the flat-vol convention this uses). Stock legs need no
+// repricing — computeMarkValue already prices them directly off the spot
+// passed in.
 function estimateMarkValueAtDate(position: SimPosition, avgSpot: number, dateISO: string): { markValue: number; legs: Leg[] } {
   const openedISO = formatDateInput(position.openedAt);
   const daysElapsed = Math.max(0, daysBetweenLocalDates(openedISO, dateISO));
-
-  const repriced: Leg[] = position.legs.map((l) => {
-    if (l.kind === "stock") return l;
-    const openIv = impliedVol(position.spot, l.strike, l.dte, l.premium, l.type);
-    const newDte = Math.max(0, l.dte - daysElapsed);
-    const theoPrice = newDte <= 0
-      ? (l.type === "call" ? Math.max(0, avgSpot - l.strike) : Math.max(0, l.strike - avgSpot))
-      : blackScholes({ spot: avgSpot, strike: l.strike, dte: newDte, vol: Math.max(0.01, openIv), rate: SIM_RATE, type: l.type }).price;
-    return { ...l, premium: Math.round(theoPrice * 100) / 100, dte: newDte };
-  });
-
+  const repriced = repriceLegsAtDate(position.legs, position.spot, avgSpot, daysElapsed);
   return { markValue: computeMarkValue(repriced, avgSpot), legs: repriced };
 }
 

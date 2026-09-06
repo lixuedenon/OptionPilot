@@ -1,11 +1,19 @@
 // src/lib/savedStrategies.ts
 import type { Leg, Shifts } from "./types";
+import { formatDateInput, parseDateInput, daysBetweenLocalDates, todayISO } from "./dateUtils";
+import { fetchHistoricalBars, repriceLegsAtDate } from "./historicalBackfill";
 
 export interface TrackedSnapshot {
   id: string;
   legs: Leg[];
   spot: number;
   savedAt: number;
+  // true when this entry was reconstructed by backfillTrackedSnapshots()
+  // from a historical daily (open+close)/2 average plus theoretical
+  // Black-Scholes repricing, rather than a real market refresh the person
+  // actually did (addTrackedSnapshot(), via "保存追踪快照"). Same convention
+  // as the Simulator's PositionSnapshot.estimated — see historicalBackfill.ts.
+  estimated?: boolean;
 }
 
 export interface SavedStrategy {
@@ -132,6 +140,67 @@ export async function addTrackedSnapshot(id: string, legs: Leg[], spot: number, 
     };
     saveToStorage(strategies);
   }
+  return strategies;
+}
+
+// Fills the gaps in a tracked strategy's snapshot history: for every
+// historical trading day between when it was opened and today that has no
+// snapshot yet (real or previously-backfilled) — because nobody had the app
+// open in Compare Mode that day to save one — this reconstructs an
+// estimated one from that day's (open+close)/2 average price instead of
+// leaving the day blank. Real snapshots (from addTrackedSnapshot) always
+// win: this never overwrites a day that already has ANY entry. Today itself
+// is deliberately left for a live "保存追踪快照" to fill for real, not an
+// estimate. Mirrors the Simulator's backfillSnapshots() (simAccount.ts) —
+// same historicalBackfill.ts helpers, same flat-vol convention — just
+// against SavedStrategy/TrackedSnapshot's shape instead of
+// SimPosition/PositionSnapshot's. Called from App.tsx whenever a strategy
+// is (re-)entered in Compare Mode (handleTrack / handleSwitchToCompare), so
+// "今日组合" doesn't default to whatever was last manually refreshed, even
+// if that was days or weeks ago.
+export async function backfillTrackedSnapshots(id: string): Promise<SavedStrategy[]> {
+  const strategies = loadFromStorage();
+  const idx = strategies.findIndex((s) => s.id === id);
+  if (idx < 0 || !strategies[idx].symbol) return strategies;
+
+  const strategy = strategies[idx];
+  const existing = strategy.trackedSnapshots ?? [];
+  const existingDates = new Set(existing.map((snap) => formatDateInput(snap.savedAt)));
+  const openedISO = formatDateInput(strategy.openingAt ?? strategy.createdAt);
+  const todayIso = todayISO();
+
+  let bars;
+  try {
+    bars = await fetchHistoricalBars(strategy.symbol);
+  } catch {
+    // No historical data available (thinly-traded symbol, rate-limited,
+    // etc.) — leave existing snapshots untouched rather than failing
+    // whatever triggered this (entering Compare Mode should still work).
+    return strategies;
+  }
+
+  const toAdd: TrackedSnapshot[] = [];
+  for (const bar of bars) {
+    if (bar.dateISO < openedISO) continue; // before this strategy existed
+    if (bar.dateISO >= todayIso) continue; // today — a live save's job, not an estimate's
+    if (existingDates.has(bar.dateISO)) continue; // already has a real or backfilled entry
+
+    const daysElapsed = daysBetweenLocalDates(openedISO, bar.dateISO);
+    const repriced = repriceLegsAtDate(strategy.legs, strategy.spot, bar.avgPrice, daysElapsed);
+    toAdd.push({
+      id: `snap-${bar.dateISO}-backfill`,
+      legs: repriced,
+      spot: bar.avgPrice,
+      savedAt: parseDateInput(bar.dateISO) ?? Date.now(),
+      estimated: true,
+    });
+  }
+
+  if (toAdd.length === 0) return strategies;
+
+  const merged = [...existing, ...toAdd].sort((a, b) => a.savedAt - b.savedAt);
+  strategies[idx] = { ...strategy, trackedSnapshots: merged, tracking: true };
+  saveToStorage(strategies);
   return strategies;
 }
 

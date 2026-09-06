@@ -90,11 +90,13 @@ export default function TrackedComboSection({
                   const sn = snaps.find((s) => s.id === e.target.value);
                   if (sn) onSelectSnapshot(sn);
                 }}
+                title={t("compare.estimatedHint")}
                 className="rounded border border-sky-700/50 bg-slate-900 px-1 py-0.5 text-[9px] tabular-nums text-sky-200 outline-none focus:border-sky-500"
               >
                 {snaps.map((sn, idx) => (
                   <option key={sn.id} value={sn.id}>
                     #{idx + 1} {new Date(sn.savedAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                    {sn.estimated ? ` ${t("compare.estimatedTag")}` : ""}
                   </option>
                 ))}
               </select>
