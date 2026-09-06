@@ -1,3 +1,4 @@
+// src/lib/savedStrategies.ts
 import type { Leg, Shifts } from "./types";
 
 export interface TrackedSnapshot {
@@ -194,6 +195,19 @@ export function generateFilename(
     `${String(today.getDate()).padStart(2, "0")}`;
 
   return `${sym}_${direction}_${todayStr}_${name}_${strike}_${mm}${dd}${yyyy}`;
+}
+
+// Serializes a combo's full comparable state (legs + shifts + opening
+// time) into one string, so App.tsx can detect "has anything changed since
+// the last save" with a cheap !== against a previously-stored baseline
+// string, instead of a deep-equality check. Deliberately broader than
+// findDuplicate's norm() above (which only compares leg composition, for
+// "is this the same combo as an existing saved one" duplicate detection) —
+// this one also folds in disabled/shares/shifts/openingAt because ANY of
+// those changing should mark the combo as dirty relative to its baseline.
+export function serializeStrategyState(sym: string, ls: Leg[], sh: Shifts, oa: number): string {
+  const norm = (l: Leg) => `${l.action}-${l.type}-${l.strike}-${l.dte}-${l.premium}-${l.kind ?? "option"}-${l.shares ?? 100}-${l.qty ?? 1}-${l.disabled ?? false}`;
+  return `${sym}|${ls.map(norm).join("|")}|${sh.dS}|${sh.dT}|${sh.dV}|${oa}`;
 }
 
 export function findDuplicate(

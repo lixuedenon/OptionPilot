@@ -1,71 +1,35 @@
 // src/App.tsx
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Layers, Save, Settings2, RefreshCw, TrendingUp, TrendingDown, ChevronDown, Trash2, History, Clock, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle, DollarSign, Ban, Wallet } from "lucide-react";
+import { Plus, Layers, Settings2, RefreshCw, TrendingUp, TrendingDown, ChevronDown, Trash2, Clock, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle, DollarSign, Ban, Wallet } from "lucide-react";
 import type { Leg, Shifts } from "@/lib/types";
 import { priceCombo, probabilityOfProfit, weightedAvgIV, impliedSpotFromPremiums, attributePnl, maxProfitLoss } from "@/lib/pricing";
 import { explainLegRoles } from "@/lib/legRoles";
 import PnlAttributionPanel from "@/components/PnlAttributionPanel";
 import PositionHealthBadge from "@/components/PositionHealthBadge";
 import { computeHealth } from "@/lib/positionHealth";
-import { PRESET_GROUPS } from "@/lib/presets";
 import { matchStrategy } from "@/lib/matchStrategy";
-import LegRow from "@/components/LegRow";
 import LegListSection from "@/components/LegListSection";
 import ShiftSliders from "@/components/ShiftSliders";
 import PayoffChart, { type AlertInfo } from "@/components/PayoffChart";
-import SavePresetDialog from "@/components/SavePresetDialog";
-import StrategyBadge from "@/components/StrategyBadge";
 import { useStockQuote } from "@/lib/useStockQuote";
 import { loadRecentSymbols, addRecentSymbol } from "@/lib/recentSymbols";
-import { saveStrategy, overwriteStrategy, addTrackedSnapshot, updateSnapshotTime, deleteTrackedSnapshot, type SavedStrategy, type TrackedSnapshot } from "@/lib/savedStrategies";
-import SaveStrategyDialog from "@/components/SaveStrategyDialog";
-import ManageStrategiesDialog from "@/components/ManageStrategiesDialog";
+import { saveStrategy, overwriteStrategy, addTrackedSnapshot, updateSnapshotTime, deleteTrackedSnapshot, serializeStrategyState, findDuplicate, type SavedStrategy, type TrackedSnapshot } from "@/lib/savedStrategies";
 import DropdownMenu from "@/components/DropdownMenu";
-import RollDialog from "@/components/RollDialog";
-import ProtectDialog from "@/components/ProtectDialog";
-import HedgeDialog from "@/components/HedgeDialog";
-import DecisionCompareDialog from "@/components/DecisionCompareDialog";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
 import { useSavedStrategies } from "@/hooks/useSavedStrategies";
-import { nearestFridayDte, formatDateInput, parseDateInput } from "@/lib/dateUtils";
+import { useLegEditing } from "@/hooks/useLegEditing";
+import { nearestFridayDte, formatDateInput, parseDateInput, calendarDaysSince } from "@/lib/dateUtils";
+import { uid, blankLeg, PRESET_DTE_SET } from "@/lib/legFactory";
 import { getOptionChain, peekResolvedChain, nearestStrikeToSpot, resolveFromCache } from "@/lib/optionChain";
 import { useI18n } from "@/i18n/I18nContext";
 import AppHeader from "@/components/AppHeader";
-import { AlertCard, ConfirmBulkDeleteDialog, ConfirmClearDialog, ConfirmLeaveDialog, ConfirmReplacePresetDialog, ConfirmSaveTrackedDialog, ConfirmSnapshotDialog, HelpPanel, ImpliedSpotInfoPanel } from "@/components/dialogs";
+import LegPanelTitleRow from "@/components/LegPanelTitleRow";
+import TrackedComboSection from "@/components/TrackedComboSection";
+import LegActionDialogs from "@/components/LegActionDialogs";
+import StrategyPersistenceDialogs from "@/components/StrategyPersistenceDialogs";
+import { AlertCard, HelpPanel } from "@/components/dialogs";
 import ErrorBoundary from "@/components/ErrorBoundary";
-
-let idc = 0;
-const uid = () => `leg-${Date.now()}-${idc++}`;
-
-const blankLeg = (strikeHint = 0): Leg => ({
-  id: uid(),
-  action: "buy",
-  type: "call",
-  strike: strikeHint,
-  dte: nearestFridayDte(30),
-  premium: 0,
-});
-
-// Every distinct DTE used across all built-in presets (e.g. calendar/diagonal
-// spreads mix 14/45-day legs with the usual 30-day default). Computed once so
-// the cache-warming effect can pre-fetch a real chain for each — otherwise a
-// preset leg whose DTE isn't the common 30-day default would still show a
-// placeholder strike/premium until its own async fetch completes.
-const PRESET_DTE_SET = Array.from(new Set(
-  PRESET_GROUPS.flatMap((g) => g.items.flatMap((item) =>
-    item.legs().filter((l) => l.kind !== "stock").map((l) => l.dte)
-  ))
-));
-
-function daysSince(ts: number): number {
-  return (Date.now() - ts) / 86400000;
-}
-
-function serializeStrategyState(sym: string, ls: Leg[], sh: Shifts, oa: number): string {
-  const norm = (l: Leg) => `${l.action}-${l.type}-${l.strike}-${l.dte}-${l.premium}-${l.kind ?? "option"}-${l.shares ?? 100}-${l.qty ?? 1}-${l.disabled ?? false}`;
-  return `${sym}|${ls.map(norm).join("|")}|${sh.dS}|${sh.dT}|${sh.dV}|${oa}`;
-}
 
 interface AppProps {
   onBackHome?: () => void;
@@ -146,16 +110,51 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const { t } = useI18n();
 
   const [helpOpen, setHelpOpen] = useState(false);
-  const [rollTarget, setRollTarget] = useState<Leg | null>(null);
-  const [protectTarget, setProtectTarget] = useState<Leg | null>(null);
-  const [hedgeOpen, setHedgeOpen] = useState(false);
-  const [compareTargetId, setCompareTargetId] = useState<string | null>(null);
-  const [selectedLegIds, setSelectedLegIds] = useState<Set<string>>(new Set());
-  const [confirmBulkDeleteOpen, setConfirmBulkDeleteOpen] = useState(false);
+  const {
+    rollTarget, setRollTarget,
+    protectTarget, setProtectTarget,
+    hedgeOpen, setHedgeOpen,
+    compareTargetId, setCompareTargetId,
+    selectedLegIds,
+    confirmBulkDeleteOpen, setConfirmBulkDeleteOpen,
+    updateLeg,
+    toggleLeg,
+    deleteLeg,
+    toggleLegSelection,
+    clearLegSelection,
+    selectAllLegs,
+    selectedCount,
+    allSelectedDisabled,
+    bulkToggleDisable,
+    requestBulkDelete,
+    confirmBulkDelete,
+    handleRoll,
+    handleRollConfirm,
+    handleProtect,
+    handleProtectConfirm,
+    handleCompare,
+    handleHedge,
+    handleHedgeConfirm,
+    moveLeg,
+    moveTrackedLeg,
+  } = useLegEditing({ legs, setLegs, setTrackedLegs });
   const pendingPresetAction = useRef<{ name: string; rawLegs: Leg[] } | null>(null);
   const [confirmPresetOpen, setConfirmPresetOpen] = useState(false);
   const pendingPresetReplace = useRef<Leg[] | null>(null);
   const [confirmReplaceOpen, setConfirmReplaceOpen] = useState(false);
+  // Guards handleSwitchToAnalysis: switching to "baseline" or a snapshot
+  // discards whatever unsaved edits are sitting in trackedLegs (switching
+  // to "current" instead promotes those edits into the new baseline, so
+  // nothing is lost there — see performSwitchToAnalysis below).
+  const pendingSwitchSource = useRef<string | null>(null);
+  const [confirmSwitchOpen, setConfirmSwitchOpen] = useState(false);
+  // Set when "保存追踪快照" is clicked but the opening combo isn't backed by
+  // a saved strategy yet (trackingStrategyId is null — e.g. compare mode
+  // was entered via handleSwitchToCompare rather than by tracking an
+  // existing SavedStrategy). There's nowhere to attach a snapshot until the
+  // combo itself is saved, so this defers the snapshot save until
+  // handleSaveStrategy/handleOverwriteStrategy report success.
+  const pendingSaveTrackedAfterStrategy = useRef(false);
   // Set when the person clicks "save first, then leave" in ConfirmLeaveDialog
   // — checked inside handleSaveStrategy/handleOverwriteStrategy so the
   // actual navigation only fires once the save has genuinely succeeded,
@@ -169,7 +168,53 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const spotManuallySet = useRef(!!simOriginInitial);
   const trackedLegsRef = useRef<Leg[] | null>(null);
   trackedLegsRef.current = trackedLegs;
+  // Mirrors trackedDirty for the symbol-change effect below, which can't
+  // just add trackedDirty to its own dependency array (that would make it
+  // re-run — and re-derive symbolChanged off a stale quote — on every dirty
+  // toggle, not just when a new quote actually arrives).
+  const trackedDirtyRef = useRef(false);
+  trackedDirtyRef.current = trackedDirty;
+  // Stashes the {symbol, spot} a real symbol swap resolved to while
+  // confirmSymbolChangeOpen waits on the person's answer — see the
+  // symbol-change guard in the effect below and its three resolutions
+  // (cancel / don't save / save snapshot first) further down.
+  const pendingSymbolChange = useRef<{ symbol: string; spot: number } | null>(null);
+  const [confirmSymbolChangeOpen, setConfirmSymbolChangeOpen] = useState(false);
 
+  // Re-bases every strike onto a new underlying: ratio-scales each leg's
+  // strike off the ratio between the old and new spot, then prefers a real
+  // listed strike/premium for the new symbol when the option-chain cache
+  // already has one (falls back to the ratio guess with premium reset to 0,
+  // which the per-leg auto-fill effect corrects shortly after). Applies to
+  // both the opening combo (legs) and, in compare mode, the "今日组合"
+  // (trackedLegs) — a symbol swap makes the old strikes meaningless for
+  // both, not just one side.
+  const rescaleForNewSymbol = useCallback((newSymbol: string, newSpot: number) => {
+    const sym = newSymbol.trim();
+    const ratio = legBaseSpot.current > 0 ? newSpot / legBaseSpot.current : 1;
+    const rescale = (arr: Leg[]) => arr.map((l) => {
+      if (l.kind === "stock") {
+        return { ...l, strike: Math.round(newSpot * 100) / 100 };
+      }
+      const targetStrike = Math.round(l.strike * ratio * 2) / 2;
+      const resolved = sym ? resolveFromCache(sym, l.type, targetStrike, l.dte) : null;
+      return {
+        ...l,
+        strike: resolved ? resolved.strike : targetStrike,
+        premium: resolved ? resolved.premium : 0,
+      };
+    });
+    setLegs((prev) => (prev.length > 0 ? rescale(prev) : prev));
+    if (trackedLegsRef.current) {
+      setTrackedLegs((prev) => (prev ? rescale(prev) : prev));
+      setTrackedSpot(newSpot);
+      setTrackedDirty(true);
+    }
+    setSpot(newSpot);
+    legBaseSpot.current = newSpot;
+    legBaseSymbol.current = newSymbol;
+    spotManuallySet.current = false;
+  }, []);
 
 
   const { quote, loading: quoteLoading, error: quoteError, refetch } = useStockQuote(symbol);
@@ -238,10 +283,41 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   useEffect(() => {
     if (!quote || quote.price <= 0) return;
     if (spot <= 0) { setSpot(quote.price); spotManuallySet.current = false; }
+
+    // A genuine symbol swap under an existing combo — as opposed to the
+    // ordinary "quote refreshed for the same symbol" case that runs this
+    // effect on every poll/refetch. spotManuallySet only means "don't let a
+    // live quote silently overwrite a spot number the person typed by hand
+    // FOR THE CURRENT SYMBOL" — it says nothing about switching to a
+    // different underlying entirely, where the old strikes/spot are
+    // meaningless regardless of whether spot was ever hand-edited. So this
+    // check bypasses spotManuallySet on purpose.
+    const comboNotEmpty = legs.length > 0 || (trackedLegsRef.current !== null && trackedLegsRef.current.length > 0);
+    const symbolChanged = legBaseSpot.current > 0 && comboNotEmpty && symbol !== legBaseSymbol.current;
+
     if (trackedLegsRef.current !== null) {
-      setTrackedSpot(quote.price);
+      if (!symbolChanged) {
+        setTrackedSpot(quote.price);
+        return;
+      }
+      if (trackedDirtyRef.current) {
+        // "今日组合" has unsaved edits — same data-loss guard used for
+        // preset switching and mode switching, reusing ConfirmSnapshotDialog.
+        // The rescale itself is deferred until the person answers (see the
+        // three onXxxSymbolChange handlers passed to StrategyPersistenceDialogs).
+        pendingSymbolChange.current = { symbol, spot: quote.price };
+        setConfirmSymbolChangeOpen(true);
+        return;
+      }
+      rescaleForNewSymbol(symbol, quote.price);
       return;
     }
+
+    if (symbolChanged) {
+      rescaleForNewSymbol(symbol, quote.price);
+      return;
+    }
+
     if (spotManuallySet.current) return;
     if (pendingPreset.current) {
       const scale = quote.price / 100;
@@ -265,31 +341,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       pendingPreset.current = null;
       legBaseSpot.current = quote.price;
       legBaseSymbol.current = symbol;
-    } else if (legs.length > 0 && symbol !== legBaseSymbol.current && legBaseSpot.current > 0) {
-      const ratio = quote.price / legBaseSpot.current;
-      const sym = symbol.trim();
-      setLegs((prev) => prev.map((l) => {
-        if (l.kind === "stock") {
-          return { ...l, strike: Math.round(quote.price * 100) / 100 };
-        }
-        const targetStrike = Math.round(l.strike * ratio * 2) / 2;
-        // Ratio-scaling a strike from one underlying's grid rarely lands on a
-        // real, listed strike for the NEW symbol — prefer a real chain lookup
-        // when it's already warmed, and fall back to the old ratio guess
-        // (with premium reset to 0) so the per-leg auto-fill effect corrects
-        // it shortly after if the chain isn't cached yet.
-        const resolved = sym ? resolveFromCache(sym, l.type, targetStrike, l.dte) : null;
-        return {
-          ...l,
-          strike: resolved ? resolved.strike : targetStrike,
-          premium: resolved ? resolved.premium : 0,
-        };
-      }));
-      legBaseSpot.current = quote.price;
-      legBaseSymbol.current = symbol;
     }
     setSpot(quote.price);
     legBaseSpot.current = quote.price;
+    legBaseSymbol.current = symbol;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quote, spot]);
 
@@ -297,6 +352,17 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     ? quote.price - quote.previousClose : null;
   const changePct = priceChange !== null && quote!.previousClose > 0
     ? (priceChange / quote!.previousClose) * 100 : null;
+
+  // The real, live market price — used ONLY for display in compare mode
+  // (the "当前" spot number in LegListSection/TrackedComboSection's stats
+  // grids, and PayoffChart's optional reference line). Deliberately NOT fed
+  // into effectiveTrackedSpot or anything that computes P&L/IV/attribution —
+  // those stay on the back-solved/manually-tracked value so they remain
+  // internally consistent with whatever premium the person actually typed
+  // in (see the 2026-09-04 discussion in CLAUDE.md's "3.x" section on why
+  // swapping that value wholesale would misalign the payoff curve and the
+  // P&L attribution's 交叉项).
+  const liveTrackedSpot = quote && quote.price > 0 ? quote.price : null;
 
   const activeLegs = useMemo(() => legs.filter((l) => !l.disabled), [legs]);
   const strategyName = useMemo(() => matchStrategy(activeLegs, spot, customPresets), [activeLegs, spot, customPresets]);
@@ -317,8 +383,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // this from flickering as someone plays with the sliders.
   const positionHealth = useMemo(() => {
     if (activeLegs.length === 0 || spot <= 0) return null;
-    return computeHealth(activeLegs, spot, shifts, result.breakdown);
-  }, [activeLegs, spot, shifts, result]);
+    return computeHealth(activeLegs, spot, shifts, result.breakdown, t);
+  }, [activeLegs, spot, shifts, result, t]);
 
   const { pop, breakevens } = useMemo(() => probabilityOfProfit(activeLegs, spot), [activeLegs, spot]);
 
@@ -501,107 +567,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     }
   }, [onAddToSimAccount, activeLegs, spot, symbol, openingAt, t]);
 
-  const updateLeg = (id: string, patch: Partial<Leg>) =>
-    setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
-  const toggleLeg = (id: string) => {
-    setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, disabled: !l.disabled } : l)));
-  };
-  const deleteLeg = (id: string) => {
-    setLegs((prev) => prev.filter((l) => l.id !== id));
-    setSelectedLegIds((prev) => {
-      if (!prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
-  };
-
-  // ── Batch selection (analysis + tracking's shared open-combo list) ──
-  const toggleLegSelection = (id: string) => {
-    setSelectedLegIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-  const clearLegSelection = () => setSelectedLegIds(new Set());
-  const selectAllLegs = () => setSelectedLegIds(new Set(legs.map((l) => l.id)));
-
-  const selectedLegsList = useMemo(
-    () => legs.filter((l) => selectedLegIds.has(l.id)),
-    [legs, selectedLegIds],
-  );
-  const selectedCount = selectedLegsList.length;
-  const allSelectedDisabled = selectedCount > 0 && selectedLegsList.every((l) => l.disabled);
-
-  // Toggle disable for every currently-selected leg in one go. Mirrors the
-  // per-row block/unblock: if every selected leg is already blocked, this
-  // unblocks them all; otherwise it blocks them all (so a mixed selection
-  // always resolves to "block everything selected" rather than a confusing
-  // per-leg flip).
-  const bulkToggleDisable = () => {
-    if (selectedCount === 0) return;
-    setLegs((prev) => prev.map((l) => (selectedLegIds.has(l.id) ? { ...l, disabled: !allSelectedDisabled } : l)));
-  };
-
-  const requestBulkDelete = () => {
-    if (selectedCount === 0) return;
-    setConfirmBulkDeleteOpen(true);
-  };
-  const confirmBulkDelete = () => {
-    setLegs((prev) => prev.filter((l) => !selectedLegIds.has(l.id)));
-    setConfirmBulkDeleteOpen(false);
-    clearLegSelection();
-  };
-
-  const handleRoll = (legId: string) => {
-    const leg = legs.find((l) => l.id === legId);
-    if (leg) setRollTarget(leg);
-  };
-  const handleRollConfirm = (newLeg: Leg) => {
-    if (!rollTarget) return;
-    setLegs((prev) => prev.map((l) => l.id === rollTarget.id ? { ...l, disabled: true } : l));
-    setLegs((prev) => [...prev, newLeg]);
-    setRollTarget(null);
-  };
-
-  const handleProtect = (legId: string) => {
-    const leg = legs.find((l) => l.id === legId);
-    if (leg) setProtectTarget(leg);
-  };
-  const handleProtectConfirm = (protectLeg: Leg) => {
-    setLegs((prev) => [...prev, protectLeg]);
-    setProtectTarget(null);
-  };
-
-  const handleCompare = (legId: string) => setCompareTargetId(legId);
-
-  const handleHedge = () => setHedgeOpen(true);
-  const handleHedgeConfirm = (hedgeLeg: Leg) => {
-    setLegs((prev) => [...prev, hedgeLeg]);
-    setHedgeOpen(false);
-  };
-
-  const moveLeg = (index: number, direction: -1 | 1) => {
-    setLegs((prev) => {
-      const target = index + direction;
-      if (target < 0 || target >= prev.length) return prev;
-      const arr = [...prev];
-      [arr[index], arr[target]] = [arr[target], arr[index]];
-      return arr;
-    });
-  };
-  const moveTrackedLeg = (index: number, direction: -1 | 1) => {
-    setTrackedLegs((prev) => {
-      if (!prev) return prev;
-      const target = index + direction;
-      if (target < 0 || target >= prev.length) return prev;
-      const arr = [...prev];
-      [arr[index], arr[target]] = [arr[target], arr[index]];
-      return arr;
-    });
-  };
   const addLeg = () => {
     let strikeHint = spot > 0 ? Math.round(spot * 2) / 2 : 0;
     if (spot > 0 && symbol.trim()) {
@@ -724,6 +689,19 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
   const comboDirection = activeLegs.length > 0 && activeLegs.every((l) => l.action === "buy") ? "buy" : "sell";
 
+  // Shared by handleSaveTracked's normal path and its "save the strategy
+  // first, then attach the snapshot" fallback below — appends trackedLegs
+  // as a new TrackedSnapshot on the given (already-saved) strategy id.
+  const saveTrackedSnapshotTo = useCallback(async (strategyId: string) => {
+    if (!trackedLegs) return;
+    const updated = await addTrackedSnapshot(strategyId, trackedLegs, trackedSpot ?? spot, Date.now());
+    setSavedStrategies(updated);
+    const updatedStrategy = updated.find((s) => s.id === strategyId);
+    const newSnaps = updatedStrategy?.trackedSnapshots ?? [];
+    if (newSnaps.length > 0) setActiveSnapshotId(newSnaps[newSnaps.length - 1].id);
+    setTrackedDirty(false);
+  }, [trackedLegs, trackedSpot, spot]);
+
   const handleSaveStrategy = useCallback(async (filename: string) => {
     const updated = await saveStrategy({ filename, symbol, spot, legs: activeLegs, shifts, openingAt });
     setSavedStrategies(updated);
@@ -738,7 +716,16 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       pendingLeaveAfterSave.current = false;
       onBackHome?.();
     }
-  }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset, onBackHome]);
+    if (pendingSaveTrackedAfterStrategy.current) {
+      pendingSaveTrackedAfterStrategy.current = false;
+      // saveStrategy() unshifts the new record, so it's always updated[0].
+      const newId = updated[0]?.id;
+      if (newId) {
+        setTrackingStrategyId(newId);
+        await saveTrackedSnapshotTo(newId);
+      }
+    }
+  }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset, onBackHome, saveTrackedSnapshotTo]);
 
   const handleOverwriteStrategy = useCallback(async (id: string, filename: string) => {
     const updated = await overwriteStrategy(id, { filename, symbol, spot, legs: activeLegs, shifts, openingAt });
@@ -754,7 +741,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       pendingLeaveAfterSave.current = false;
       onBackHome?.();
     }
-  }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset, onBackHome]);
+    if (pendingSaveTrackedAfterStrategy.current) {
+      pendingSaveTrackedAfterStrategy.current = false;
+      setTrackingStrategyId(id);
+      await saveTrackedSnapshotTo(id);
+    }
+  }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset, onBackHome, saveTrackedSnapshotTo]);
 
   const handleTrack = useCallback(async (s: SavedStrategy) => {
     setSymbol(s.symbol);
@@ -766,18 +758,64 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     legBaseSymbol.current = s.symbol;
     spotManuallySet.current = true;
 
-    const daysElapsed = daysSince(s.openingAt ?? s.createdAt);
-    setTrackedDaysElapsed(daysElapsed);
-    setTrackedLegs(
-      s.legs.map((l) => ({
-        ...l,
-        id: uid(),
-        dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - daysElapsed),
-      })),
-    );
-    setTrackedSpot(s.spot);
+    // "今日组合" should open on whatever the person actually saw and saved
+    // last time (the newest real trackedSnapshot), not a fresh copy of the
+    // opening combo with the DTE merely decremented — that "recompute from
+    // opening" fallback is only correct the FIRST time a strategy is
+    // tracked, before any snapshot exists. Loading the opening combo here
+    // when a snapshot already exists would silently discard whatever the
+    // person had edited/recorded into that snapshot, which is exactly what
+    // this branch exists to avoid (see handleSelectSnapshot below, whose
+    // decay logic this mirrors).
+    const snaps = s.trackedSnapshots ?? [];
+    const latestSnap = snaps.length > 0 ? snaps[snaps.length - 1] : null;
+    if (latestSnap) {
+      // Two different "days" here, easy to conflate (2026-09-04 bug): the
+      // snapshot's own legs were already decayed once, up to whatever
+      // moment it was saved — `calendarDaysSince(latestSnap.savedAt)` is
+      // exactly the ADDITIONAL decay needed to bring that dte current to
+      // right now, and nothing else should use it. The "已过X天" stat, by
+      // contrast, is meant to read as "how long ago did this position
+      // actually open" — that's `calendarDaysSince(s.openingAt ??
+      // s.createdAt)` regardless of when the snapshot happened to be saved.
+      // Reusing the snapshot-relative number for both meant reloading a
+      // same-day snapshot always showed "已过0天" even when the real
+      // opening date was days in the past.
+      //
+      // Both use calendarDaysBetween/calendarDaysSince (whole calendar
+      // days, e.g. via `Math.round` on local-midnight-to-local-midnight)
+      // rather than `daysSince` (a continuous count of 24h periods since
+      // the exact opening TIMESTAMP) — 2026-09-05 bug: a strategy opened
+      // 09-01 and checked on 09-04 showed "已过2天" instead of 3, because
+      // fewer than 3 full 24-hour periods had passed since the opening
+      // moment's time-of-day, even though 3 calendar days separate the two
+      // dates the way a person reads "开仓日 09-01" vs "今天 09-04". See
+      // dateUtils.ts's comment on daysBetweenLocalDates for the full story.
+      const snapshotDecay = calendarDaysSince(latestSnap.savedAt);
+      setTrackedDaysElapsed(calendarDaysSince(s.openingAt ?? s.createdAt));
+      setTrackedLegs(
+        latestSnap.legs.map((l) => ({
+          ...l,
+          id: uid(),
+          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - snapshotDecay),
+        })),
+      );
+      setTrackedSpot(latestSnap.spot);
+      setActiveSnapshotId(latestSnap.id);
+    } else {
+      const daysElapsed = calendarDaysSince(s.openingAt ?? s.createdAt);
+      setTrackedDaysElapsed(daysElapsed);
+      setTrackedLegs(
+        s.legs.map((l) => ({
+          ...l,
+          id: uid(),
+          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - daysElapsed),
+        })),
+      );
+      setTrackedSpot(s.spot);
+      setActiveSnapshotId(null);
+    }
     setCorrectedSpot(null);
-    setActiveSnapshotId(null);
     setTrackingStrategyId(s.id);
     setTrackedDirty(false);
     setManageStrategyOpen(false);
@@ -786,30 +824,53 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   }, []);
 
   const handleSaveTracked = useCallback(async () => {
-    if (!trackingStrategyId || !trackedLegs) return;
-    const updated = await addTrackedSnapshot(trackingStrategyId, trackedLegs, trackedSpot ?? spot, Date.now());
-    setSavedStrategies(updated);
-    const updatedStrategy = updated.find((s) => s.id === trackingStrategyId);
-    const newSnaps = updatedStrategy?.trackedSnapshots ?? [];
-    if (newSnaps.length > 0) setActiveSnapshotId(newSnaps[newSnaps.length - 1].id);
-    setTrackedDirty(false);
-  }, [trackingStrategyId, trackedLegs, trackedSpot, spot]);
+    if (!trackedLegs) return;
+    if (!trackingStrategyId) {
+      // No backing SavedStrategy yet (e.g. entered compare mode directly via
+      // "切换到对比模式", or opened an existing strategy then switched
+      // straight into compare mode instead of going through "跟踪") —
+      // normally there's nowhere to attach a snapshot yet. But if the
+      // opening combo already matches an existing saved strategy exactly
+      // (same symbol/legs/shifts — findDuplicate is the same check
+      // SaveStrategyDialog itself runs before saving), there's no need to
+      // make the person re-save or "overwrite" anything just to get an id
+      // to attach a snapshot to — that strategy already exists untouched,
+      // silently adopt it and attach the snapshot straight to it. Only
+      // prompt to name/save a brand-new strategy when no match exists.
+      const existing = findDuplicate({ symbol, spot, legs: activeLegs, shifts }, savedStrategies);
+      if (existing) {
+        setTrackingStrategyId(existing.id);
+        await saveTrackedSnapshotTo(existing.id);
+        return;
+      }
+      pendingSaveTrackedAfterStrategy.current = true;
+      setSaveStrategyOpen(true);
+      return;
+    }
+    await saveTrackedSnapshotTo(trackingStrategyId);
+  }, [trackingStrategyId, trackedLegs, saveTrackedSnapshotTo, symbol, spot, activeLegs, shifts, savedStrategies]);
 
   const handleSelectSnapshot = useCallback((snap: TrackedSnapshot) => {
-    const daysElapsed = daysSince(snap.savedAt);
-    setTrackedDaysElapsed(daysElapsed);
+    // Same distinction as handleTrack's snapshot branch above: the snapshot's
+    // legs only need decaying by the time since IT was saved (snapshotDecay)
+    // to be current as of today, but "已过X天" should stay pinned to the
+    // real opening date (`openingAt`, unaffected by which snapshot happens
+    // to be selected) — not reset to ~0 just because the snapshot picked
+    // was saved recently.
+    const snapshotDecay = calendarDaysSince(snap.savedAt);
+    setTrackedDaysElapsed(calendarDaysSince(openingAt));
     setTrackedLegs(
       snap.legs.map((l) => ({
         ...l,
         id: uid(),
-        dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - daysElapsed),
+        dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - snapshotDecay),
       })),
     );
     setTrackedSpot(snap.spot);
     setCorrectedSpot(null);
     setActiveSnapshotId(snap.id);
     setTrackedDirty(false);
-  }, []);
+  }, [openingAt]);
 
   const handleDeleteSnapshot = useCallback(async (snapshotId: string) => {
     if (!trackingStrategyId) return;
@@ -829,8 +890,11 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     if (!trackingStrategyId) return;
     const updated = await updateSnapshotTime(trackingStrategyId, snapshotId, savedAt);
     setSavedStrategies(updated);
-    const daysElapsed = daysSince(savedAt);
-    setTrackedDaysElapsed(daysElapsed);
+    const daysElapsed = calendarDaysSince(savedAt);
+    // Same open-vs-snapshot distinction as handleTrack/handleSelectSnapshot
+    // above — "已过X天" tracks the real opening date, not this snapshot's
+    // (just-edited) saved time.
+    setTrackedDaysElapsed(calendarDaysSince(openingAt));
     if (trackedLegs) {
       setTrackedLegs(
         trackedLegs.map((l) => ({
@@ -840,7 +904,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         })),
       );
     }
-  }, [trackingStrategyId, trackedLegs]);
+  }, [trackingStrategyId, trackedLegs, openingAt]);
 
   const handleOpenStrategy = useCallback((s: SavedStrategy) => {
     setSymbol(s.symbol);
@@ -862,6 +926,157 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     clearLegSelection();
   }, [quote]);
 
+  // Direct switch from plain analysis mode into compare mode, carrying the
+  // legs/spot/openingAt currently being edited — the "live" equivalent of
+  // handleTrack() above, which does the same thing but reads from a
+  // persisted SavedStrategy instead of the in-editor state. No days have
+  // elapsed yet (we're switching right now), so trackedLegs starts as an
+  // exact copy of legs with no DTE reduction — "today" and "opening" are
+  // the same combo until the person edits the tracked side or time passes.
+  const handleSwitchToCompare = useCallback(() => {
+    if (isCompareMode || legs.length === 0) return;
+    // The opening combo being edited right now might already BE an existing
+    // saved strategy — e.g. it was opened via "打开策略" (handleOpenStrategy
+    // deliberately leaves trackingStrategyId null, same as this function
+    // used to unconditionally do) or it was tracked earlier this session and
+    // then switched back to analysis mode (performSwitchToAnalysis also
+    // resets trackingStrategyId to null by design). Either way, if the combo
+    // still matches that strategy exactly, this compare-mode session should
+    // link back up to it — same findDuplicate check handleSaveTracked runs —
+    // so the "持仓组合" header's snapshot picker can show/reload whatever was
+    // already saved for it, instead of looking like a brand-new untracked
+    // combo just because compare mode was entered via this direct-switch
+    // button instead of "跟踪" from the strategy library.
+    const existing = findDuplicate({ symbol, spot, legs, shifts }, savedStrategies);
+    const snaps = existing?.trackedSnapshots ?? [];
+    const latestSnap = snaps.length > 0 ? snaps[snaps.length - 1] : null;
+    if (latestSnap) {
+      // The matched strategy already has real tracked history — open on
+      // THAT (same decay-from-savedAt logic handleTrack/handleSelectSnapshot
+      // use), not a fresh "today == opening" copy of legs. 2026-09-04 bug:
+      // linking trackingStrategyId here without also loading the snapshot
+      // left trackedLegs as a plain copy of legs while the snapshot picker
+      // still rendered (it only depends on trackingStrategyId) — and its
+      // <select> falls back to displaying the LATEST snapshot as "selected"
+      // whenever activeSnapshotId is null, so the newest snapshot LOOKED
+      // selected without actually being loaded. Picking a different entry
+      // then this one again only "fixed" it because that was the first time
+      // the <select>'s value genuinely changed and fired onChange — the real
+      // bug was the initial state not matching the picker's own displayed
+      // selection.
+      // Same open-vs-snapshot distinction as handleTrack/handleSelectSnapshot
+      // (2026-09-05 bug — this branch got missed in the first pass at that
+      // fix): the snapshot's legs only need decaying by the time since IT
+      // was saved, but "已过X天" belongs to the real opening date.
+      const snapshotDecay = calendarDaysSince(latestSnap.savedAt);
+      setTrackedDaysElapsed(calendarDaysSince(openingAt));
+      setTrackedLegs(
+        latestSnap.legs.map((l) => ({
+          ...l,
+          id: uid(),
+          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - snapshotDecay),
+        })),
+      );
+      setTrackedSpot(latestSnap.spot);
+      setActiveSnapshotId(latestSnap.id);
+    } else {
+      // No tracked history yet (brand-new combo, or matched a strategy that
+      // was only ever "saved", never tracked). This does NOT mean zero days
+      // have elapsed — `openingAt` can genuinely be in the past (a saved
+      // strategy opened days ago via "打开策略", or a hand-edited 开仓日期),
+      // and switching to compare mode "right now" should reflect that real
+      // gap, same as handleTrack's own no-snapshot fallback does via
+      // `calendarDaysSince(s.openingAt ?? s.createdAt)`. The old code here
+      // hardcoded 0 regardless of `openingAt`, so both stat boxes
+      // (LegListSection's 开仓组合 summary and TrackedComboSection's
+      // 持仓组合 grid — they share this same `effectiveDaysElapsed`) always
+      // showed "已过0天" and left the tracked legs' DTE identical to the
+      // opening legs', even when the opening date was days in the past —
+      // 2026-09-04 bug.
+      const daysElapsed = calendarDaysSince(openingAt);
+      setTrackedDaysElapsed(daysElapsed);
+      setTrackedLegs(
+        legs.map((l) => ({
+          ...l,
+          id: uid(),
+          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - daysElapsed),
+        })),
+      );
+      setTrackedSpot(spot);
+      setActiveSnapshotId(null);
+    }
+    setCorrectedSpot(null);
+    setTrackingStrategyId(existing ? existing.id : null);
+    setTrackedDirty(false);
+    clearLegSelection();
+  }, [isCompareMode, legs, spot, symbol, shifts, savedStrategies, openingAt]);
+
+  // Direct switch from compare mode back into plain analysis mode. Which
+  // data becomes the new (single) analysis-mode baseline depends on
+  // `source`:
+  // - "baseline": the opening combo as-is (legs/spot/openingAt already ARE
+  //   this — same as handleOpenStrategy's "just drop the tracked half").
+  // - "current": whatever the "今日组合" side currently shows
+  //   (trackedLegs/effectiveTrackedSpot), promoted to be the new baseline.
+  // - a snapshot id: that specific saved snapshot's legs/spot.
+  // For "current" and a snapshot, openingAt resets to when THAT data was
+  // true (now, or the snapshot's savedAt) rather than staying on the
+  // original real opening date — otherwise a later re-track would use
+  // calendarDaysSince(openingAt) to reduce DTE a second time on top of legs whose
+  // DTE already reflects that elapsed time once (see
+  // claude/wiring-check-2026-09-03.md for the fuller design discussion).
+  const performSwitchToAnalysis = useCallback((source: "baseline" | "current" | string) => {
+    if (!isCompareMode) return;
+    let newLegs: Leg[];
+    let newSpot: number;
+    let newOpeningAt: number;
+    if (source === "baseline") {
+      newLegs = legs;
+      newSpot = spot;
+      newOpeningAt = openingAt;
+    } else if (source === "current") {
+      newLegs = (trackedLegs ?? legs).map((l) => ({ ...l, id: uid() }));
+      newSpot = effectiveTrackedSpot;
+      newOpeningAt = Date.now();
+    } else {
+      const snap = trackedStrategy?.trackedSnapshots?.find((sn) => sn.id === source);
+      if (!snap) return;
+      newLegs = snap.legs.map((l) => ({ ...l, id: uid() }));
+      newSpot = snap.spot;
+      newOpeningAt = snap.savedAt;
+    }
+    setLegs(newLegs);
+    setSpot(newSpot);
+    setOpeningAt(newOpeningAt);
+    setShifts({ dS: 0, dT: 0, dV: 0 });
+    legBaseSpot.current = newSpot;
+    legBaseSymbol.current = symbol;
+    spotManuallySet.current = true;
+    setTrackedLegs(null);
+    setTrackingStrategyId(null);
+    setTrackedSpot(null);
+    setActiveSnapshotId(null);
+    setTrackedDaysElapsed(0);
+    setCorrectedSpot(null);
+    setStrategyBaseline(serializeStrategyState(symbol, newLegs, { dS: 0, dT: 0, dV: 0 }, newOpeningAt));
+    clearLegSelection();
+  }, [isCompareMode, legs, spot, openingAt, trackedLegs, effectiveTrackedSpot, trackedStrategy, symbol]);
+
+  // Public entry point used by the UI. Switching to "current" carries the
+  // dirty edits themselves into analysis mode, so it never loses anything
+  // and skips the confirmation. Switching to "baseline" or a snapshot would
+  // silently drop them, so — same protection as the existing preset-switch
+  // and clear-all flows — ask first via ConfirmSnapshotDialog.
+  const handleSwitchToAnalysis = useCallback((source: "baseline" | "current" | string) => {
+    if (!isCompareMode) return;
+    if (trackedDirty && source !== "current") {
+      pendingSwitchSource.current = source;
+      setConfirmSwitchOpen(true);
+      return;
+    }
+    performSwitchToAnalysis(source);
+  }, [isCompareMode, trackedDirty, performSwitchToAnalysis]);
+
   const legToolbar = (
     <>
       <button
@@ -882,33 +1097,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       </button>
       <DropdownMenu label={t("toolbar.presetLabel")} icon={<Layers size={11} />}>
         {(close) => (
-          <>
-            <button
-              onClick={() => { close(); setSaveStrategyOpen(true); }}
-              disabled={!canSaveStrategy}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Save size={12} className="text-emerald-400" /> {t("toolbar.saveStrategy")}
-            </button>
-            <button
-              onClick={() => { close(); setManageMode("open"); setManageStrategyOpen(true); }}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
-            >
-              <Settings2 size={12} className="text-amber-400" /> {t("toolbar.manageStrategy")}
-            </button>
-            {isCompareMode && (
-              <>
-                <div className="my-1 border-t border-slate-800" />
-                <button
-                  onClick={() => { close(); handleSaveTracked(); }}
-                  disabled={!trackedDirty}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-emerald-400 transition hover:bg-emerald-950/40 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <Save size={12} /> {t("toolbar.saveTracked")}
-                </button>
-              </>
-            )}
-          </>
+          <button
+            onClick={() => { close(); setManageMode("open"); setManageStrategyOpen(true); }}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
+          >
+            <Settings2 size={12} className="text-amber-400" /> {t("toolbar.manageStrategy")}
+          </button>
         )}
       </DropdownMenu>
       {!isCompareMode && !simOrigin && onAddToSimAccount && (
@@ -951,6 +1145,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           }
           applyPreset(rawLegs);
         }}
+        legsCount={legs.length}
+        trackedStrategy={trackedStrategy}
+        onSwitchToCompare={handleSwitchToCompare}
+        onSwitchToAnalysis={handleSwitchToAnalysis}
         symbolWrapRef={symbolWrapRef}
         symbol={symbol}
         onSymbolChange={setSymbol}
@@ -986,20 +1184,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         {/* LEFT: Leg inputs */}
         <div className="flex shrink-0 flex-col overflow-y-auto border-r border-slate-800" style={{ width: "38%", minWidth: 380 }}>
           <div className="sticky top-0 z-20 grid shrink-0 grid-cols-[auto_minmax(0,1fr)] grid-rows-[auto_auto] items-center gap-x-2 gap-y-1 border-b border-slate-800/60 bg-slate-950 px-3 py-1.5">
-            <div className="col-start-1 row-start-1 flex min-w-0 shrink-0 items-center gap-2 whitespace-nowrap">
-              <span className="shrink-0 whitespace-nowrap text-xs font-semibold text-slate-300">{t("leg.legs")}</span>
-              {strategyName && (
-                <StrategyBadge name={strategyName} customPresets={customPresets} />
-              )}
-              <span className="shrink-0 whitespace-nowrap rounded bg-slate-800 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-500">
-                {legs.length} / 10
-              </span>
-              {isCompareMode && (
-                <span className="rounded bg-sky-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-sky-300">
-                  {t("leg.compareMode")}
-                </span>
-              )}
-            </div>
+            <LegPanelTitleRow
+              strategyName={strategyName}
+              customPresets={customPresets}
+              legsCount={legs.length}
+              isCompareMode={isCompareMode}
+            />
             {!isCompareMode && (
                 <div className="col-span-2 row-start-2 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 pt-0.5">
                   <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] text-slate-500" title={t("stock.openPrice")}>
@@ -1075,8 +1265,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             onUpdateSnapshotTime={handleUpdateSnapshotTime}
             legToolbar={legToolbar}
             spot={spot}
+            openingAt={openingAt}
             activeLegs={activeLegs}
             effectiveTrackedSpot={effectiveTrackedSpot}
+            liveSpot={liveTrackedSpot}
             activeTrackedLegs={activeTrackedLegs}
             effectiveDaysElapsed={effectiveDaysElapsed}
             legs={legs}
@@ -1084,6 +1276,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             selectedLegIds={selectedLegIds}
             onClearLegSelection={clearLegSelection}
             onSelectAllLegs={selectAllLegs}
+            canSaveStrategy={canSaveStrategy}
+            onSaveStrategy={() => setSaveStrategyOpen(true)}
             allSelectedDisabled={allSelectedDisabled}
             onBulkToggleDisable={bulkToggleDisable}
             onRequestBulkDelete={requestBulkDelete}
@@ -1104,117 +1298,31 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           />
           {/* ── Today's combo section (compare mode only) ── */}
           {isCompareMode && trackedLegs && (
-            <div className="flex flex-col border-t-2 border-sky-700/40">
-              <div className="flex flex-wrap items-center gap-2 bg-sky-950/30 px-2 py-1">
-                <span className="text-[10px] font-bold uppercase tracking-wide text-sky-400">{t("compare.todayCombo")}</span>
-                <span className="text-[9px] text-slate-500">{t("compare.fixed")}</span>
-                {(() => {
-                  const snaps = trackedStrategy?.trackedSnapshots ?? [];
-                  if (snaps.length === 0) {
-                    return <span className="text-[9px] tabular-nums text-slate-500">{new Date().toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>;
-                  }
-                  const activeSnap = snaps.find((sn) => sn.id === activeSnapshotId) ?? snaps[snaps.length - 1];
-                  return (
-                    <div className="flex items-center gap-1">
-                      <History size={11} className="text-sky-500" />
-                      <select
-                        value={activeSnapshotId ?? activeSnap.id}
-                        onChange={(e) => {
-                          const sn = snaps.find((s) => s.id === e.target.value);
-                          if (sn) handleSelectSnapshot(sn);
-                        }}
-                        className="rounded border border-sky-700/50 bg-slate-900 px-1 py-0.5 text-[9px] tabular-nums text-sky-200 outline-none focus:border-sky-500"
-                      >
-                        {snaps.map((sn, idx) => (
-                          <option key={sn.id} value={sn.id}>
-                            #{idx + 1} {new Date(sn.savedAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="text-[9px] text-slate-500">({snaps.length} {t("compare.snapshots")})</span>
-                      <button
-                        onClick={() => {
-                          if (activeSnap && snaps.length > 1) handleDeleteSnapshot(activeSnap.id);
-                        }}
-                        disabled={snaps.length <= 1}
-                        title={snaps.length <= 1 ? t("compare.keepOne") : t("compare.deleteSnap")}
-                        className="text-slate-500 transition hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-30"
-                      >
-                        <Trash2 size={11} />
-                      </button>
-                    </div>
-                  );
-                })()}
-              </div>
-              {isCompareMode && trackedResult && (() => {
-                const openIV = spot > 0 ? weightedAvgIV(activeLegs, spot) : 0;
-                const currSpot = effectiveTrackedSpot;
-                const currIV = currSpot > 0 ? weightedAvgIV(activeTrackedLegs ?? [], currSpot) : 0;
-                const spotChg = currSpot - spot;
-                const ivChg = openIV > 0 && currIV > 0 ? (currIV - openIV) * 100 : 0;
-                const trackedNetPremium = trackedResult.netPremium;
-                const trackedNetValue = trackedResult.shiftedValue;
-                const trackedChange = trackedResult.change;
-                return (
-                  <div className="mb-1 grid grid-cols-4 gap-1.5 rounded-lg border border-sky-800/40 bg-sky-950/20 p-2 text-[10px]">
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-slate-500">{t("compare.spotChange")}</span>
-                      <span className="tabular-nums text-slate-300">{t("compare.openLabel")} <span className="font-semibold text-emerald-400">{spot.toFixed(2)}</span></span>
-                      <span className="tabular-nums text-slate-300">{t("compare.currentLabel")} <span className="font-semibold text-sky-400">{currSpot.toFixed(2)}</span>
-                        <button
-                          onClick={() => setShowImpliedInfo((v) => !v)}
-                          className="ml-1 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-sky-500 text-[8px] font-bold text-white align-middle transition hover:bg-sky-400"
-                          title={t("implied.title")}
-                        >i</button>
-                      </span>
-                      <span className={`tabular-nums font-semibold ${spotChg >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{spotChg >= 0 ? "+" : ""}{spotChg.toFixed(2)} ({spot > 0 ? (spotChg / spot * 100).toFixed(2) : "0.00"}%)</span>
-                    </div>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-slate-500">{t("compare.timeDecay")}</span>
-                      <span className="tabular-nums text-slate-300">{t("compare.openLabel")} <span className="font-semibold text-emerald-400">{activeLegs.length > 0 ? Math.round(Math.max(...activeLegs.map((l) => l.dte))) : "-"}</span> {t("compare.days")}</span>
-                      <span className="tabular-nums text-slate-300">{t("compare.currentLabel")} <span className="font-semibold text-sky-400">{activeTrackedLegs && activeTrackedLegs.length > 0 ? Math.max(0, Math.round(Math.max(...activeTrackedLegs.map((l) => l.dte)))) : "-"}</span> {t("compare.days")}</span>
-                      <span className="tabular-nums font-semibold text-amber-400">{t("compare.elapsed")} {Math.round(effectiveDaysElapsed)} {t("compare.days")}</span>
-                    </div>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-slate-500">{t("compare.iv")}</span>
-                      <span className="tabular-nums text-slate-300">{t("compare.openLabel")} <span className="font-semibold text-emerald-400">{openIV > 0 ? (openIV * 100).toFixed(2) : "-"}%</span></span>
-                      <span className="tabular-nums text-slate-300">{t("compare.currentLabel")} <span className="font-semibold text-sky-400">{currIV > 0 ? (currIV * 100).toFixed(2) : "-"}%</span></span>
-                      <span className={`tabular-nums font-semibold ${ivChg >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{ivChg >= 0 ? "+" : ""}{ivChg.toFixed(2)}pp</span>
-                    </div>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-slate-500">{t("compare.pnl")}</span>
-                      <span className="tabular-nums text-slate-300">{t("compare.openLabel")} <span className="font-semibold text-emerald-400">{trackedNetPremium >= 0 ? "+" : ""}{trackedNetPremium.toFixed(2)}</span></span>
-                      <span className="tabular-nums text-slate-300">{t("compare.currentLabel")} <span className="font-semibold text-sky-400">{trackedNetValue >= 0 ? "+" : ""}{trackedNetValue.toFixed(2)}</span></span>
-                      <span className={`tabular-nums font-semibold ${trackedChange >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{trackedChange >= 0 ? "+" : ""}{trackedChange.toFixed(2)}</span>
-                    </div>
-                  </div>
-                );
-              })()}
-              <div className="p-2 space-y-1">
-                {trackedLegs.map((leg, i) => (
-                  <LegRow
-                    key={leg.id}
-                    leg={leg}
-                    index={i}
-                    symbol={symbol}
-                    legPnl={trackedLegPnlById.get(leg.id)}
-                    roleInfo={trackedLegRolesById.get(leg.id)}
-                    onChange={(patch) => updateTrackedLeg(leg.id, patch)}
-                    onToggleDisable={() => {}}
-                    onDelete={() => {}}
-                    onAddToPreset={() => {}}
-                    onRoll={() => handleRoll(leg.id)}
-                    onHedge={() => handleHedge()}
-                    onProtect={() => handleProtect(leg.id)}
-                    onMoveUp={() => moveTrackedLeg(i, -1)}
-                    onMoveDown={() => moveTrackedLeg(i, 1)}
-                    canMoveUp={i > 0}
-                    canMoveDown={i < trackedLegs.length - 1}
-                    selectable={false}
-                  />
-                ))}
-              </div>
-            </div>
+            <TrackedComboSection
+              trackedLegs={trackedLegs}
+              trackedStrategy={trackedStrategy}
+              activeSnapshotId={activeSnapshotId}
+              onSelectSnapshot={handleSelectSnapshot}
+              onDeleteSnapshot={handleDeleteSnapshot}
+              onSaveTracked={handleSaveTracked}
+              trackedDirty={trackedDirty}
+              trackedResult={trackedResult}
+              spot={spot}
+              activeLegs={activeLegs}
+              effectiveTrackedSpot={effectiveTrackedSpot}
+              liveSpot={liveTrackedSpot}
+              activeTrackedLegs={activeTrackedLegs}
+              effectiveDaysElapsed={effectiveDaysElapsed}
+              onToggleImpliedInfo={() => setShowImpliedInfo((v) => !v)}
+              symbol={symbol}
+              trackedLegPnlById={trackedLegPnlById}
+              trackedLegRolesById={trackedLegRolesById}
+              onChangeTrackedLeg={updateTrackedLeg}
+              onRoll={handleRoll}
+              onHedge={handleHedge}
+              onProtect={handleProtect}
+              onMoveTrackedLeg={moveTrackedLeg}
+            />
           )}
 
           {isCompareMode && pnlAttribution && (
@@ -1253,6 +1361,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 netValue={isCompareMode && trackedResult ? trackedResult.shiftedValue : result.shiftedValue}
                 netChange={isCompareMode && trackedResult ? trackedResult.change : result.change}
                 trackedSpot={isCompareMode ? effectiveTrackedSpot : undefined}
+                liveSpot={isCompareMode && liveTrackedSpot !== null ? liveTrackedSpot : undefined}
                 onAlert={setAlert}
                 correctedSpot={correctedSpot}
                 correcting={correcting}
@@ -1279,158 +1388,138 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         </div>
       </div>
 
-      <SavePresetDialog
-        open={saveDialogOpen}
-        onClose={() => setSaveDialogOpen(false)}
-        onSave={handleAddCustom}
-        legs={activeLegs}
-      />
-
-      {confirmPresetOpen && (
-        <ConfirmSnapshotDialog
-          onCancel={() => { setConfirmPresetOpen(false); pendingPresetAction.current = null; }}
-          onDontSave={() => { setConfirmPresetOpen(false); if (pendingPresetAction.current) { applyPreset(pendingPresetAction.current.rawLegs); pendingPresetAction.current = null; } }}
-          onSaveSnapshot={async () => {
-            setConfirmPresetOpen(false);
-            await handleSaveTracked();
-            if (pendingPresetAction.current) { applyPreset(pendingPresetAction.current.rawLegs); pendingPresetAction.current = null; }
-          }}
-        />
-      )}
-
-      {confirmReplaceOpen && (
-        <ConfirmReplacePresetDialog
-          onCancel={() => { setConfirmReplaceOpen(false); pendingPresetReplace.current = null; }}
-          onDontSave={() => {
-            setConfirmReplaceOpen(false);
-            if (pendingPresetReplace.current) { applyPreset(pendingPresetReplace.current); pendingPresetReplace.current = null; }
-          }}
-          onSaveFirst={() => {
-            setConfirmReplaceOpen(false);
-            setSaveStrategyOpen(true);
-            // pendingPresetReplace stays set — applied once the save succeeds
-          }}
-        />
-      )}
-
-      {confirmLeaveOpen && (
-        <ConfirmLeaveDialog
-          onCancel={() => setConfirmLeaveOpen(false)}
-          onDontSave={() => { setConfirmLeaveOpen(false); onBackHome?.(); }}
-          onSaveFirst={() => {
-            setConfirmLeaveOpen(false);
-            pendingLeaveAfterSave.current = true;
-            setSaveStrategyOpen(true);
-            // navigation fires from inside handleSaveStrategy/handleOverwriteStrategy once the save succeeds
-          }}
-        />
-      )}
-
       {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
 
-      {confirmClearOpen && (
-        <ConfirmClearDialog
-          onConfirm={clearAllLegs}
-          onCancel={() => setConfirmClearOpen(false)}
-        />
-      )}
-
-      {confirmBulkDeleteOpen && (
-        <ConfirmBulkDeleteDialog
-          count={selectedCount}
-          onConfirm={confirmBulkDelete}
-          onCancel={() => setConfirmBulkDeleteOpen(false)}
-        />
-      )}
-
-      {confirmSaveTrackedOpen && (
-        <ConfirmSaveTrackedDialog
-          onDontSave={() => { setConfirmSaveTrackedOpen(false); doClearAll(); }}
-          onSaveSnapshot={async () => {
-            setConfirmSaveTrackedOpen(false);
-            await handleSaveTracked();
-            doClearAll();
-          }}
-        />
-      )}
-
-      <SaveStrategyDialog
-        open={saveStrategyOpen}
-        onClose={() => { setSaveStrategyOpen(false); pendingPresetReplace.current = null; pendingLeaveAfterSave.current = false; }}
-        onSave={handleSaveStrategy}
-        onOverwrite={handleOverwriteStrategy}
+      <LegActionDialogs
+        saveDialogOpen={saveDialogOpen}
+        onCloseSaveDialog={() => setSaveDialogOpen(false)}
+        onSaveCustomPreset={handleAddCustom}
+        activeLegs={activeLegs}
+        confirmClearOpen={confirmClearOpen}
+        onConfirmClear={clearAllLegs}
+        onCancelClear={() => setConfirmClearOpen(false)}
+        confirmBulkDeleteOpen={confirmBulkDeleteOpen}
+        selectedCount={selectedCount}
+        onConfirmBulkDelete={confirmBulkDelete}
+        onCancelBulkDelete={() => setConfirmBulkDeleteOpen(false)}
+        confirmSaveTrackedOpen={confirmSaveTrackedOpen}
+        onDontSaveTracked={() => { setConfirmSaveTrackedOpen(false); doClearAll(); }}
+        onSaveTrackedThenClear={async () => {
+          setConfirmSaveTrackedOpen(false);
+          await handleSaveTracked();
+          doClearAll();
+        }}
+        rollTarget={rollTarget}
+        onCloseRoll={() => setRollTarget(null)}
+        onConfirmRoll={handleRollConfirm}
+        protectTarget={protectTarget}
+        onCloseProtect={() => setProtectTarget(null)}
+        onConfirmProtect={handleProtectConfirm}
+        hedgeOpen={hedgeOpen}
+        legs={legs}
+        onCloseHedge={() => setHedgeOpen(false)}
+        onConfirmHedge={handleHedgeConfirm}
+        compareTargetId={compareTargetId}
+        shifts={shifts}
+        onCloseCompare={() => setCompareTargetId(null)}
+        showImpliedInfo={showImpliedInfo}
+        isCompareMode={isCompareMode}
+        effectiveTrackedSpot={effectiveTrackedSpot}
+        correctedSpot={correctedSpot}
+        correcting={correcting}
+        onCloseImplied={() => setShowImpliedInfo(false)}
+        onCorrectSpot={() => { handleCorrectSpot(); setShowImpliedInfo(false); }}
+        spot={spot}
         symbol={symbol}
-        direction={comboDirection}
+      />
+
+      <StrategyPersistenceDialogs
+        confirmPresetOpen={confirmPresetOpen}
+        onCancelPresetSwitch={() => { setConfirmPresetOpen(false); pendingPresetAction.current = null; }}
+        onDontSavePresetSwitch={() => { setConfirmPresetOpen(false); if (pendingPresetAction.current) { applyPreset(pendingPresetAction.current.rawLegs); pendingPresetAction.current = null; } }}
+        onSaveSnapshotThenPresetSwitch={async () => {
+          setConfirmPresetOpen(false);
+          await handleSaveTracked();
+          if (pendingPresetAction.current) { applyPreset(pendingPresetAction.current.rawLegs); pendingPresetAction.current = null; }
+        }}
+        confirmReplaceOpen={confirmReplaceOpen}
+        onCancelReplace={() => { setConfirmReplaceOpen(false); pendingPresetReplace.current = null; }}
+        onDontSaveReplace={() => {
+          setConfirmReplaceOpen(false);
+          if (pendingPresetReplace.current) { applyPreset(pendingPresetReplace.current); pendingPresetReplace.current = null; }
+        }}
+        onSaveFirstReplace={() => {
+          setConfirmReplaceOpen(false);
+          setSaveStrategyOpen(true);
+          // pendingPresetReplace stays set — applied once the save succeeds
+        }}
+        confirmLeaveOpen={confirmLeaveOpen}
+        onCancelLeave={() => setConfirmLeaveOpen(false)}
+        onDontSaveLeave={() => { setConfirmLeaveOpen(false); onBackHome?.(); }}
+        onSaveFirstLeave={() => {
+          setConfirmLeaveOpen(false);
+          pendingLeaveAfterSave.current = true;
+          setSaveStrategyOpen(true);
+          // navigation fires from inside handleSaveStrategy/handleOverwriteStrategy once the save succeeds
+        }}
+        confirmSwitchOpen={confirmSwitchOpen}
+        onCancelSwitch={() => { setConfirmSwitchOpen(false); pendingSwitchSource.current = null; }}
+        onDontSaveSwitch={() => {
+          setConfirmSwitchOpen(false);
+          if (pendingSwitchSource.current) { performSwitchToAnalysis(pendingSwitchSource.current); pendingSwitchSource.current = null; }
+        }}
+        onSaveSnapshotThenSwitch={async () => {
+          setConfirmSwitchOpen(false);
+          await handleSaveTracked();
+          if (pendingSwitchSource.current) { performSwitchToAnalysis(pendingSwitchSource.current); pendingSwitchSource.current = null; }
+        }}
+        confirmSymbolChangeOpen={confirmSymbolChangeOpen}
+        onCancelSymbolChange={() => {
+          setConfirmSymbolChangeOpen(false);
+          // Revert the input back to the old symbol — the person typed a new
+          // one, saw the "unsaved changes" prompt, and backed out, so the
+          // combo and the symbol box should agree again rather than leaving
+          // a new symbol showing over strikes that never got rescaled.
+          setSymbol(legBaseSymbol.current);
+          pendingSymbolChange.current = null;
+        }}
+        onDontSaveSymbolChange={() => {
+          setConfirmSymbolChangeOpen(false);
+          if (pendingSymbolChange.current) {
+            rescaleForNewSymbol(pendingSymbolChange.current.symbol, pendingSymbolChange.current.spot);
+            pendingSymbolChange.current = null;
+          }
+        }}
+        onSaveSnapshotThenSymbolChange={async () => {
+          setConfirmSymbolChangeOpen(false);
+          await handleSaveTracked();
+          if (pendingSymbolChange.current) {
+            rescaleForNewSymbol(pendingSymbolChange.current.symbol, pendingSymbolChange.current.spot);
+            pendingSymbolChange.current = null;
+          }
+        }}
+        saveStrategyOpen={saveStrategyOpen}
+        onCloseSaveStrategy={() => { setSaveStrategyOpen(false); pendingPresetReplace.current = null; pendingLeaveAfterSave.current = false; pendingSaveTrackedAfterStrategy.current = false; }}
+        onSaveStrategy={handleSaveStrategy}
+        onOverwriteStrategy={handleOverwriteStrategy}
+        symbol={symbol}
+        comboDirection={comboDirection}
         strategyName={strategyName}
-        legs={activeLegs}
+        activeLegs={activeLegs}
         spot={spot}
         shifts={shifts}
         openingAt={openingAt}
-        existing={savedStrategies}
+        savedStrategies={savedStrategies}
+        manageStrategyOpen={manageStrategyOpen}
+        onCloseManage={() => setManageStrategyOpen(false)}
+        manageMode={manageMode}
+        onOpenStrategy={handleOpenStrategy}
+        onReorderStrategies={handleReorderStrategies}
+        onRenameStrategy={handleRenameStrategy}
+        onDeleteStrategy={handleDeleteStrategy}
+        onToggleStarStrategy={handleToggleStar}
+        onTrackStrategy={handleTrack}
       />
-
-      <ManageStrategiesDialog
-        open={manageStrategyOpen}
-        onClose={() => setManageStrategyOpen(false)}
-        mode={manageMode}
-        strategies={savedStrategies}
-        onOpen={handleOpenStrategy}
-        onReorder={handleReorderStrategies}
-        onRename={handleRenameStrategy}
-        onDelete={handleDeleteStrategy}
-        onToggleStar={handleToggleStar}
-        onTrack={handleTrack}
-      />
-
-      {rollTarget && (
-        <RollDialog
-          leg={rollTarget}
-          spot={spot}
-          symbol={symbol}
-          onClose={() => setRollTarget(null)}
-          onConfirm={handleRollConfirm}
-        />
-      )}
-      {protectTarget && (
-        <ProtectDialog
-          leg={protectTarget}
-          spot={spot}
-          symbol={symbol}
-          onClose={() => setProtectTarget(null)}
-          onConfirm={handleProtectConfirm}
-        />
-      )}
-      {hedgeOpen && (
-        <HedgeDialog
-          legs={legs}
-          spot={spot}
-          symbol={symbol}
-          onClose={() => setHedgeOpen(false)}
-          onConfirm={handleHedgeConfirm}
-        />
-      )}
-
-      {compareTargetId && (
-        <DecisionCompareDialog
-          legs={legs}
-          targetLegId={compareTargetId}
-          spot={spot}
-          symbol={symbol}
-          shifts={shifts}
-          onClose={() => setCompareTargetId(null)}
-        />
-      )}
-
-      {showImpliedInfo && isCompareMode && (
-        <ImpliedSpotInfoPanel
-          trackedSpot={effectiveTrackedSpot}
-          correctedSpot={correctedSpot}
-          correcting={correcting}
-          canCorrect={!!symbol.trim()}
-          onClose={() => setShowImpliedInfo(false)}
-          onCorrect={() => { handleCorrectSpot(); setShowImpliedInfo(false); }}
-        />
-      )}
     </div>
   );
 }

@@ -1,9 +1,10 @@
 // src/components/AppHeader.tsx
-import { RefreshCw, TrendingUp, TrendingDown, ChevronDown, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle } from "lucide-react";
+import { RefreshCw, TrendingUp, TrendingDown, ChevronDown, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle, GitCompare, History } from "lucide-react";
 import type { RefObject } from "react";
 import type { PresetMeta } from "@/lib/presets";
 import type { CustomPreset } from "@/lib/customPresets";
 import type { StockQuote } from "@/lib/useStockQuote";
+import type { SavedStrategy } from "@/lib/savedStrategies";
 import PresetPicker from "@/components/PresetPicker";
 import DropdownMenu from "@/components/DropdownMenu";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
@@ -32,6 +33,15 @@ interface Props {
   customPresets: CustomPreset[];
   onDeleteCustomPreset: (id: string) => void;
   onSelectPreset: (preset: PresetMeta) => void;
+
+  // analysis ↔ compare mode switch — moved here (between the preset picker
+  // and the symbol field) per xue's request; used to live in the leg
+  // panel's title row (LegPanelTitleRow.tsx), which still owns the
+  // "对比模式" badge but no longer the switch controls themselves.
+  legsCount: number;
+  trackedStrategy: SavedStrategy | undefined;
+  onSwitchToCompare: () => void;
+  onSwitchToAnalysis: (source: "baseline" | "current" | string) => void;
 
   // symbol / quote
   symbolWrapRef: RefObject<HTMLDivElement>;
@@ -72,6 +82,10 @@ export default function AppHeader({
   customPresets,
   onDeleteCustomPreset,
   onSelectPreset,
+  legsCount,
+  trackedStrategy,
+  onSwitchToCompare,
+  onSwitchToAnalysis,
   symbolWrapRef,
   symbol,
   onSymbolChange,
@@ -122,6 +136,55 @@ export default function AppHeader({
           onDeleteCustom={onDeleteCustomPreset}
           onSelect={onSelectPreset}
         />
+
+        {!simOrigin && !isCompareMode && legsCount > 0 && (
+          <button
+            onClick={onSwitchToCompare}
+            title={t("leg.switchToCompareHint")}
+            className="flex shrink-0 items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50"
+          >
+            <GitCompare size={11} />
+            {t("leg.switchToCompare")}
+          </button>
+        )}
+        {!simOrigin && isCompareMode && (
+          <DropdownMenu label={t("leg.switchToAnalysis")} icon={<GitCompare size={11} />} menuClassName="w-64">
+            {(close) => (
+              <>
+                <button
+                  onClick={() => { close(); onSwitchToAnalysis("baseline"); }}
+                  className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left text-[11px] text-slate-300 transition hover:bg-slate-800"
+                >
+                  <span className="font-semibold">{t("leg.switchSourceBaseline")}</span>
+                  <span className="text-[9px] text-slate-500">{t("leg.switchSourceBaselineHint")}</span>
+                </button>
+                <button
+                  onClick={() => { close(); onSwitchToAnalysis("current"); }}
+                  className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left text-[11px] text-slate-300 transition hover:bg-slate-800"
+                >
+                  <span className="font-semibold">{t("leg.switchSourceCurrent")}</span>
+                  <span className="text-[9px] text-slate-500">{t("leg.switchSourceCurrentHint")}</span>
+                </button>
+                {(trackedStrategy?.trackedSnapshots?.length ?? 0) > 0 && (
+                  <>
+                    <div className="my-1 border-t border-slate-800" />
+                    <div className="px-3 py-1 text-[9px] font-bold uppercase tracking-wide text-slate-600">{t("leg.switchSourceSnapshot")}</div>
+                    {trackedStrategy!.trackedSnapshots!.map((sn, idx) => (
+                      <button
+                        key={sn.id}
+                        onClick={() => { close(); onSwitchToAnalysis(sn.id); }}
+                        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] text-slate-300 transition hover:bg-slate-800"
+                      >
+                        <History size={11} className="text-sky-500" />
+                        #{idx + 1} {new Date(sn.savedAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                      </button>
+                    ))}
+                  </>
+                )}
+              </>
+            )}
+          </DropdownMenu>
+        )}
 
         <div ref={symbolWrapRef} className="relative flex items-center gap-1.5">
           <span className="text-[10px] uppercase text-slate-500">{t("stock.code")}</span>

@@ -3,7 +3,13 @@ import type { Leg } from "./types";
 import { computeComboMargin, type MarginNote } from "./margin";
 import { blackScholes } from "./bs";
 import { impliedVol, classifySpotOnCurve, type CurvePosition } from "./pricing";
-import { formatDateInput, parseDateInput } from "./dateUtils";
+import { formatDateInput, daysBetweenLocalDates } from "./dateUtils";
+
+// Re-exported for existing callers (SimulatorPage.tsx) — the actual
+// implementation now lives in dateUtils.ts as the app-wide canonical
+// calendar-day-difference helper (App.tsx's compare-mode tracking uses it
+// too, see dateUtils.ts's comment on daysBetweenLocalDates for why).
+export { daysBetweenLocalDates };
 
 const SIM_RATE = 0.05; // matches pricing.ts's RATE — kept as a separate
 // local const rather than importing pricing.ts's private RATE (not
@@ -215,13 +221,6 @@ async function fetchHistoricalBars(symbol: string): Promise<HistoricalBar[]> {
   return bars;
 }
 
-export function daysBetweenLocalDates(fromISO: string, toISO: string): number {
-  const from = parseDateInput(fromISO);
-  const to = parseDateInput(toISO);
-  if (from == null || to == null) return 0;
-  return Math.round((to - from) / 86400000);
-}
-
 // Theoretical repricing of a position's legs at a historical point in time,
 // using the IV implied at the position's ACTUAL opening premiums (held
 // flat — the same "flat vol from opening" convention pricing.ts's
@@ -419,6 +418,12 @@ export async function openSimPosition(params: {
   // as ones built from scratch in the simulator's own leg builder — those
   // correctly fall back to Date.now() below.
   openingAt?: number;
+  // Free-form tag used by callers that need to identify a position later —
+  // e.g. EarningsIvCrashTab.tsx stamps "earnings-iv-crash:{group}:{batchId}"
+  // so earningsClosing.ts's parseEarningsNote()/groupEarningsPositions() can
+  // find "all positions from this earnings batch" as a unit. Omitted for
+  // positions opened by hand, which don't need to be found by anything.
+  note?: string;
 }): Promise<{ account: SimAccount; positions: SimPosition[] }> {
   const account = loadAccountFromStorage();
   if (!account) throw new Error("Simulated account not initialized");
@@ -436,6 +441,7 @@ export async function openSimPosition(params: {
     openedAt: params.openingAt ?? Date.now(),
     costBasis,
     status: "open",
+    note: params.note,
   };
 
   const updatedAccount: SimAccount = { ...account, cash: account.cash - costBasis };

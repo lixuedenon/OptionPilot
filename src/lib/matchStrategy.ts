@@ -1,4 +1,5 @@
 // src/lib/matchStrategy.ts
+// src/lib/matchStrategy.ts
 import type { Leg } from "@/lib/types";
 import { PRESET_GROUPS } from "@/lib/presets";
 import type { CustomPreset } from "@/lib/customPresets";
@@ -18,7 +19,7 @@ function patternOf(legs: Leg[]): Pattern {
   // unequal gaps) both reduce to the same rank sequence (buy-sell-sell-
   // buy at ranks 0,1,1,2), even though they're genuinely different
   // structures with different risk profiles. Same problem for Iron
-  // Condor vs Jade Lizard (Broken Wing Iron Condor) — both are buy-put/
+  // Condor vs Narrow-Body Iron Condor (窄体铁鹰) — both are buy-put/
   // sell-put/sell-call/buy-call at ranks 0,1,2,3 regardless of whether
   // the put spread and call spread are the same width or not. Using each
   // strike's PROPORTIONAL position within the full range (0 = lowest
@@ -92,7 +93,7 @@ function checkIronButterflyFamily(legs: Leg[]): string | null {
   const buyCall = buys.find((l) => l.type === "call");
   const buyPut = buys.find((l) => l.type === "put");
   if (!sellCall || !sellPut || !buyCall || !buyPut) return null;
-  if (sellCall.strike !== sellPut.strike) return null; // not a true ATM straddle sold — e.g. 玉蜥蜴's sold legs sit at two different strikes
+  if (sellCall.strike !== sellPut.strike) return null; // not a true ATM straddle sold — e.g. 窄体铁鹰's sold legs sit at two different strikes
   if (buyCall.strike <= sellCall.strike || buyPut.strike >= sellPut.strike) return null; // wings must actually protect outward on their own side
   // All 4 legs must share ONE expiry — this shape concept is inherently
   // single-expiry. A double diagonal spread (near-month sold, far-month

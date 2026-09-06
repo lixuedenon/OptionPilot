@@ -1,5 +1,5 @@
 // src/components/LegListSection.tsx
-import { Clock, Ban, Trash2, Plus } from "lucide-react";
+import { Clock, Ban, Trash2, Plus, Save } from "lucide-react";
 import { useMemo, type ReactNode } from "react";
 import type { Leg } from "@/lib/types";
 import type { SavedStrategy } from "@/lib/savedStrategies";
@@ -28,6 +28,11 @@ interface Props {
   openingAt: number;
   activeLegs: Leg[];
   effectiveTrackedSpot: number;
+  // Real live market quote, decoupled from effectiveTrackedSpot — shown as
+  // the "当前" spot number here instead of the back-solved value, which
+  // keeps feeding the IV/attribution math elsewhere. Null when no quote is
+  // available yet (falls back to effectiveTrackedSpot for display too).
+  liveSpot: number | null;
   activeTrackedLegs: Leg[] | null;
   effectiveDaysElapsed: number;
 
@@ -36,6 +41,8 @@ interface Props {
   selectedLegIds: Set<string>;
   onClearLegSelection: () => void;
   onSelectAllLegs: () => void;
+  canSaveStrategy: boolean;
+  onSaveStrategy: () => void;
   allSelectedDisabled: boolean;
   onBulkToggleDisable: () => void;
   onRequestBulkDelete: () => void;
@@ -67,6 +74,7 @@ export default function LegListSection({
   openingAt,
   activeLegs,
   effectiveTrackedSpot,
+  liveSpot,
   activeTrackedLegs,
   effectiveDaysElapsed,
   legs,
@@ -74,6 +82,8 @@ export default function LegListSection({
   selectedLegIds,
   onClearLegSelection,
   onSelectAllLegs,
+  canSaveStrategy,
+  onSaveStrategy,
   allSelectedDisabled,
   onBulkToggleDisable,
   onRequestBulkDelete,
@@ -150,14 +160,19 @@ export default function LegListSection({
           const openIV = spot > 0 ? weightedAvgIV(activeLegs, spot) : 0;
           const currSpot = effectiveTrackedSpot;
           const currIV = currSpot > 0 ? weightedAvgIV(activeTrackedLegs ?? [], currSpot) : 0;
-          const spotChg = currSpot - spot;
+          // Display-only: the "当前" spot number shows the real market
+          // quote when available, NOT currSpot — IV above still uses
+          // currSpot so it stays consistent with the tracked legs' actual
+          // premiums (see the liveSpot prop comment).
+          const displaySpot = liveSpot ?? currSpot;
+          const spotChg = displaySpot - spot;
           const ivChg = openIV > 0 && currIV > 0 ? (currIV - openIV) * 100 : 0;
           return (
             <div className="mb-1 grid grid-cols-3 gap-1.5 rounded-lg border border-slate-800 bg-slate-900/40 p-2 text-[10px]">
               <div className="flex flex-col gap-0.5">
                 <span className="text-slate-500">{t("compare.spot")}</span>
                 <span className="tabular-nums text-slate-300">{t("compare.openLabel")} <span className="font-semibold text-emerald-400">{spot.toFixed(2)}</span></span>
-                <span className="tabular-nums text-slate-300">{t("compare.currentLabel")} <span className="font-semibold text-sky-400">{currSpot.toFixed(2)}</span></span>
+                <span className="tabular-nums text-slate-300">{t("compare.currentLabel")} <span className="font-semibold text-sky-400">{displaySpot.toFixed(2)}</span></span>
                 <span className={`tabular-nums font-semibold ${spotChg >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{spotChg >= 0 ? "+" : ""}{spotChg.toFixed(2)} ({spot > 0 ? (spotChg / spot * 100).toFixed(2) : "0.00"}%)</span>
               </div>
               <div className="flex flex-col gap-0.5">
@@ -189,24 +204,35 @@ export default function LegListSection({
               />
               {selectedCount > 0 ? t("leg.selectedCount", { count: selectedCount }) : t("leg.selectAll")}
             </label>
-            {selectedCount > 0 && (
-              <div className="ml-auto flex items-center gap-1.5">
-                <button
-                  onClick={onBulkToggleDisable}
-                  className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-amber-400 transition hover:border-amber-500/50 hover:bg-amber-950/30"
-                >
-                  <Ban size={11} />
-                  {allSelectedDisabled ? t("leg.bulkUnblock") : t("leg.bulkBlock")}
-                </button>
-                <button
-                  onClick={onRequestBulkDelete}
-                  className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-rose-400 transition hover:border-rose-500/50 hover:bg-rose-950/30"
-                >
-                  <Trash2 size={11} />
-                  {t("leg.bulkDelete")}
-                </button>
-              </div>
-            )}
+            <div className="ml-auto flex items-center gap-1.5">
+              {selectedCount > 0 && (
+                <>
+                  <button
+                    onClick={onBulkToggleDisable}
+                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-amber-400 transition hover:border-amber-500/50 hover:bg-amber-950/30"
+                  >
+                    <Ban size={11} />
+                    {allSelectedDisabled ? t("leg.bulkUnblock") : t("leg.bulkBlock")}
+                  </button>
+                  <button
+                    onClick={onRequestBulkDelete}
+                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-rose-400 transition hover:border-rose-500/50 hover:bg-rose-950/30"
+                  >
+                    <Trash2 size={11} />
+                    {t("leg.bulkDelete")}
+                  </button>
+                </>
+              )}
+              <button
+                onClick={onSaveStrategy}
+                disabled={!canSaveStrategy}
+                title={t("toolbar.saveStrategy")}
+                className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-emerald-400 transition hover:border-emerald-500/50 hover:bg-emerald-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Save size={11} />
+                {t("toolbar.saveStrategy")}
+              </button>
+            </div>
           </div>
         )}
         {legs.length === 0 ? (
@@ -223,6 +249,16 @@ export default function LegListSection({
               scenarioPrice={isCompareMode ? undefined : scenarioPriceById.get(leg.id)}
               symbol={symbol}
               roleInfo={legRolesById.get(leg.id)}
+              // Compare mode only, matched by position against the backing
+              // SavedStrategy's own legs (not by id — these ids get
+              // regenerated every time compare mode is entered, see
+              // App.tsx's handleTrack/handleSwitchToCompare). A leg added
+              // here after entering compare mode has no counterpart at its
+              // index, so restoreOriginal stays undefined for it and its
+              // restore button falls back to the normal live-fetch
+              // behavior — there's no "original" to revert an unsaved new
+              // leg to.
+              restoreOriginal={isCompareMode ? trackedStrategy?.legs[i] : undefined}
               onChange={(patch) => onChangeLeg(leg.id, patch)}
               onToggleDisable={() => onToggleLeg(leg.id)}
               onDelete={() => onDeleteLeg(leg.id)}

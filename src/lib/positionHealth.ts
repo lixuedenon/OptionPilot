@@ -1,13 +1,26 @@
+// src/lib/positionHealth.ts
 import type { Leg, Shifts, GreekBreakdown } from "./types";
 import { probabilityOfProfit, legShiftedPrice } from "./pricing";
 
 export type HealthStatus = "good" | "warning" | "bad";
 export type HealthTier = "healthy" | "watch" | "warning" | "critical";
 
+// Local alias instead of importing useI18n's type from I18nContext.tsx —
+// this file has no React/JSX in it and shouldn't pull a component module
+// in just for a function type. Structurally identical to I18nCtx["t"].
+type TFunc = (key: string, vars?: Record<string, string | number>) => string;
+
 export interface HealthFactor {
   label: string;
   status: HealthStatus;
   note: string;
+  // One static, plain-language sentence explaining what this factor actually
+  // measures — independent of the current value/status. Shown as a dimmer
+  // second line under `note` in the popover so a user who doesn't already
+  // know what "距盈亏平衡点" means can still act on the number. `note` stays
+  // the concrete "here's your number and whether it's good" line; `meaning`
+  // is the constant "here's what this number represents" line.
+  meaning: string;
 }
 
 export interface HealthResult {
@@ -52,19 +65,20 @@ function statusFromFraction(f: number): HealthStatus {
   return "bad";
 }
 
-function buildSummary(tier: HealthTier, factors: HealthFactor[]): string {
+function buildSummary(tier: HealthTier, factors: HealthFactor[], t: TFunc): string {
   const bad = factors.filter((f) => f.status === "bad").map((f) => f.label);
   const warn = factors.filter((f) => f.status === "warning").map((f) => f.label);
+  const sep = t("health.listSeparator");
   if (tier === "healthy" && bad.length === 0 && warn.length === 0) {
-    return "整体状况良好，各项指标都在相对安全的区间内。";
+    return t("health.summary.healthy");
   }
   if (bad.length > 0) {
-    return `存在明显风险点：${bad.join("、")}偏弱，建议重点关注。`;
+    return t("health.summary.bad", { list: bad.join(sep) });
   }
   if (warn.length > 0) {
-    return `整体可控，但${warn.join("、")}处于中等水平，值得留意。`;
+    return t("health.summary.warn", { list: warn.join(sep) });
   }
-  return "整体状况尚可。";
+  return t("health.summary.ok");
 }
 
 // Position Health is a composite score built entirely out of numbers this
@@ -84,7 +98,13 @@ function buildSummary(tier: HealthTier, factors: HealthFactor[]): string {
 // case), that ratio is almost always ugly by construction regardless of
 // how well-chosen the strike is — it would penalize exactly the strategy
 // type this app is built around, not flag genuinely reckless positions.
-export function computeHealth(legs: Leg[], spot: number, shifts: Shifts, breakdown: GreekBreakdown): HealthResult | null {
+//
+// All display text (labels, notes, static "what this means" lines, and the
+// overall summary) is built from the `health.*` i18n keys via `t` — nothing
+// here should be a hardcoded literal in either language. Callers (App.tsx)
+// must include `t` (or the `lang` it depends on) in whatever memoizes this
+// call, so results are recomputed when the language changes.
+export function computeHealth(legs: Leg[], spot: number, shifts: Shifts, breakdown: GreekBreakdown, t: TFunc): HealthResult | null {
   const active = legs.filter((l) => !l.disabled);
   if (active.length === 0 || spot <= 0) return null;
 
@@ -98,10 +118,13 @@ export function computeHealth(legs: Leg[], spot: number, shifts: Shifts, breakdo
   const { pop, breakevens } = probabilityOfProfit(shiftedLegs, shiftedSpot);
   const popFraction = clampFraction(pop, 0.3, 0.7);
   score += popFraction * 25;
+  const popSuffixKey =
+    popFraction >= 0.66 ? "health.pop.suffixGood" : popFraction >= 0.33 ? "health.pop.suffixWarn" : "health.pop.suffixBad";
   factors.push({
-    label: "到期盈利概率",
+    label: t("health.factor.pop"),
     status: statusFromFraction(popFraction),
-    note: `${(pop * 100).toFixed(0)}%${popFraction >= 0.66 ? "，处于相对安全区间" : popFraction >= 0.33 ? "，中等水平" : "，明显偏低"}`,
+    note: t("health.pop.note", { value: (pop * 100).toFixed(0) }) + t(popSuffixKey),
+    meaning: t("health.pop.meaning"),
   });
 
   // 2. Distance to nearest breakeven, as % of the shifted spot (25 pts)
@@ -110,13 +133,21 @@ export function computeHealth(legs: Leg[], spot: number, shifts: Shifts, breakdo
     const beFraction = clampFraction(nearestDistPct, 2, 8);
     score += beFraction * 25;
     factors.push({
-      label: "距盈亏平衡点",
+      label: t("health.factor.breakeven"),
       status: statusFromFraction(beFraction),
-      note: `距最近的盈亏平衡点约${nearestDistPct.toFixed(1)}%${beFraction < 0.33 ? "，非常接近临界" : ""}`,
+      note:
+        t("health.breakeven.note", { value: nearestDistPct.toFixed(1) }) +
+        (beFraction < 0.33 ? t("health.breakeven.suffixCritical") : ""),
+      meaning: t("health.breakeven.meaning"),
     });
   } else {
     score += 25 * 0.5;
-    factors.push({ label: "距盈亏平衡点", status: "warning", note: "扫描范围内没有找到盈亏平衡点" });
+    factors.push({
+      label: t("health.factor.breakeven"),
+      status: "warning",
+      note: t("health.breakeven.notFound"),
+      meaning: t("health.breakeven.meaningNotFound"),
+    });
   }
 
   // 3. Days to expiry remaining after the shift (25 pts)
@@ -126,13 +157,21 @@ export function computeHealth(legs: Leg[], spot: number, shifts: Shifts, breakdo
     const dteFraction = clampFraction(minDte, 7, 30);
     score += dteFraction * 25;
     factors.push({
-      label: "临近到期风险",
+      label: t("health.factor.dte"),
       status: statusFromFraction(dteFraction),
-      note: `最近一条腿剩${Math.round(minDte)}天${dteFraction < 0.33 ? "，Gamma风险较高，价格小幅波动可能明显影响盈亏" : ""}`,
+      note:
+        t("health.dte.note", { value: Math.round(minDte) }) +
+        (dteFraction < 0.33 ? t("health.dte.suffixHighRisk") : ""),
+      meaning: t("health.dte.meaning"),
     });
   } else {
     score += 25;
-    factors.push({ label: "临近到期风险", status: "good", note: "组合中没有期权腿，无到期风险" });
+    factors.push({
+      label: t("health.factor.dte"),
+      status: "good",
+      note: t("health.dte.noOptions"),
+      meaning: t("health.dte.meaningNoOptions"),
+    });
   }
 
   // 4. Net delta exposure, PER CONTRACT (25 pts) — dividing by total
@@ -144,14 +183,19 @@ export function computeHealth(legs: Leg[], spot: number, shifts: Shifts, breakdo
   const deltaFraction = clampFraction(absAvgDelta, 0.7, 0.3);
   score += deltaFraction * 25;
   factors.push({
-    label: "方向暴露 (Delta)",
+    label: t("health.factor.delta"),
     status: statusFromFraction(deltaFraction),
-    note: `平均每张合约Delta ${avgDelta >= 0 ? "+" : ""}${avgDelta.toFixed(2)}（组合净Delta ${breakdown.delta >= 0 ? "+" : ""}${breakdown.delta.toFixed(2)}）${deltaFraction < 0.33 ? "，已经比较接近方向性持仓" : ""}`,
+    note:
+      t("health.delta.note", {
+        avg: `${avgDelta >= 0 ? "+" : ""}${avgDelta.toFixed(2)}`,
+        net: `${breakdown.delta >= 0 ? "+" : ""}${breakdown.delta.toFixed(2)}`,
+      }) + (deltaFraction < 0.33 ? t("health.delta.suffixDirectional") : ""),
+    meaning: t("health.delta.meaning"),
   });
 
   const finalScore = Math.round(score);
   const tier: HealthTier = finalScore >= 75 ? "healthy" : finalScore >= 50 ? "watch" : finalScore >= 25 ? "warning" : "critical";
-  const summary = buildSummary(tier, factors);
+  const summary = buildSummary(tier, factors, t);
 
   return { score: finalScore, tier, summary, factors };
 }

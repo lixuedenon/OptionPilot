@@ -5,7 +5,7 @@ import { ArrowLeft, Plus, RefreshCw, X, Trash2, History, Search, Undo2, Trending
 import type { Leg } from "@/lib/types";
 import type { CurvePosition } from "@/lib/pricing";
 import { probabilityOfProfit } from "@/lib/pricing";
-import { dateFromDte, formatDateInput } from "@/lib/dateUtils";
+import { dateFromDte, formatDateInput, parseDateInput } from "@/lib/dateUtils";
 import PayoffChart from "@/components/PayoffChart";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import {
@@ -90,6 +90,16 @@ function plannedSpanDays(p: SimPosition): number {
   return dtes.length > 0 ? Math.max(1, Math.round(Math.min(...dtes))) : 1;
 }
 
+// Local calendar date `days` (possibly fractional — always rounded) after
+// `iso` — used to label the Timeline chart's x-axis ticks with an actual
+// date rather than just a day count, without needing a snapshot to exist
+// exactly on that day.
+function isoPlusDays(iso: string, days: number): string {
+  const base = parseDateInput(iso);
+  if (base == null) return iso;
+  return formatDateInput(base + Math.round(days) * 86400000);
+}
+
 function fmt(n: number): string {
   return (n >= 0 ? "+" : "") + n.toFixed(2);
 }
@@ -148,8 +158,10 @@ function structuralReasonKey(structural: CurvePosition | null): string | null {
 }
 
 const CHART_W = 280;
-const CHART_H = 56;
+const CHART_H = 56; // plotted line/dot area only — axis labels live below this, in TICK_AREA_H
 const CHART_PAD = 4;
+const TICK_AREA_H = 11; // extra viewBox height reserved for the x-axis date labels
+const MIN_TICK_PX = 34; // minimum horizontal gap between tick labels before one gets dropped
 
 function TimelineChart({
   position,
@@ -179,22 +191,40 @@ function TimelineChart({
   // exist so far.
   const openedISO = formatDateInput(position.openedAt);
   const totalSpan = plannedSpanDays(position);
-  const xAt = (i: number) => {
-    const elapsed = daysBetweenLocalDates(openedISO, snapshots[i].dateISO);
+  const xAtElapsed = (elapsed: number) => {
     const ratio = Math.max(0, Math.min(1, elapsed / totalSpan));
     return CHART_PAD + ratio * (CHART_W - CHART_PAD * 2);
   };
+  const xAt = (i: number) => xAtElapsed(daysBetweenLocalDates(openedISO, snapshots[i].dateISO));
   const yAt = (v: number) => CHART_H - CHART_PAD - ((v - minV) / span) * (CHART_H - CHART_PAD * 2);
   const zeroY = yAt(0);
 
   const pathD = snapshots.map((s, i) => `${i === 0 ? "M" : "L"} ${xAt(i).toFixed(1)} ${yAt(s.unrealizedPnl).toFixed(1)}`).join(" ");
   const hovered = hoverIdx !== null ? snapshots[hoverIdx] : null;
 
+  // x-axis date ticks: always the opening date, plus (when there's enough
+  // real span to show it without crowding) the latest day on record and a
+  // midpoint between them. Anchored to the SAME elapsed/totalSpan mapping
+  // as the data points (xAtElapsed), so a tick's label is exactly the
+  // calendar date sitting under it — this is what lets someone confirm the
+  // curve actually reached "today" rather than a day it got stuck on.
+  const lastElapsed = n > 0 ? daysBetweenLocalDates(openedISO, snapshots[n - 1].dateISO) : 0;
+  const midElapsed = lastElapsed / 2;
+  const startX = xAtElapsed(0);
+  const midX = xAtElapsed(midElapsed);
+  const endX = xAtElapsed(lastElapsed);
+  const includeMid = lastElapsed > 0 && midX - startX > MIN_TICK_PX && endX - midX > MIN_TICK_PX;
+  const tickElapsed = lastElapsed <= 0 ? [0] : includeMid ? [0, midElapsed, lastElapsed] : [0, lastElapsed];
+  const ticks = tickElapsed.map((elapsed) => ({
+    x: xAtElapsed(elapsed),
+    label: isoPlusDays(openedISO, elapsed).slice(5), // "MM-DD" — full year would crowd this small a chart
+  }));
+
   return (
     <div className="relative mt-1.5">
       <svg
         ref={svgRef}
-        viewBox={`0 0 ${CHART_W} ${CHART_H}`}
+        viewBox={`0 0 ${CHART_W} ${CHART_H + TICK_AREA_H}`}
         className="w-full cursor-crosshair"
         onMouseMove={(e) => {
           if (!svgRef.current || n === 0) return;
@@ -224,6 +254,20 @@ function TimelineChart({
             className={s.dateISO === bestDateISO ? "fill-amber-400" : "fill-sky-400"}
             fillOpacity={s.estimated && s.dateISO !== bestDateISO ? 0.5 : 1}
           />
+        ))}
+        {ticks.map((tk, i) => (
+          <g key={i}>
+            <line x1={tk.x} y1={CHART_H} x2={tk.x} y2={CHART_H + 2} className="stroke-slate-600" strokeWidth={0.5} />
+            <text
+              x={tk.x}
+              y={CHART_H + TICK_AREA_H - 1}
+              textAnchor={i === 0 ? "start" : i === ticks.length - 1 ? "end" : "middle"}
+              fontSize="5.5"
+              className="fill-slate-500"
+            >
+              {tk.label}
+            </text>
+          </g>
         ))}
       </svg>
       {hovered && hoverIdx !== null && (
@@ -474,6 +518,14 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
   const [expandedTimeline, setExpandedTimeline] = useState<Record<string, boolean>>({});
   const [expandedCompare, setExpandedCompare] = useState<Record<string, boolean>>({});
   const [timelines, setTimelines] = useState<Record<string, PositionSnapshot[]>>({});
+  // Calendar day (local, yyyy-mm-dd) each entry in `timelines` was fetched
+  // on — lets toggleTimeline tell "still fresh" apart from "loaded a while
+  // ago and the position has aged since." Without this, a position whose
+  // Timeline panel got expanded once (e.g. the day it was opened) would
+  // show that same frozen slice of history forever: `timelines[pos.id]`
+  // being merely *present* was previously treated as "nothing to do,"
+  // so the curve never grew past whatever day it happened to load on.
+  const [timelinesDate, setTimelinesDate] = useState<Record<string, string>>({});
   const [timelineLoading, setTimelineLoading] = useState<Record<string, boolean>>({});
   const [rollTarget, setRollTarget] = useState<{ pos: SimPosition; leg: Leg; spot: number } | null>(null);
   const [protectTarget, setProtectTarget] = useState<{ pos: SimPosition; leg: Leg; spot: number } | null>(null);
@@ -530,7 +582,36 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
       try {
         const { spot, legs } = await refreshLegs(pos.symbol, pos.legs, pos.openedAt);
         setMarks((prev) => ({ ...prev, [pos.id]: { loading: false, error: null, spot, legs } }));
-        recordSnapshot(pos.id, spot, legs, pos.costBasis).catch(() => {});
+        recordSnapshot(pos.id, spot, legs, pos.costBasis)
+          .then(() => {
+            // A new REAL snapshot for today just landed in storage. Any
+            // cached Timeline for this position was built before it
+            // existed (see timelinesDate above), so drop it; if the panel
+            // happens to already be open, reload right away instead of
+            // waiting for a collapse/re-expand that may never happen.
+            setTimelines((prev) => {
+              if (!(pos.id in prev)) return prev;
+              const next = { ...prev };
+              delete next[pos.id];
+              return next;
+            });
+            setTimelinesDate((prev) => {
+              if (!(pos.id in prev)) return prev;
+              const next = { ...prev };
+              delete next[pos.id];
+              return next;
+            });
+            setExpandedTimeline((prevExpanded) => {
+              if (prevExpanded[pos.id]) {
+                backfillSnapshots(pos).then((snaps) => {
+                  setTimelines((prev) => ({ ...prev, [pos.id]: snaps }));
+                  setTimelinesDate((prev) => ({ ...prev, [pos.id]: formatDateInput(Date.now()) }));
+                });
+              }
+              return prevExpanded;
+            });
+          })
+          .catch(() => {});
       } catch (e) {
         setMarks((prev) => ({
           ...prev,
@@ -586,13 +667,20 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
   // position's close date) is deliberately left out of that reconstruction.
   const toggleTimeline = useCallback(async (pos: SimPosition) => {
     setExpandedTimeline((prev) => ({ ...prev, [pos.id]: !prev[pos.id] }));
-    if (!timelines[pos.id]) {
+    const todayISO = formatDateInput(Date.now());
+    // Refetch whenever there's no cache yet, OR the cache we have was built
+    // on an earlier calendar day — a same-day refresh already invalidates
+    // this cache itself (see refreshAllPositions above), so this second
+    // check only matters for a tab left open across midnight, where the
+    // cache is still "present" but has aged out without ever being cleared.
+    if (!timelines[pos.id] || timelinesDate[pos.id] !== todayISO) {
       setTimelineLoading((prev) => ({ ...prev, [pos.id]: true }));
       const snaps = await backfillSnapshots(pos);
       setTimelines((prev) => ({ ...prev, [pos.id]: snaps }));
+      setTimelinesDate((prev) => ({ ...prev, [pos.id]: todayISO }));
       setTimelineLoading((prev) => ({ ...prev, [pos.id]: false }));
     }
-  }, [timelines]);
+  }, [timelines, timelinesDate]);
 
   // No async work here (unlike toggleTimeline) — ComparePanel reads
   // straight off whatever's already in `marks`/the position's own closed-

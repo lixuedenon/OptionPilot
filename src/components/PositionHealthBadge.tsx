@@ -1,3 +1,4 @@
+// src/components/PositionHealthBadge.tsx
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { HeartPulse } from "lucide-react";
@@ -46,7 +47,7 @@ export default function PositionHealthBadge({ health }: Props) {
   useLayoutEffect(() => {
     if (!open || !buttonRef.current) return;
     const rect = buttonRef.current.getBoundingClientRect();
-    const popoverWidth = 288; // matches w-72 below
+    const popoverWidth = 320; // matches w-80 below — widened to fit the added "what this means" line per factor
     // Keep the popover on-screen: align its right edge with the button's
     // right edge, but never let its left edge go past the viewport edge.
     const left = Math.max(8, Math.min(rect.right - popoverWidth, window.innerWidth - popoverWidth - 8));
@@ -84,7 +85,7 @@ export default function PositionHealthBadge({ health }: Props) {
       {open && createPortal(
         <div
           ref={popoverRef}
-          className="fixed z-[100] w-72 whitespace-normal rounded-lg border border-slate-700 bg-slate-900 p-3 shadow-2xl"
+          className="fixed z-[100] w-80 whitespace-normal rounded-lg border border-slate-700 bg-slate-900 p-3 shadow-2xl"
           style={{ top: pos.top, left: pos.left }}
         >
           <div className="mb-2 flex items-center justify-between">
@@ -99,8 +100,15 @@ export default function PositionHealthBadge({ health }: Props) {
               <div key={i} className="flex items-start gap-1.5">
                 <span className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT[f.status]}`} />
                 <div className="text-[10px] leading-relaxed">
-                  <span className="font-semibold text-slate-300">{f.label}：</span>
-                  <span className="text-slate-400">{f.note}</span>
+                  <div>
+                    <span className="font-semibold text-slate-300">{f.label}{t("health.labelSeparator")}</span>
+                    <span className="text-slate-400">{f.note}</span>
+                  </div>
+                  {/* Static "what this number means" line — independent of
+                      the current value, so it stays useful even once the
+                      number itself is glanced past. Dimmer than `note` so
+                      the concrete reading still reads first. */}
+                  <div className="mt-0.5 text-slate-600">{f.meaning}</div>
                 </div>
               </div>
             ))}

@@ -28,6 +28,7 @@ function Slider({
   markerValue,
   markerLabel,
   disabled,
+  t,
 }: {
   label: string;
   sublabel: string;
@@ -42,6 +43,12 @@ function Slider({
   markerValue?: number;
   markerLabel?: string;
   disabled?: boolean;
+  // Only actually needed for the markerLabel-less fallback below, but every
+  // call site today always passes markerLabel alongside markerValue — this
+  // is a defensive fallback, not a normally-hit path. Threaded in as a prop
+  // (rather than calling useI18n() here) because Slider is a plain helper
+  // component, not something that should own its own i18n subscription.
+  t: (key: string, vars?: Record<string, string | number>) => string;
 }) {
   const pct = ((value - min) / (max - min)) * 100;
   const markerPct = markerValue !== undefined && markerValue >= min && markerValue <= max
@@ -121,6 +128,7 @@ export default function ShiftSliders({ shifts, onChange, spot, maxDte, onReset, 
           markerValue={trackedSpot !== undefined && spot > 0 ? trackedSpot - spot : undefined}
           markerLabel={trackedSpot !== undefined ? `${t("shift.positionSpot")} ${trackedSpot.toFixed(2)}` : undefined}
           disabled={disabled}
+          t={t}
         />
         <Slider
           label={t("shift.timeDecay")}
@@ -140,6 +148,7 @@ export default function ShiftSliders({ shifts, onChange, spot, maxDte, onReset, 
           markerValue={trackedDays !== undefined ? trackedDays : undefined}
           markerLabel={trackedDays !== undefined ? `${t("shift.elapsed")} ${trackedDays.toFixed(1)}` : undefined}
           disabled={disabled}
+          t={t}
         />
         <Slider
           label={t("shift.volChange")}
@@ -156,6 +165,7 @@ export default function ShiftSliders({ shifts, onChange, spot, maxDte, onReset, 
           markerValue={trackedVolShift !== undefined ? trackedVolShift : undefined}
           markerLabel={trackedVolShift !== undefined ? `${t("shift.positionIV")} ${trackedVolShift >= 0 ? "+" : ""}${trackedVolShift.toFixed(2)}%` : undefined}
           disabled={disabled}
+          t={t}
         />
       </div>
     </div>

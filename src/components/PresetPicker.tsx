@@ -1,12 +1,14 @@
+// src/components/PresetPicker.tsx
 import { useState, useRef, useEffect, useCallback } from "react";
-import { ChevronDown, TrendingUp, TrendingDown, Minus, Zap, Trash2, Star } from "lucide-react";
-import type { PresetMeta } from "@/lib/presets";
+import { ChevronDown, TrendingUp, TrendingDown, Minus, Zap, Trash2, Star, AlertTriangle, ShieldAlert, Activity } from "lucide-react";
+import type { PresetMeta, RiskLine, RiskSeverity } from "@/lib/presets";
 import { PRESET_GROUPS } from "@/lib/presets";
 import type { CustomPreset } from "@/lib/customPresets";
 import type { Leg } from "@/lib/types";
 import { useI18n } from "@/i18n/I18nContext";
 import type { Lang } from "@/i18n/translations";
 import type { LocalStr } from "@/lib/presets";
+import { PayoffSparkline } from "@/components/PayoffSparkline";
 
 function ls(val: LocalStr | string, lang: Lang): string {
   return typeof val === "string" ? val : val[lang];
@@ -55,6 +57,54 @@ const dirIcon: Record<string, React.ReactNode> = {
   "看涨/对冲":  <TrendingUp  size={10} />,
 };
 
+// Risk-disclosure tier styling — kept in one place so every tooltip (built-in
+// or custom) that ever grows a `risk` array renders it identically. Colors
+// match the app's existing direction-badge palette (rose/amber/sky).
+const riskTier: Record<RiskSeverity, { icon: React.ReactNode; text: string; bg: string; border: string }> = {
+  danger: {
+    icon: <AlertTriangle size={12} className="mt-px shrink-0 text-rose-400" />,
+    text: "text-rose-200",
+    bg: "bg-rose-400/10",
+    border: "border-rose-400/25",
+  },
+  caution: {
+    icon: <ShieldAlert size={12} className="mt-px shrink-0 text-amber-400" />,
+    text: "text-amber-200",
+    bg: "bg-amber-400/10",
+    border: "border-amber-400/20",
+  },
+  info: {
+    icon: <Activity size={12} className="mt-px shrink-0 text-sky-400" />,
+    text: "text-sky-200",
+    bg: "bg-sky-400/10",
+    border: "border-sky-400/20",
+  },
+};
+
+function RiskDisclosure({ risk, lang }: { risk: RiskLine[]; lang: Lang }) {
+  const { t } = useI18n();
+  if (!risk.length) return null;
+  return (
+    <div className="mt-2 border-t border-slate-800 pt-2">
+      <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">{t("preset.risk")}</span>
+      <div className="mt-1.5 flex flex-col gap-1">
+        {risk.map((line, i) => {
+          const tier = riskTier[line.severity];
+          return (
+            <div
+              key={i}
+              className={`flex items-start gap-1.5 rounded-md border px-2 py-1.5 ${tier.bg} ${tier.border}`}
+            >
+              {tier.icon}
+              <p className={`text-[9.5px] leading-snug ${tier.text}`}>{ls(line.text, lang)}</p>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function TooltipContent({ item }: { item: PresetMeta }) {
   const { t, lang } = useI18n();
   return (
@@ -67,6 +117,12 @@ function TooltipContent({ item }: { item: PresetMeta }) {
         </span>
       </div>
       <p className="mb-2 text-[10px] leading-relaxed text-slate-400">{ls(item.desc, lang)}</p>
+      <div className="mb-2">
+        <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">{t("preset.payoff")}</span>
+        <div className="mt-1">
+          <PayoffSparkline legs={item.legs()} />
+        </div>
+      </div>
       <div className="space-y-1.5 border-t border-slate-800 pt-2">
         <div>
           <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">{t("preset.market")}</span>
@@ -81,6 +137,7 @@ function TooltipContent({ item }: { item: PresetMeta }) {
           <p className="mt-0.5 text-[10px] text-slate-300">{item.legs().map(l => legLabel(l, t)).join("  /  ")}</p>
         </div>
       </div>
+      {item.risk && <RiskDisclosure risk={item.risk} lang={lang} />}
     </div>
   );
 }
@@ -120,7 +177,7 @@ export default function PresetPicker({ onSelect, customPresets, onDeleteCustom }
     if (!panel) return { display: "none" };
     const rect = panel.getBoundingClientRect();
     const TW = 264;
-    const TH = 320;
+    const TH = 560; // taller now that the risk-disclosure section and payoff sparkline are always shown
     let left = rect.right + 8;
     if (left + TW > window.innerWidth - 8) {
       left = rect.left - TW - 8;
@@ -253,6 +310,12 @@ export default function PresetPicker({ onSelect, customPresets, onDeleteCustom }
                           </span>
                         </div>
                         <p className="mb-2 text-[10px] leading-relaxed text-slate-400">{cp.desc}</p>
+                        <div className="mb-2">
+                          <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">{t("preset.payoff")}</span>
+                          <div className="mt-1">
+                            <PayoffSparkline legs={cp.legs} />
+                          </div>
+                        </div>
                         <div className="space-y-1.5 border-t border-slate-800 pt-2">
                           <div>
                             <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">{t("preset.market")}</span>

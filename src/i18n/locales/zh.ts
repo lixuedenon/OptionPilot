@@ -1,4 +1,5 @@
 // src/i18n/locales/zh.ts
+// src/i18n/locales/zh.ts
 import type { Dict } from "../translations";
 
 const zh: Dict = {
@@ -289,6 +290,8 @@ const zh: Dict = {
   "preset.market": "适合市场",
   "preset.stocks": "适合品种",
   "preset.legs": "腿位组合",
+  "preset.risk": "风险揭示",
+  "preset.payoff": "到期盈亏形状",
   "preset.longStock": "多头正股",
   "preset.shortStock": "空头正股",
   "preset.shortStockWarning": "⚠ 需先建立空头正股仓位（做空100股），存在无限亏损风险",

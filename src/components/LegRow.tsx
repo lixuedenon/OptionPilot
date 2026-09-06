@@ -33,6 +33,15 @@ interface Props {
   // Undefined for a disabled leg (legRoles.ts only classifies active legs)
   // or when it can't be confidently classified.
   roleInfo?: { label: string; explanation: string };
+  // When set, the restore button stops being "fetch today's live market
+  // price" and becomes "revert to this exact strike/dte/premium" instead —
+  // used for compare mode's "开仓组合" (opening combo) rows, where a fresh
+  // market quote makes no sense (that data is supposed to match what
+  // analysis mode originally recorded, not today's market). The caller
+  // (LegListSection) resolves this from the backing SavedStrategy's own
+  // leg at the same index; undefined here just means "no known original to
+  // revert to", which falls back to the normal live-fetch behavior below.
+  restoreOriginal?: { strike: number; dte: number; premium: number };
   onChange: (patch: Partial<Leg>) => void;
   onToggleDisable: () => void;
   onDelete: () => void;
@@ -302,6 +311,7 @@ export default function LegRow({
   legPnl,
   symbol,
   roleInfo,
+  restoreOriginal,
   onChange,
   onToggleDisable,
   onDelete,
@@ -438,6 +448,23 @@ export default function LegRow({
     } finally {
       setPriceFetching(false);
     }
+  };
+
+  // Compare mode's opening-combo variant of "restore" — snaps strike/dte/
+  // premium back to what analysis mode originally recorded, no network
+  // round trip. Synchronous, so no loading state needed; only enabled when
+  // something actually differs from the original (nothing to undo
+  // otherwise).
+  const originalDirty = !!restoreOriginal && (
+    leg.strike !== restoreOriginal.strike ||
+    leg.dte !== restoreOriginal.dte ||
+    leg.premium !== restoreOriginal.premium
+  );
+  const handleRestoreOriginal = () => {
+    if (!restoreOriginal) return;
+    setPriceError(null);
+    setPriceNote(null);
+    onChange({ strike: restoreOriginal.strike, dte: restoreOriginal.dte, premium: restoreOriginal.premium });
   };
 
   // Picking a strike from the real chain sets the premium instantly from
@@ -666,7 +693,21 @@ export default function LegRow({
       </div>
       <div className="flex shrink-0 items-end gap-0.5">
         <NumField label={t("leg.premium")} value={leg.premium} step={0.01}  width="76px" onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ premium: v }); }} disabled={disabled} />
-        {!disabled && (
+        {!disabled && restoreOriginal && (
+          <button
+            onClick={handleRestoreOriginal}
+            disabled={!originalDirty}
+            title={originalDirty ? t("leg.restoreOriginal") : t("leg.restoreOriginalNoChange")}
+            className={`mb-[1px] flex items-center rounded border px-1 py-1 transition disabled:cursor-not-allowed disabled:opacity-40 ${
+              originalDirty
+                ? "border-amber-700/50 bg-amber-950/30 text-amber-400 hover:border-amber-500"
+                : "border-slate-700 bg-slate-900 text-slate-400"
+            }`}
+          >
+            <RefreshCw size={11} />
+          </button>
+        )}
+        {!disabled && !restoreOriginal && (
           <button
             onClick={handleRestorePrice}
             disabled={priceFetching || !canAutoPrice}

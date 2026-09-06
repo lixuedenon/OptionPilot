@@ -1,3 +1,4 @@
+// src/components/PayoffChart.tsx
 import { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import type { Leg, Shifts } from "@/lib/types";
 import { blackScholes } from "@/lib/bs";
@@ -41,6 +42,13 @@ interface Props {
   correcting?: boolean;
   onCorrectSpot?: () => void;
   symbolForCorrect?: string;
+  // Live market quote for the underlying, decoupled from `trackedSpot` (which
+  // stays whatever back-solved/manually-set value feeds the curve and P&L
+  // math). Purely a reference — an OPTIONAL dashed line the person can toggle
+  // on to see where the real market price sits relative to the curve, never
+  // used in any pricing calculation itself. Undefined outside compare mode
+  // or when no live quote is available.
+  liveSpot?: number;
 }
 
 const POINTS = 200;
@@ -175,9 +183,15 @@ function getZone(pnl: number, netCredit: number, maxProfit: number, maxLoss: num
 
 const FAN_COLORS = ["#fbbf24", "#f59e0b", "#a3a3a3", "#475569"];
 
-export default function PayoffChart({ legs, spot, shifts, symbol, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, onAlert, correctedSpot, correcting, onCorrectSpot, symbolForCorrect }: Props) {
+export default function PayoffChart({ legs, spot, shifts, symbol, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, onAlert, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot }: Props) {
   const { t } = useI18n();
   const [showFan, setShowFan] = useState(false);
+  // Off by default — this is a purely informational overlay (see the
+  // `liveSpot` prop comment), not something everyone needs to see, and
+  // showing it unconditionally invited "why doesn't the dot sit on the
+  // curve" confusion when the live price and the back-solved/manually-set
+  // tracked spot diverge. Opt-in avoids that.
+  const [showLiveSpot, setShowLiveSpot] = useState(false);
   const [showImpliedInfo, setShowImpliedInfo] = useState(false);
   const [xZoom, setXZoom] = useState(1);
   const [xPanFrac, setXPanFrac] = useState(0); // fraction of baseRange to shift center
@@ -387,6 +401,9 @@ export default function PayoffChart({ legs, spot, shifts, symbol, breakevens, tr
   const zeroY = toY(0);
   const currentSpot = compareMode && hasTracked ? effectiveTrackedSpot : (active ? spot + shifts.dS : spot);
   const currentX = toX(currentSpot);
+  // Purely a reference line's x-position — never feeds calcTrackedPnLAtTime
+  // or any other pricing math, unlike currentX/currentSpot above.
+  const liveX = liveSpot !== undefined ? toX(liveSpot) : null;
 
   const currentPnL = useMemo(
     () => compareMode && hasTracked && openingLegs && netChange !== undefined
@@ -566,6 +583,21 @@ export default function PayoffChart({ legs, spot, shifts, symbol, breakevens, tr
             </span>
             <span className={showFan ? "text-amber-300" : "text-slate-500"}>{t("chart.timeDecay")}</span>
           </button>
+          {compareMode && hasTracked && liveSpot !== undefined && (
+            <button
+              onClick={() => setShowLiveSpot((v) => !v)}
+              className="flex items-center gap-1.5 rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[9px] font-semibold text-slate-400 transition hover:text-slate-300"
+              title={t("chart.liveSpotToggle")}
+            >
+              <span className="relative inline-flex h-3.5 w-6 items-center rounded-full transition-colors" style={{ backgroundColor: showLiveSpot ? "#38bdf8" : "rgb(51 65 85)" }}>
+                <span
+                  className="inline-block h-2.5 w-2.5 transform rounded-full bg-white shadow transition-transform"
+                  style={{ transform: showLiveSpot ? "translateX(11px)" : "translateX(1px)" }}
+                />
+              </span>
+              <span className={showLiveSpot ? "text-sky-300" : "text-slate-500"}>{t("chart.liveSpotToggle")}</span>
+            </button>
+          )}
         </div>
 
         {/* Fan legend */}
@@ -768,6 +800,34 @@ export default function PayoffChart({ legs, spot, shifts, symbol, breakevens, tr
                 </g>
               );
             })()}
+
+            {/* Live market price reference line — opt-in (showLiveSpot),
+                compare mode only. Deliberately no P&L dot/circle here: the
+                curve and the yellow "current" marker above are both anchored
+                on the back-solved/manually-tracked spot so their numbers
+                stay internally consistent (see the App.tsx comment on
+                effectiveTrackedSpot); this line is purely "here's where the
+                real market price is right now" and says nothing about P&L,
+                so it never has to agree with where the curve sits. */}
+            {showLiveSpot && liveX !== null && liveX >= PAD.l && liveX <= PAD.l + CW && (
+              <g clipPath="url(#chart-clip)">
+                <line x1={liveX} x2={liveX} y1={PAD.t} y2={PAD.t + CH}
+                  stroke="#38bdf8" strokeWidth="1.25" strokeDasharray="4 3" />
+                {(() => {
+                  const labelW = 52, labelH = 14;
+                  const labelX = Math.max(PAD.l, Math.min(PAD.l + CW - labelW, liveX - labelW / 2));
+                  const labelY = PAD.t + CH + 18;
+                  return (
+                    <g>
+                      <rect x={labelX} y={labelY} width={labelW} height={labelH} rx={2} fill="#0c4a6e" stroke="#38bdf8" strokeWidth="0.8" />
+                      <text x={labelX + labelW / 2} y={labelY + 10} textAnchor="middle" fontSize="9" fill="#7dd3fc" fontWeight="bold">
+                        {t("chart.liveSpotLabel")} {liveSpot!.toFixed(liveSpot! < 10 ? 2 : liveSpot! < 100 ? 1 : 0)}
+                      </text>
+                    </g>
+                  );
+                })()}
+              </g>
+            )}
 
             {/* Fan curve intersection markers at current spot */}
             {showFan && currentX >= PAD.l && currentX <= PAD.l + CW && FAN_SLICES.map((days, i) => {

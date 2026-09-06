@@ -1,3 +1,4 @@
+// src/lib/autoSync.ts
 const DB_NAME = "optionpilot_fsa";
 const STORE = "handles";
 const KEY = "backup_file";
@@ -46,10 +47,6 @@ async function idbDelete(): Promise<void> {
 
 export function isAutoSyncSupported(): boolean {
   return typeof window !== "undefined" && "showSaveFilePicker" in window;
-}
-
-export function isAutoSyncActive(): boolean {
-  return fileHandle !== null && permissionGranted;
 }
 
 export async function getSyncedFileName(): Promise<string | null> {
