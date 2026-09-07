@@ -2,9 +2,18 @@
 import { useMemo, useState } from "react";
 import type { Leg } from "@/lib/types";
 
+// Which combo an in-flight roll/protect/hedge action targets. Defaults to
+// "legs" everywhere below so every pre-existing call site (LegListSection's
+// opening-combo rows, which only ever pass a legId with no second argument)
+// keeps behaving exactly as before with zero changes at the call site.
+// TrackedComboSection's rows are the only caller that explicitly passes
+// "tracked" — see App.tsx's TrackedComboSection wiring.
+type LegTarget = "legs" | "tracked";
+
 interface UseLegEditingParams {
   legs: Leg[];
   setLegs: React.Dispatch<React.SetStateAction<Leg[]>>;
+  trackedLegs: Leg[] | null;
   setTrackedLegs: React.Dispatch<React.SetStateAction<Leg[] | null>>;
 }
 
@@ -23,10 +32,13 @@ interface UseLegEditingParams {
 // legBaseSpot/legBaseSymbol/spotManuallySet/tracking state), updateTrackedLeg
 // (tracked-mode dirty-tracking), handleCorrectSpot, handleAddCustom/
 // handleAddToSimAccount (cross-feature, not leg-editing).
-export function useLegEditing({ legs, setLegs, setTrackedLegs }: UseLegEditingParams) {
+export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: UseLegEditingParams) {
   const [rollTarget, setRollTarget] = useState<Leg | null>(null);
+  const [rollTargetSource, setRollTargetSource] = useState<LegTarget>("legs");
   const [protectTarget, setProtectTarget] = useState<Leg | null>(null);
+  const [protectTargetSource, setProtectTargetSource] = useState<LegTarget>("legs");
   const [hedgeOpen, setHedgeOpen] = useState(false);
+  const [hedgeTargetSource, setHedgeTargetSource] = useState<LegTarget>("legs");
   const [compareTargetId, setCompareTargetId] = useState<string | null>(null);
   const [selectedLegIds, setSelectedLegIds] = useState<Set<string>>(new Set());
   const [confirmBulkDeleteOpen, setConfirmBulkDeleteOpen] = useState(false);
@@ -85,31 +97,67 @@ export function useLegEditing({ legs, setLegs, setTrackedLegs }: UseLegEditingPa
     clearLegSelection();
   };
 
-  const handleRoll = (legId: string) => {
-    const leg = legs.find((l) => l.id === legId);
-    if (leg) setRollTarget(leg);
+  // `source` picks which combo the leg is looked up in AND which combo the
+  // confirm handler below eventually mutates — "legs" (the default, so
+  // every existing legId-only call site keeps working unchanged) for a row
+  // in the opening combo, "tracked" for a row in TrackedComboSection's
+  // "今日组合". Previously this always searched/mutated `legs` regardless
+  // of which section's row actually triggered it — a Roll/Protect/Hedge
+  // clicked from the "今日组合" list silently modified the OPENING combo
+  // instead (the tracked row's own change never showed up, while the
+  // opening combo picked up an edit nobody asked it to make there).
+  const handleRoll = (legId: string, source: LegTarget = "legs") => {
+    const pool = source === "tracked" ? (trackedLegs ?? []) : legs;
+    const leg = pool.find((l) => l.id === legId);
+    if (leg) {
+      setRollTarget(leg);
+      setRollTargetSource(source);
+    }
   };
   const handleRollConfirm = (newLeg: Leg) => {
     if (!rollTarget) return;
-    setLegs((prev) => prev.map((l) => l.id === rollTarget.id ? { ...l, disabled: true } : l));
-    setLegs((prev) => [...prev, newLeg]);
+    if (rollTargetSource === "tracked") {
+      setTrackedLegs((prev) => (prev ? prev.map((l) => (l.id === rollTarget.id ? { ...l, disabled: true } : l)) : prev));
+      // The new rolled-to leg has no opening-combo counterpart of its own
+      // (it didn't exist when trackedLegs was derived from legs) — leaving
+      // openLegId unset is correct here, not a gap to fill in; see types.ts.
+      setTrackedLegs((prev) => (prev ? [...prev, newLeg] : prev));
+    } else {
+      setLegs((prev) => prev.map((l) => l.id === rollTarget.id ? { ...l, disabled: true } : l));
+      setLegs((prev) => [...prev, newLeg]);
+    }
     setRollTarget(null);
   };
 
-  const handleProtect = (legId: string) => {
-    const leg = legs.find((l) => l.id === legId);
-    if (leg) setProtectTarget(leg);
+  const handleProtect = (legId: string, source: LegTarget = "legs") => {
+    const pool = source === "tracked" ? (trackedLegs ?? []) : legs;
+    const leg = pool.find((l) => l.id === legId);
+    if (leg) {
+      setProtectTarget(leg);
+      setProtectTargetSource(source);
+    }
   };
   const handleProtectConfirm = (protectLeg: Leg) => {
-    setLegs((prev) => [...prev, protectLeg]);
+    if (protectTargetSource === "tracked") {
+      setTrackedLegs((prev) => (prev ? [...prev, protectLeg] : prev));
+    } else {
+      setLegs((prev) => [...prev, protectLeg]);
+    }
     setProtectTarget(null);
   };
 
   const handleCompare = (legId: string) => setCompareTargetId(legId);
 
-  const handleHedge = () => setHedgeOpen(true);
+  const handleHedge = (source: LegTarget = "legs") => {
+    setHedgeOpen(true);
+    setHedgeTargetSource(source);
+  };
   const handleHedgeConfirm = (hedgeLeg: Leg) => {
-    setLegs((prev) => [...prev, hedgeLeg]);
+    if (hedgeTargetSource === "tracked") {
+      setTrackedLegs((prev) => (prev ? [...prev, hedgeLeg] : prev));
+    } else {
+      setLegs((prev) => [...prev, hedgeLeg]);
+    }
     setHedgeOpen(false);
   };
 
@@ -134,9 +182,9 @@ export function useLegEditing({ legs, setLegs, setTrackedLegs }: UseLegEditingPa
   };
 
   return {
-    rollTarget, setRollTarget,
-    protectTarget, setProtectTarget,
-    hedgeOpen, setHedgeOpen,
+    rollTarget, setRollTarget, rollTargetSource,
+    protectTarget, setProtectTarget, protectTargetSource,
+    hedgeOpen, setHedgeOpen, hedgeTargetSource,
     compareTargetId, setCompareTargetId,
     selectedLegIds,
     confirmBulkDeleteOpen, setConfirmBulkDeleteOpen,

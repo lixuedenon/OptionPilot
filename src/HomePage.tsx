@@ -1,6 +1,11 @@
-import { TrendingUp, GitCompare, Wallet, Sparkles } from "lucide-react";
+// src/HomePage.tsx
+import { TrendingUp, GitCompare, Wallet, Sparkles, Database, Download, Upload, FileSymlink, Unlink, RefreshCw, X } from "lucide-react";
 import { useI18n } from "@/i18n/I18nContext";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
+import DropdownMenu from "@/components/DropdownMenu";
+import { useAutoSync } from "@/hooks/useAutoSync";
+import { exportAllData, importAllData } from "@/lib/dataTransfer";
+import { autoSyncWrite } from "@/lib/autoSync";
 
 export type ModuleId = "analysis" | "tracking" | "simulator" | "ai";
 
@@ -48,7 +53,10 @@ const MODULES: ModuleCard[] = [
     borderColor: "border-slate-700 hover:border-amber-500/60",
     titleKey: "home.simulatorTitle",
     descKey: "home.simulatorDesc",
-    comingSoon: true,
+    // Was mistakenly marked comingSoon: true even though the simulator
+    // module (SimulatorPage.tsx) is fully built and reachable — fixed
+    // 2026-09-06 while touching this file for the module-guide work.
+    comingSoon: false,
   },
   {
     id: "ai",
@@ -62,17 +70,27 @@ const MODULES: ModuleCard[] = [
   },
 ];
 
-const HELP_SECTIONS = [
-  { titleKey: "help.build", descKey: "help.buildDesc" },
-  { titleKey: "help.scenario", descKey: "help.scenarioDesc" },
-  { titleKey: "help.preset", descKey: "help.presetDesc" },
-  { titleKey: "help.tracking", descKey: "help.trackingDesc" },
-  { titleKey: "help.chart", descKey: "help.chartDesc" },
-  { titleKey: "help.data", descKey: "help.dataDesc" },
-];
-
 export default function HomePage({ onSelectModule }: Props) {
   const { t } = useI18n();
+  // The "数据" (export/import/link-a-backup-file) dropdown moved here from
+  // AppHeader.tsx (2026-09-06, xue's request) — it's app-wide data, not
+  // specific to analysis or compare mode, so it belongs on the home screen
+  // next to the language switcher rather than duplicated in both module
+  // headers. HomePage never edits legs/strategies/presets itself, so unlike
+  // App.tsx's instance there's nothing meaningful to pass as change-
+  // triggering deps here — after a successful import we just call
+  // autoSyncWrite() directly to push the freshly-imported data to the
+  // linked file (if any) right away, instead of waiting for a deps change
+  // that would never come on this page.
+  const {
+    autoSyncName,
+    autoSyncSupported,
+    autoSyncError,
+    setAutoSyncError,
+    syncNow,
+    unlinkBackup,
+    linkBackup,
+  } = useAutoSync({ savedStrategies: null, customPresets: null, recentSymbols: null });
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
@@ -86,7 +104,90 @@ export default function HomePage({ onSelectModule }: Props) {
             />
             <span className="text-xs text-slate-500">{t("home.subtitle")}</span>
           </div>
-          <LanguageSwitcher />
+          <div className="relative flex items-center gap-3">
+            <DropdownMenu
+              label={t("toolbar.dataLabel")}
+              icon={<Database size={11} />}
+              menuClassName="w-56"
+            >
+              {(close) => (
+                <>
+                  {autoSyncSupported && (
+                    <>
+                      <div className="px-3 py-1.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">
+                        {t("toolbar.fileLink")}
+                      </div>
+                      {autoSyncName ? (
+                        <>
+                          <div className="mx-2 mb-1 truncate rounded bg-slate-800 px-2 py-1 text-[10px] text-emerald-400" title={autoSyncName}>
+                            <FileSymlink size={10} className="mr-1 inline" />{autoSyncName}
+                          </div>
+                          <button
+                            onClick={syncNow}
+                            className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
+                          >
+                            <RefreshCw size={12} className="text-sky-400" /> {t("toolbar.syncNow")}
+                          </button>
+                          <button
+                            onClick={unlinkBackup}
+                            className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-rose-400 transition hover:bg-rose-950/40"
+                          >
+                            <Unlink size={12} /> {t("toolbar.unlink")}
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={linkBackup}
+                          className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
+                        >
+                          <FileSymlink size={12} className="text-emerald-400" /> {t("toolbar.linkBackup")}
+                        </button>
+                      )}
+                      <div className="my-1 border-t border-slate-800" />
+                    </>
+                  )}
+                  <button
+                    onClick={() => { close(); exportAllData(); }}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
+                  >
+                    <Download size={12} className="text-sky-400" /> {t("toolbar.exportData")}
+                  </button>
+                  <label className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800">
+                    <Upload size={12} className="text-sky-400" /> {t("toolbar.importData")}
+                    <input
+                      type="file"
+                      accept=".json"
+                      className="hidden"
+                      onChange={async (e) => {
+                        close();
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        try {
+                          await importAllData(file);
+                          await autoSyncWrite();
+                        } catch {
+                          window.alert(t("toolbar.importFail"));
+                        }
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                </>
+              )}
+            </DropdownMenu>
+            <LanguageSwitcher />
+            {autoSyncError && (
+              <div className="absolute right-0 top-full mt-1 z-50 max-w-xs rounded-lg border border-rose-700 bg-rose-950/90 px-3 py-2 text-[11px] text-rose-300 shadow-xl">
+                {autoSyncError}
+                <button
+                  onClick={() => setAutoSyncError(null)}
+                  className="ml-2 text-rose-500 hover:text-rose-300"
+                >
+                  <X size={11} className="inline" />
+                </button>
+              </div>
+            )}
+          </div>
         </header>
 
         <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -110,18 +211,6 @@ export default function HomePage({ onSelectModule }: Props) {
               <p className="text-[11px] leading-relaxed text-slate-500">{t(m.descKey)}</p>
             </button>
           ))}
-        </div>
-
-        <div className="mb-4 rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-          <h2 className="mb-3 text-sm font-bold text-emerald-400">{t("home.helpSectionTitle")}</h2>
-          <div className="space-y-4 text-[12px] leading-relaxed text-slate-300">
-            {HELP_SECTIONS.map((s) => (
-              <section key={s.titleKey}>
-                <h3 className="mb-1 text-[13px] font-bold text-sky-300">{t(s.titleKey)}</h3>
-                <p>{t(s.descKey)}</p>
-              </section>
-            ))}
-          </div>
         </div>
 
         <div className="rounded-xl border border-dashed border-slate-800 p-4 text-center">

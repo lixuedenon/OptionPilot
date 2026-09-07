@@ -1,10 +1,10 @@
 // src/SimulatorPage.tsx
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Plus, RefreshCw, X, Trash2, History, Search, Undo2, TrendingUp, TrendingDown, Minus, ChevronDown, MoreVertical, CalendarClock, Shield, Layers, Ban, Wallet, DollarSign, Compass, RotateCcw, Target, LineChart } from "lucide-react";
+import { ArrowLeft, Plus, RefreshCw, X, Trash2, History, Search, Undo2, TrendingUp, TrendingDown, Minus, ChevronDown, MoreVertical, CalendarClock, Shield, Layers, Ban, Wallet, DollarSign, Compass, RotateCcw, Target, LineChart, HelpCircle, AlertTriangle } from "lucide-react";
 import type { Leg } from "@/lib/types";
 import type { CurvePosition } from "@/lib/pricing";
-import { probabilityOfProfit } from "@/lib/pricing";
+import { probabilityOfProfit, legGreekBreakdown } from "@/lib/pricing";
 import { dateFromDte, formatDateInput, parseDateInput } from "@/lib/dateUtils";
 import PayoffChart from "@/components/PayoffChart";
 import ErrorBoundary from "@/components/ErrorBoundary";
@@ -34,7 +34,9 @@ import ProtectDialog from "@/components/ProtectDialog";
 import HedgeDialog from "@/components/HedgeDialog";
 import StrategyBadge from "@/components/StrategyBadge";
 import { matchStrategy } from "@/lib/matchStrategy";
-import { ConfirmResetAccountDialog } from "@/components/dialogs";
+import { ConfirmResetAccountDialog, HelpPanel } from "@/components/dialogs";
+import SimStatsPanel from "@/components/SimStatsPanel";
+import { computeSimStats } from "@/lib/simStats";
 
 interface Props {
   onBack: () => void;
@@ -72,6 +74,51 @@ function nearestDteRemaining(p: SimPosition): number | null {
     .filter((l) => l.kind !== "stock" && !l.disabled)
     .map((l) => Math.max(0, Math.round(l.dte - elapsed)));
   return candidates.length > 0 ? Math.min(...candidates) : null;
+}
+
+// Position management alerts (2026-09, xue's proposal #7): a lightweight
+// "this position might be worth looking at" signal, not a push notification
+// — just a badge in the position row. Two independent triggers:
+// - DTE alert: nearestDteRemaining(p) at or below the classic "21 DTE"
+//   management convention.
+// - Delta alert: the worst (largest-magnitude) short leg's current Delta
+//   has drifted past a threshold, meaning that leg has moved closer to
+//   ITM/assignment than it was when opened. Only computable once the
+//   position has a live mark (mark.legs/mark.spot from refreshLegs) — those
+//   legs already carry LIVE current dte/premium (see refreshLegs above), so
+//   legGreekBreakdown on them with a neutral (zero) Shifts gives today's
+//   actual Delta, not the frozen opening-day Delta. No mark yet → no data →
+//   no alert, same "can't compute yet" convention the unrealized-P&L
+//   display already follows a few lines down.
+// Thresholds are conventional defaults (tastytrade-style "manage around 21
+// DTE / 30 delta"), not derived from xue's own rules — she may want to
+// tune these later, ideally as a setting rather than a hardcoded constant.
+const DTE_ALERT_THRESHOLD = 21;
+const DELTA_ALERT_THRESHOLD = 0.30;
+
+interface PositionAlerts {
+  dte: boolean;
+  dteLeft: number | null;
+  delta: boolean;
+  deltaValue: number | null;
+}
+
+function computePositionAlerts(dteLeft: number | null, mark: MarkState | undefined): PositionAlerts {
+  let deltaValue: number | null = null;
+  if (mark?.legs && mark.spot !== null) {
+    const spot = mark.spot;
+    for (const l of mark.legs) {
+      if (l.kind === "stock" || l.disabled || l.action !== "sell") continue;
+      const d = legGreekBreakdown(l, { dS: 0, dT: 0, dV: 0 }, spot).delta;
+      if (deltaValue === null || Math.abs(d) > Math.abs(deltaValue)) deltaValue = d;
+    }
+  }
+  return {
+    dte: dteLeft !== null && dteLeft <= DTE_ALERT_THRESHOLD,
+    dteLeft,
+    delta: deltaValue !== null && Math.abs(deltaValue) > DELTA_ALERT_THRESHOLD,
+    deltaValue,
+  };
 }
 
 // The Timeline chart's full x-axis span, in days: for a closed position,
@@ -537,6 +584,12 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
   const [bulkCloseLoading, setBulkCloseLoading] = useState(false);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
   const [justReset, setJustReset] = useState(false);
+  // Module guide (2026-09-06): shown once as a blocking gate on first entry
+  // into the simulator, mirroring analysis/compare mode's showAnalysisGuide/
+  // showCompareGuide in App.tsx; helpOpen is the dismissible re-open via the
+  // header's new "使用说明" button (this module had no such button before).
+  const [showGuide, setShowGuide] = useState(true);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -1011,6 +1064,9 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
     .filter((p) => p.status === "closed")
     .reduce((acc, p) => acc + (p.realizedPnl ?? 0), 0);
   const totalEquity = (account?.cash ?? 0) + totalMarkValue;
+  // Trade-quality stats (胜率/盈亏比/最大回撤/连胜连亏) — see simStats.ts and
+  // SimStatsPanel.tsx for scope notes (2026-09, xue's proposal #6).
+  const simStats = useMemo(() => computeSimStats(positions), [positions]);
 
   if (!loaded) return null;
 
@@ -1030,6 +1086,14 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
             />
           </button>
           <h1 className="text-sm font-bold text-slate-100">{t("sim.title")}</h1>
+          <button
+            onClick={() => setHelpOpen(true)}
+            title={t("toolbar.help")}
+            className={`flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-slate-500 transition hover:border-slate-500 hover:text-slate-300 ${account ? "" : "ml-auto"}`}
+          >
+            <HelpCircle size={11} />
+            {t("toolbar.help")}
+          </button>
           {account && (
             <button
               onClick={() => setConfirmResetOpen(true)}
@@ -1105,6 +1169,8 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                 </div>
               </div>
             </div>
+
+            <SimStatsPanel stats={simStats} />
 
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-[12px] font-bold text-slate-300">{t("sim.openPositions")} ({openPositions.length})</h2>
@@ -1323,6 +1389,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                         const unrealized = markValue !== null ? markValue - p.costBasis : null;
                         const strategyName = matchStrategy(p.legs, p.spot, []);
                         const dteLeft = nearestDteRemaining(p);
+                        const alerts = computePositionAlerts(dteLeft, mark);
                         return (
                           <div key={p.id}>
                             <div className="flex items-center justify-between gap-2 border-t border-slate-800/60 bg-slate-900/40 px-3 py-1.5">
@@ -1343,6 +1410,24 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                                   </span>
                                 )}
                                 {mark?.error && <span className="text-rose-400">{mark.error}</span>}
+                                {alerts.dte && (
+                                  <span
+                                    title={t("sim.alertDteHint", { days: alerts.dteLeft ?? 0 })}
+                                    className="flex items-center gap-1 rounded border border-amber-500/40 bg-amber-950/30 px-1.5 py-0.5 font-semibold text-amber-400"
+                                  >
+                                    <AlertTriangle size={9} />
+                                    {t("sim.alertDteBadge", { days: alerts.dteLeft ?? 0 })}
+                                  </span>
+                                )}
+                                {alerts.delta && (
+                                  <span
+                                    title={t("sim.alertDeltaHint", { value: alerts.deltaValue!.toFixed(2) })}
+                                    className="flex items-center gap-1 rounded border border-rose-500/40 bg-rose-950/30 px-1.5 py-0.5 font-semibold text-rose-400"
+                                  >
+                                    <AlertTriangle size={9} />
+                                    {t("sim.alertDeltaBadge", { value: alerts.deltaValue!.toFixed(2) })}
+                                  </span>
+                                )}
                               </div>
                               <div className="flex items-center gap-1">
                                 <button
@@ -1525,6 +1610,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
           leg={rollTarget.leg}
           spot={rollTarget.spot}
           symbol={rollTarget.pos.symbol}
+          allLegs={rollTarget.pos.legs}
           onClose={() => setRollTarget(null)}
           onConfirm={handleRollConfirm}
         />
@@ -1614,6 +1700,8 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
           onCancel={() => setConfirmResetOpen(false)}
         />
       )}
+      {showGuide && <HelpPanel moduleId="simulator" variant="gate" onClose={() => setShowGuide(false)} />}
+      {helpOpen && <HelpPanel moduleId="simulator" variant="info" onClose={() => setHelpOpen(false)} />}
     </div>
   );
 }

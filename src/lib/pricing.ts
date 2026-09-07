@@ -4,6 +4,37 @@ import { blackScholes, ncdf } from "./bs";
 
 const RATE = 0.05;
 
+// probabilityOfProfit's lognormal terminal-distribution drift, deliberately
+// a SEPARATE constant from RATE above — the two answer different questions
+// and conflating them was the actual bug behind item 7 of the 2026-09-06
+// review (see CLAUDE.md's notes on this). RATE is the risk-free rate fed
+// into Black-Scholes ITSELF (impliedVol/legShiftedPrice/legGreekBreakdown/
+// pnlAtExpiry/impliedSpotFromPremiums above and below) — that one has to
+// stay the real risk-free rate, because risk-neutral option PRICING is
+// mathematically defined relative to it; changing it would silently
+// mis-price every leg.
+//
+// POP asks a different question: "what's the REAL-WORLD probability the
+// stock ends up profitable", which needs the stock's real-world expected
+// return (drift), not the risk-free rate — those coincide only under the
+// risk-neutral measure options are priced in, and real stocks have a
+// positive equity risk premium above the risk-free rate. Using RATE here
+// (as this file used to) systematically UNDERSTATES a bullish strategy's
+// POP (e.g. Sell Put, bull put spread — they need the stock flat-or-up) and
+// OVERSTATES a bearish one's (Sell Call, bear call spread), because it
+// silently assumes stocks drift up at only the risk-free rate instead of
+// their real (higher, but genuinely unknowable/disputed — no one can input
+// a "true" expected return without just encoding their own market view)
+// expected return. Xue's call (2026-09-06, discussing a hypothetical 4.5%
+// 10Y Treasury yield vs. this file's 5% RATE): use ZERO drift instead —
+// the same convention platforms like tastytrade use specifically to keep
+// POP direction-neutral (neither bullish nor bearish strategies get a
+// built-in edge from the drift assumption) rather than trying to guess a
+// real expected return that's fundamentally not knowable in advance. This
+// only affects the `mu` term below — it does not touch RATE or any actual
+// pricing anywhere else in this file.
+const POP_DRIFT_RATE = 0;
+
 // Back out implied vol from premium via bisection (bounded 0.01–5).
 export function impliedVol(spot: number, strike: number, dte: number, premium: number, type: "call" | "put"): number {
   let lo = 0.01, hi = 5.0;
@@ -17,7 +48,18 @@ export function impliedVol(spot: number, strike: number, dte: number, premium: n
 
 // Full B-S repricing of a single leg under the given shifts.
 // dS: spot change ($), dT: calendar days elapsed, dV: vol change (percentage points).
-export function legShiftedPrice(leg: Leg, s: Shifts, spot: number): number {
+// `ivOverride` lets a caller that already backed out this leg's implied vol
+// (priceCombo, below) pass it straight in instead of re-running the 60-
+// iteration bisection a second time — legGreekBreakdown needs the exact same
+// IV for the exact same leg/shift/spot on every call, so recomputing it
+// independently in both places was pure duplicated work, not a correctness
+// concern (the two bisections always converge to the same value), but the
+// duplication itself was flagged (see CLAUDE.md's known-issues list) as a
+// place a future pricing-detail bugfix could easily land in only one of the
+// two copies. Omitted (the normal path for any OTHER caller, e.g.
+// positionHealth.ts's direct external call), it falls back to computing its
+// own IV exactly as before — fully backward compatible.
+export function legShiftedPrice(leg: Leg, s: Shifts, spot: number, ivOverride?: number): number {
   const sign = leg.action === "buy" ? 1 : -1;
   const qty = leg.qty ?? 1;
 
@@ -27,7 +69,7 @@ export function legShiftedPrice(leg: Leg, s: Shifts, spot: number): number {
     return sign * (newSpot - leg.strike);
   }
 
-  const iv = impliedVol(spot, leg.strike, leg.dte, leg.premium, leg.type);
+  const iv = ivOverride ?? impliedVol(spot, leg.strike, leg.dte, leg.premium, leg.type);
   const newDte = Math.max(0, leg.dte - s.dT);
   const newVol = Math.max(0.01, iv + s.dV / 100);
   const newSpot = Math.max(0.01, spot + s.dS);
@@ -44,7 +86,9 @@ export function legShiftedPrice(leg: Leg, s: Shifts, spot: number): number {
 }
 
 // Greek breakdown via finite differences around the shifted state.
-export function legGreekBreakdown(leg: Leg, s: Shifts, spot: number): GreekBreakdown {
+// See legShiftedPrice's comment on `ivOverride` — same rationale, same
+// backward-compatible default.
+export function legGreekBreakdown(leg: Leg, s: Shifts, spot: number, ivOverride?: number): GreekBreakdown {
   const sign = leg.action === "buy" ? 1 : -1;
   const qty = leg.qty ?? 1;
 
@@ -55,7 +99,7 @@ export function legGreekBreakdown(leg: Leg, s: Shifts, spot: number): GreekBreak
     return { delta: sign, gamma: 0, theta: 0, vega: 0, total };
   }
 
-  const iv = impliedVol(spot, leg.strike, leg.dte, leg.premium, leg.type);
+  const iv = ivOverride ?? impliedVol(spot, leg.strike, leg.dte, leg.premium, leg.type);
   const newDte = Math.max(0, leg.dte - s.dT);
   const newVol = Math.max(0.01, iv + s.dV / 100);
   const newSpot = Math.max(0.01, spot + s.dS);
@@ -116,8 +160,13 @@ export function priceCombo(legs: Leg[], s: Shifts, spot: number): ComboResult {
     const sign = leg.action === "buy" ? 1 : -1;
     const qty = leg.qty ?? 1;
     const base = leg.kind === "stock" ? 0 : leg.premium * sign * qty;
-    const shifted = legShiftedPrice(leg, s, spot);
-    const change = legGreekBreakdown(leg, s, spot);
+    // Back out this leg's implied vol exactly once and hand it to both
+    // calls below — legShiftedPrice and legGreekBreakdown used to each run
+    // their own independent 60-iteration bisection for the same leg/spot,
+    // pure duplicated work (see their own comments).
+    const iv = leg.kind === "stock" ? undefined : impliedVol(spot, leg.strike, leg.dte, leg.premium, leg.type);
+    const shifted = legShiftedPrice(leg, s, spot, iv);
+    const change = legGreekBreakdown(leg, s, spot, iv);
 
     netPremium += base;
     shiftedValue += shifted;
@@ -303,8 +352,11 @@ export function probabilityOfProfit(legs: Leg[], spot: number): { pop: number; b
     return { pop, breakevens };
   }
 
-  // Lognormal terminal distribution: ln(S_T) ~ N(ln(spot) + (r - σ²/2)T, σ²T)
-  const mu = Math.log(spot) + (RATE - vol * vol / 2) * T;
+  // Lognormal terminal distribution: ln(S_T) ~ N(ln(spot) + (μ_drift - σ²/2)T, σ²T)
+  // μ_drift is POP_DRIFT_RATE (0 — zero-drift convention), NOT the option-
+  // pricing RATE constant — see POP_DRIFT_RATE's own comment above for why
+  // those two must stay separate.
+  const mu = Math.log(spot) + (POP_DRIFT_RATE - vol * vol / 2) * T;
   const sigma = vol * Math.sqrt(T);
 
   // Sort breakevens
@@ -366,10 +418,45 @@ export function classifySpotOnCurve(legs: Leg[], openingSpot: number, testSpot: 
   return Math.abs(testSpot - peak.spot) <= nearWindow ? "near-peak" : "in-zone";
 }
 
+// Resolves which OPENING-combo leg a given tracked leg corresponds to.
+// Tries, in order:
+//   1. `openLegId` (see types.ts) — the correct, current mechanism, set
+//      whenever trackedLegs is derived/cloned from the opening combo.
+//   2. The tracked leg's own `id` happening to already BE an opening leg's
+//      id — true for historicalBackfill.ts's repriceLegsAtDate, which
+//      reprices a copy of the opening legs in place (keeping their ids)
+//      rather than cloning them with a fresh uid(), so backfilled/estimated
+//      snapshots never get an openLegId but their ids already double as one.
+//   3. Plain positional index — the OLD behavior everywhere this file used
+//      to just write `openingLegs[i]`, kept as a last-resort fallback for
+//      real (manually-saved) snapshots/trackedLegs created before
+//      `openLegId` existed. That old data has no way to carry the field
+//      retroactively, but in practice still lines up 1:1 by position (this
+//      fix only prevents FUTURE divergence — see the bug this replaced:
+//      trackedLegs/legs silently drifting out of positional sync once a
+//      roll/hedge/protect could target the tracked side, or a leg got
+//      reordered via moveTrackedLeg).
+export function resolveOpeningLeg(
+  trackedLeg: Leg,
+  index: number,
+  openingLegs: Leg[],
+  openingById: Map<string, Leg>,
+): Leg | undefined {
+  if (trackedLeg.openLegId) {
+    const byOpenLegId = openingById.get(trackedLeg.openLegId);
+    if (byOpenLegId) return byOpenLegId;
+  }
+  const byOwnId = openingById.get(trackedLeg.id);
+  if (byOwnId) return byOwnId;
+  return openingLegs[index];
+}
+
 // Back-solve the implied spot price from tracked leg premiums.
 // Uses each leg's opening IV (from opening legs) and tracked DTE,
 // then solves for S where BS(S, strike, dte, iv, type) = tracked premium.
-// Returns a premium-weighted average across all option legs.
+// Returns a premium-weighted average across all option legs. Pairs each
+// tracked leg with its opening counterpart via resolveOpeningLeg (id-based,
+// with fallbacks — see its own comment) instead of raw array-index pairing.
 export function impliedSpotFromPremiums(
   openingLegs: Leg[],
   trackedLegs: Leg[],
@@ -377,12 +464,14 @@ export function impliedSpotFromPremiums(
 ): number | null {
   if (openingLegs.length === 0 || trackedLegs.length === 0 || openingSpot <= 0) return null;
 
+  const openingById = new Map(openingLegs.map((l) => [l.id, l]));
+
   let totalWeight = 0;
   let weightedSpot = 0;
 
   for (let i = 0; i < trackedLegs.length; i++) {
     const tracked = trackedLegs[i];
-    const opening = openingLegs[i];
+    const opening = resolveOpeningLeg(tracked, i, openingLegs, openingById);
     if (!opening || tracked.kind === "stock") continue;
     if (tracked.premium <= 0 || opening.premium <= 0) continue;
 

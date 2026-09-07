@@ -32,9 +32,16 @@ const NAKED_PUT_MODE: "cash-secured" | "reg-t-naked" = "cash-secured";
 
 export interface MarginNote {
   legIds: string[];
-  kind: "spread" | "iron-condor" | "cash-secured-put" | "naked-call" | "covered-call" | "covered";
+  kind: "spread" | "iron-condor" | "cash-secured-put" | "naked-call" | "covered-call" | "covered" | "short-stock";
   amount: number;
   label: string;
+  // Only set on "spread" notes — which side (call spread vs put spread)
+  // this note is. Needed by the iron-condor discount check below to tell a
+  // genuine two-sided condor (one call spread + one put spread, where only
+  // one side can finish ITM) apart from two same-side spreads (e.g. two
+  // bull call spreads at different strikes), which have no such hedging
+  // relationship and must NOT get the max-instead-of-sum treatment.
+  type?: OptionType;
 }
 
 export interface MarginResult {
@@ -180,6 +187,7 @@ export function computeComboMargin(legs: Leg[], spot: number): MarginResult {
         kind: "spread",
         amount: m,
         label: `${type === "call" ? "Call" : "Put"}价差（宽度${width}×${qty}张，按现价离风险的距离动态计算，最坏情况上限$${maxLoss.toFixed(0)}）`,
+        type,
       });
       total += m;
 
@@ -219,14 +227,41 @@ export function computeComboMargin(legs: Leg[], spot: number): MarginResult {
     }
   }
 
-  // Iron-condor style credit: if there's exactly one call-spread and one
-  // put-spread (both credit spreads, same qty, same expiry) already
-  // counted above as two separate spread margins, only one side can
-  // finish in the money at expiry — replace the sum with the larger of
-  // the two, which is the standard iron-condor margin treatment.
+  // Short (uncovered) stock — a naked short sale needs real margin just
+  // like a naked short option does, standard Reg-T requirement is 150% of
+  // the position's current market value (100% of the short-sale proceeds
+  // held as collateral + a 50% margin requirement on top). Previously
+  // fell through with zero margin: `stockLegs` was only ever read to check
+  // whether a LONG stock leg covers a short call, so a short stock leg
+  // itself never generated any margin note at all — silently treating a
+  // naked short-share position as if it were fully paid for, the same
+  // "teach realistic capital requirements" gap this module exists to close
+  // for options.
+  for (const stockLeg of stockLegs) {
+    if (stockLeg.action !== "sell") continue;
+    const shares = stockLeg.shares ?? 100;
+    const m = spot * shares * 1.5;
+    notes.push({ legIds: [stockLeg.id], kind: "short-stock", amount: m, label: `卖空正股（Reg-T标准：现价×股数×150%）` });
+    total += m;
+  }
+
+  // Iron-condor style credit: a genuine two-sided condor/butterfly (exactly
+  // one call spread + one put spread, both already counted above as
+  // separate spread margins) only lets ONE side finish in the money at
+  // expiry — replace the sum with the larger of the two, the standard
+  // iron-condor margin treatment. Deliberately requires one of EACH side
+  // (not just "any two spread notes") — two same-side spreads (e.g. two
+  // bull call spreads at different strikes, a call ladder) have no such
+  // hedging relationship; both can independently finish ITM, so summing
+  // their margins is correct and giving them the max-instead-of-sum
+  // discount would silently under-margin the position. Previously checked
+  // only `spreadNotes.length === 2` with no side check at all.
   const spreadNotes = notes.filter((n) => n.kind === "spread");
-  if (spreadNotes.length === 2) {
-    const [a, b] = spreadNotes;
+  const callSpreadNotes = spreadNotes.filter((n) => n.type === "call");
+  const putSpreadNotes = spreadNotes.filter((n) => n.type === "put");
+  if (callSpreadNotes.length === 1 && putSpreadNotes.length === 1) {
+    const [a] = callSpreadNotes;
+    const [b] = putSpreadNotes;
     const combinedBefore = a.amount + b.amount;
     const combinedAfter = Math.max(a.amount, b.amount);
     if (combinedAfter < combinedBefore) {

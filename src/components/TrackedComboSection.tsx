@@ -4,7 +4,9 @@ import type { Leg } from "@/lib/types";
 import type { ComboResult } from "@/lib/pricing";
 import { weightedAvgIV } from "@/lib/pricing";
 import type { SavedStrategy, TrackedSnapshot } from "@/lib/savedStrategies";
+import type { HealthResult } from "@/lib/positionHealth";
 import LegRow from "@/components/LegRow";
+import PositionHealthBadge from "@/components/PositionHealthBadge";
 import { useI18n } from "@/i18n/I18nContext";
 
 // Compare mode's "今日组合" (today's combo) block — snapshot picker/save
@@ -21,6 +23,11 @@ interface Props {
   onDeleteSnapshot: (snapshotId: string) => void;
   onSaveTracked: () => void;
   trackedDirty: boolean;
+  // Compare mode's health badge — this component only ever renders while
+  // isCompareMode is true (App.tsx guards it with `isCompareMode &&
+  // trackedLegs`), so no extra mode check is needed here the way
+  // LegListSection needs one for its own copy of this same value.
+  positionHealth: HealthResult | null;
 
   trackedResult: ComboResult | null;
   spot: number;
@@ -52,6 +59,7 @@ export default function TrackedComboSection({
   onDeleteSnapshot,
   onSaveTracked,
   trackedDirty,
+  positionHealth,
   trackedResult,
   spot,
   activeLegs,
@@ -114,15 +122,18 @@ export default function TrackedComboSection({
             </div>
           );
         })()}
-        <button
-          onClick={onSaveTracked}
-          disabled={!trackedDirty}
-          title={t("toolbar.saveTracked")}
-          className="ml-auto flex shrink-0 items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-emerald-400 transition hover:border-emerald-500/50 hover:bg-emerald-950/30 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          <Save size={11} />
-          {t("toolbar.saveTracked")}
-        </button>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {positionHealth && <PositionHealthBadge health={positionHealth} />}
+          <button
+            onClick={onSaveTracked}
+            disabled={!trackedDirty}
+            title={t("toolbar.saveTracked")}
+            className="flex shrink-0 items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-emerald-400 transition hover:border-emerald-500/50 hover:bg-emerald-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Save size={11} />
+            {t("toolbar.saveTracked")}
+          </button>
+        </div>
       </div>
       {trackedResult && (() => {
         const openIV = spot > 0 ? weightedAvgIV(activeLegs, spot) : 0;

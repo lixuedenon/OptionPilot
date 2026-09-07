@@ -2,6 +2,7 @@
 import { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import type { Leg, Shifts } from "@/lib/types";
 import { blackScholes } from "@/lib/bs";
+import { resolveOpeningLeg } from "@/lib/pricing";
 import { useI18n } from "@/i18n/I18nContext";
 import { RefreshCw } from "lucide-react";
 
@@ -108,11 +109,20 @@ function calcPnLAtTime(legs: Leg[], spot: number, sTest: number, daysElapsed: nu
 // P&L of a tracked position using opening premium as cost basis.
 // Pricing uses the tracked leg's current DTE and IV (back-solved from current premium),
 // but profit is measured against what was originally paid (openingLegs premium).
+//
+// Pairs each tracked leg with its opening counterpart via resolveOpeningLeg
+// (id-based, with fallbacks for pre-existing data — see its own comment in
+// pricing.ts), not by raw array position `i` — trackedLegs can be reordered
+// (moveTrackedLeg) or grown independently of openingLegs (a roll/hedge/
+// protect added straight to the tracked side), at which point index-pairing
+// silently compares a leg's current price against some OTHER leg's opening
+// premium as its "cost basis".
 function calcTrackedPnL(trackedLegs: Leg[], openingLegs: Leg[], spot: number, sTest: number): number {
+  const openingById = new Map(openingLegs.map((l) => [l.id, l]));
   let pnl = 0;
   for (let i = 0; i < trackedLegs.length; i++) {
     const l = trackedLegs[i];
-    const open = openingLegs[i];
+    const open = resolveOpeningLeg(l, i, openingLegs, openingById);
     const sign = l.action === "buy" ? 1 : -1;
     if (l.kind === "stock") { pnl += sign * (sTest - l.strike); continue; }
     const qty = l.qty ?? 1;
@@ -129,10 +139,11 @@ function calcTrackedPnL(trackedLegs: Leg[], openingLegs: Leg[], spot: number, sT
 }
 
 function calcTrackedPnLAtTime(trackedLegs: Leg[], openingLegs: Leg[], spot: number, sTest: number, daysElapsed: number): number {
+  const openingById = new Map(openingLegs.map((l) => [l.id, l]));
   let pnl = 0;
   for (let i = 0; i < trackedLegs.length; i++) {
     const l = trackedLegs[i];
-    const open = openingLegs[i];
+    const open = resolveOpeningLeg(l, i, openingLegs, openingById);
     const sign = l.action === "buy" ? 1 : -1;
     if (l.kind === "stock") { pnl += sign * (sTest - l.strike); continue; }
     const qty = l.qty ?? 1;
@@ -172,7 +183,14 @@ function getZone(pnl: number, netCredit: number, maxProfit: number, maxLoss: num
     if (pnl > 0.7 * netCredit) return "great";
   } else {
     const maxP = maxProfit > 0 ? maxProfit : 1;
-    if (pnl >= 0.5 * maxP) return "golden";
+    // Debit-strategy mirror of the credit-strategy branch above: "golden"
+    // needs an upper bound too (0.5-0.7 of maxProfit), otherwise "great"
+    // (pnl > 0.7*maxP) is unreachable — pnl >= 0.5*maxP already matched and
+    // returned first for every point past 0.5*maxP, "great" included. A
+    // debit strategy that ran deep into its best-case territory kept
+    // reporting the take-profit "golden" alert instead of correctly going
+    // quiet past 70% of max profit the way a credit strategy already does.
+    if (pnl >= 0.5 * maxP && pnl <= 0.7 * maxP) return "golden";
     if (pnl > 0.7 * maxP) return "great";
     const cost = Math.abs(netCredit);
     if (pnl < -0.5 * cost) return "danger";

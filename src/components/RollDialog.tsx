@@ -7,6 +7,7 @@ import { blackScholes } from "@/lib/bs";
 import { impliedVol } from "@/lib/pricing";
 import { fetchLegPremium } from "@/lib/optionChain";
 import { useI18n } from "@/i18n/I18nContext";
+import RollComparisonChart from "@/components/RollComparisonChart";
 
 const RATE = 0.05;
 
@@ -17,11 +18,12 @@ interface Props {
   leg: Leg;
   spot: number;
   symbol?: string; // when provided, strike/expiry/premium are pulled from the real option chain instead of a theoretical BS estimate
+  allLegs: Leg[]; // the full combo `leg` belongs to (opening combo or "today's" combo, whichever is being rolled) — used only to draw the before/after risk comparison, not for anything else in this dialog
   onClose: () => void;
   onConfirm: (newLeg: Leg) => void;
 }
 
-export default function RollDialog({ leg, spot, symbol, onClose, onConfirm }: Props) {
+export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConfirm }: Props) {
   const { t } = useI18n();
   const oldDte = Math.max(0, Math.round(leg.dte));
   const oldDate = dateFromDte(oldDte);
@@ -115,6 +117,19 @@ export default function RollDialog({ leg, spot, symbol, onClose, onConfirm }: Pr
     };
     onConfirm(newLeg);
   };
+
+  // Before/after combo for the risk comparison chart — "before" is the real
+  // combo minus any already-rolled ghost legs (pnlAtExpiry doesn't filter
+  // those itself, see RollComparisonChart.tsx's header comment); "after"
+  // swaps the leg being rolled for its in-progress replacement so the chart
+  // updates live as the strike/expiry/premium inputs above change. This
+  // placeholder leg is only ever used for the chart — handleConfirm above
+  // builds the real one that actually gets committed.
+  const beforeLegs = useMemo(() => allLegs.filter((l) => !l.disabled), [allLegs]);
+  const afterLegs = useMemo(() => {
+    const draftLeg: Leg = { ...leg, strike: newStrike, dte: newDte, premium: newPremium };
+    return beforeLegs.map((l) => (l.id === leg.id ? draftLeg : l));
+  }, [beforeLegs, leg, newStrike, newDte, newPremium]);
 
   const setExpiryPreset = (days: number) => {
     setPremiumTouched(false);
@@ -290,6 +305,8 @@ export default function RollDialog({ leg, spot, symbol, onClose, onConfirm }: Pr
               </ul>
             </div>
           )}
+
+          <RollComparisonChart beforeLegs={beforeLegs} afterLegs={afterLegs} spot={spot} />
         </div>
 
         <div className="mt-5 flex justify-end gap-2">

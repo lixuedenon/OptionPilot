@@ -1,11 +1,10 @@
 // src/App.tsx
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Layers, Settings2, RefreshCw, TrendingUp, TrendingDown, ChevronDown, Trash2, Clock, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle, DollarSign, Ban, Wallet } from "lucide-react";
+import { Plus, Layers, Settings2, RefreshCw, TrendingUp, TrendingDown, ChevronDown, Trash2, Clock, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle, DollarSign, Ban, Wallet, GitCompare, History } from "lucide-react";
 import type { Leg, Shifts } from "@/lib/types";
-import { priceCombo, probabilityOfProfit, weightedAvgIV, impliedSpotFromPremiums, attributePnl, maxProfitLoss } from "@/lib/pricing";
+import { priceCombo, probabilityOfProfit, weightedAvgIV, impliedSpotFromPremiums, attributePnl, maxProfitLoss, resolveOpeningLeg } from "@/lib/pricing";
 import { explainLegRoles } from "@/lib/legRoles";
 import PnlAttributionPanel from "@/components/PnlAttributionPanel";
-import PositionHealthBadge from "@/components/PositionHealthBadge";
 import { computeHealth } from "@/lib/positionHealth";
 import { matchStrategy } from "@/lib/matchStrategy";
 import LegListSection from "@/components/LegListSection";
@@ -15,12 +14,13 @@ import { useStockQuote } from "@/lib/useStockQuote";
 import { loadRecentSymbols, addRecentSymbol } from "@/lib/recentSymbols";
 import { saveStrategy, overwriteStrategy, addTrackedSnapshot, updateSnapshotTime, deleteTrackedSnapshot, backfillTrackedSnapshots, serializeStrategyState, findDuplicate, type SavedStrategy, type TrackedSnapshot } from "@/lib/savedStrategies";
 import DropdownMenu from "@/components/DropdownMenu";
+import Term from "@/components/Term";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
 import { useSavedStrategies } from "@/hooks/useSavedStrategies";
 import { useLegEditing } from "@/hooks/useLegEditing";
 import { nearestFridayDte, formatDateInput, parseDateInput, calendarDaysSince } from "@/lib/dateUtils";
-import { uid, blankLeg, PRESET_DTE_SET } from "@/lib/legFactory";
+import { uid, blankLeg, PRESET_DTE_SET, asOpeningLeg } from "@/lib/legFactory";
 import { getOptionChain, peekResolvedChain, nearestStrikeToSpot, resolveFromCache } from "@/lib/optionChain";
 import { useI18n } from "@/i18n/I18nContext";
 import AppHeader from "@/components/AppHeader";
@@ -98,22 +98,36 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const [trackedDirty, setTrackedDirty] = useState(false);
   const [confirmSaveTrackedOpen, setConfirmSaveTrackedOpen] = useState(false);
   const [openingAt, setOpeningAt] = useState<number>(() => Date.now());
-  const {
-    autoSyncName,
-    autoSyncSupported,
-    autoSyncError,
-    setAutoSyncError,
-    syncNow,
-    unlinkBackup,
-    linkBackup,
-  } = useAutoSync({ savedStrategies, customPresets, recentSymbols });
+  // The "数据" button/dropdown (export/import/link/unlink) moved to
+  // HomePage.tsx, next to the language switcher (2026-09-06, xue's request).
+  // This call is kept here on purpose, with its return value unused: it's
+  // what keeps writing to the linked backup file in the background while
+  // the user is actively editing in analysis/compare mode, so a long
+  // editing session still gets backed up without having to return to the
+  // home screen first. HomePage.tsx has its own independent instance of
+  // this hook powering the relocated button — safe because the underlying
+  // file handle is a module-level singleton (see lib/autoSync.ts) and the
+  // two components are never mounted at the same time (Shell.tsx routing).
+  useAutoSync({ savedStrategies, customPresets, recentSymbols });
   const { t } = useI18n();
 
   const [helpOpen, setHelpOpen] = useState(false);
+  // Per-module first-entry guides (2026-09-06). Analysis guide gates fresh
+  // entry into analysis mode (skipped for the auto-open-manage "Tracking"
+  // card flow and the simOrigin flow, which have their own onboarding);
+  // compare guide gates the first time this component ever flips into
+  // compare mode (via handleSwitchToCompare / loading a tracked strategy),
+  // guarded by compareGuideShown so it never reappears after being
+  // dismissed once, even if the user leaves and re-enters compare mode
+  // within the same mount. Both are separate from helpOpen, which is the
+  // dismissible "使用说明" button version of the same content.
+  const [showAnalysisGuide, setShowAnalysisGuide] = useState(() => !autoOpenManage && !simOrigin);
+  const [showCompareGuide, setShowCompareGuide] = useState(false);
+  const compareGuideShown = useRef(false);
   const {
-    rollTarget, setRollTarget,
-    protectTarget, setProtectTarget,
-    hedgeOpen, setHedgeOpen,
+    rollTarget, setRollTarget, rollTargetSource,
+    protectTarget, setProtectTarget, protectTargetSource,
+    hedgeOpen, setHedgeOpen, hedgeTargetSource,
     compareTargetId, setCompareTargetId,
     selectedLegIds,
     confirmBulkDeleteOpen, setConfirmBulkDeleteOpen,
@@ -137,7 +151,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     handleHedgeConfirm,
     moveLeg,
     moveTrackedLeg,
-  } = useLegEditing({ legs, setLegs, setTrackedLegs });
+  } = useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs });
   const pendingPresetAction = useRef<{ name: string; rawLegs: Leg[] } | null>(null);
   const [confirmPresetOpen, setConfirmPresetOpen] = useState(false);
   const pendingPresetReplace = useRef<Leg[] | null>(null);
@@ -367,6 +381,14 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const activeLegs = useMemo(() => legs.filter((l) => !l.disabled), [legs]);
   const activeTrackedLegs = useMemo(() => trackedLegs?.filter((l) => !l.disabled) ?? null, [trackedLegs]);
   const isCompareMode = trackedLegs !== null;
+
+  useEffect(() => {
+    if (isCompareMode && !compareGuideShown.current) {
+      compareGuideShown.current = true;
+      setShowCompareGuide(true);
+    }
+  }, [isCompareMode]);
+
   const strategyName = useMemo(() => matchStrategy(activeLegs, spot, customPresets), [activeLegs, spot, customPresets]);
   const canSaveStrategy = activeLegs.length > 0 && serializeStrategyState(symbol, legs, shifts, openingAt) !== strategyBaseline;
   const result = useMemo(() => priceCombo(activeLegs, shifts, spot), [activeLegs, shifts, spot]);
@@ -471,10 +493,21 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     if (!isCompareMode || !activeTrackedLegs) return null;
 
     const currentSpot = effectiveTrackedSpot;
+    // Pair each tracked leg with its opening counterpart via
+    // resolveOpeningLeg (id-based, with fallbacks for pre-existing data —
+    // see its own comment in pricing.ts), not by raw array position —
+    // trackedLegs can be reordered (moveTrackedLeg) or grown independently
+    // of legs (a roll/hedge/protect added straight to the tracked side, see
+    // useLegEditing.ts), at which point
+    // `activeTrackedLegs[index]`/`activeLegs[index]` silently stop being
+    // "the same leg". A tracked leg with no resolvable opening leg falls
+    // through to `base = 0` below, same as the old "no opening leg at this
+    // index" fallback.
+    const openingById = new Map(activeLegs.map((l) => [l.id, l]));
     let shiftedValue = 0;
     let netPremium = 0;
     const perLeg = activeTrackedLegs.map((leg, index) => {
-      const openingLeg = activeLegs[index];
+      const openingLeg = resolveOpeningLeg(leg, index, activeLegs, openingById);
       const sign = leg.action === "buy" ? 1 : -1;
       const openingSign = openingLeg?.action === "buy" ? 1 : -1;
       const shifted = leg.kind === "stock" ? sign * (currentSpot - leg.strike) : sign * leg.premium;
@@ -850,6 +883,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         s.legs.map((l) => ({
           ...l,
           id: uid(),
+          // Record which opening leg (s.legs, about to become `legs`) this
+          // tracked leg was derived from — see types.ts's comment on
+          // openLegId. Must be captured before `id` above overwrites it.
+          openLegId: l.id,
           dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - daysElapsed),
         })),
       );
@@ -1047,6 +1084,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         legs.map((l) => ({
           ...l,
           id: uid(),
+          // See types.ts's comment on openLegId — same reasoning as
+          // handleTrack's no-snapshot branch above, just deriving directly
+          // from the in-editor `legs` instead of a persisted SavedStrategy.
+          openLegId: l.id,
           dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - daysElapsed),
         })),
       );
@@ -1083,13 +1124,19 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       newSpot = spot;
       newOpeningAt = openingAt;
     } else if (source === "current") {
-      newLegs = (trackedLegs ?? legs).map((l) => ({ ...l, id: uid() }));
+      // These legs are becoming the new OPENING combo — strip openLegId
+      // (it referenced a now-irrelevant prior opening leg; see types.ts)
+      // rather than carrying a stale cross-reference forward. A fresh
+      // trackedLegs derived from this new baseline later gets its own
+      // correct openLegId pointing back to these ids, same as any other
+      // switch-to-compare.
+      newLegs = (trackedLegs ?? legs).map((l) => asOpeningLeg(l, uid()));
       newSpot = effectiveTrackedSpot;
       newOpeningAt = Date.now();
     } else {
       const snap = trackedStrategy?.trackedSnapshots?.find((sn) => sn.id === source);
       if (!snap) return;
-      newLegs = snap.legs.map((l) => ({ ...l, id: uid() }));
+      newLegs = snap.legs.map((l) => asOpeningLeg(l, uid()));
       newSpot = snap.spot;
       newOpeningAt = snap.savedAt;
     }
@@ -1127,6 +1174,63 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
   const legToolbar = (
     <>
+      {/* Analysis ↔ compare mode switch — lives here, first in the toolbar
+          (left of "+"), per xue's request 2026-09-06: 切换按钮, +, 删除, 策略库.
+          Previously sat in AppHeader.tsx between the preset picker and the
+          symbol field; moved into legToolbar so it renders in whichever row
+          this toolbar itself renders in (the 开仓价/开仓日期 row in analysis
+          mode, the "开仓组合" header row in compare mode — see
+          LegListSection.tsx). LegPanelTitleRow.tsx no longer owns any of
+          this, including the "对比模式" text badge (removed per xue's
+          request) — it now only shows the strategy badge and leg count. */}
+      {!simOrigin && !isCompareMode && legs.length > 0 && (
+        <button
+          onClick={handleSwitchToCompare}
+          title={t("leg.switchToCompareHint")}
+          className="flex shrink-0 items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50"
+        >
+          <GitCompare size={11} />
+          {t("leg.switchToCompare")}
+        </button>
+      )}
+      {!simOrigin && isCompareMode && (
+        <DropdownMenu label={t("leg.switchToAnalysis")} icon={<GitCompare size={11} />} menuClassName="w-64">
+          {(close) => (
+            <>
+              <button
+                onClick={() => { close(); handleSwitchToAnalysis("baseline"); }}
+                className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left text-[11px] text-slate-300 transition hover:bg-slate-800"
+              >
+                <span className="font-semibold">{t("leg.switchSourceBaseline")}</span>
+                <span className="text-[9px] text-slate-500">{t("leg.switchSourceBaselineHint")}</span>
+              </button>
+              <button
+                onClick={() => { close(); handleSwitchToAnalysis("current"); }}
+                className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left text-[11px] text-slate-300 transition hover:bg-slate-800"
+              >
+                <span className="font-semibold">{t("leg.switchSourceCurrent")}</span>
+                <span className="text-[9px] text-slate-500">{t("leg.switchSourceCurrentHint")}</span>
+              </button>
+              {(trackedStrategy?.trackedSnapshots?.length ?? 0) > 0 && (
+                <>
+                  <div className="my-1 border-t border-slate-800" />
+                  <div className="px-3 py-1 text-[9px] font-bold uppercase tracking-wide text-slate-600">{t("leg.switchSourceSnapshot")}</div>
+                  {trackedStrategy!.trackedSnapshots!.map((sn, idx) => (
+                    <button
+                      key={sn.id}
+                      onClick={() => { close(); handleSwitchToAnalysis(sn.id); }}
+                      className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] text-slate-300 transition hover:bg-slate-800"
+                    >
+                      <History size={11} className="text-sky-500" />
+                      #{idx + 1} {new Date(sn.savedAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                    </button>
+                  ))}
+                </>
+              )}
+            </>
+          )}
+        </DropdownMenu>
+      )}
       <button
         onClick={addLeg}
         disabled={legs.length >= 10}
@@ -1193,10 +1297,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           }
           applyPreset(rawLegs);
         }}
-        legsCount={legs.length}
-        trackedStrategy={trackedStrategy}
-        onSwitchToCompare={handleSwitchToCompare}
-        onSwitchToAnalysis={handleSwitchToAnalysis}
         symbolWrapRef={symbolWrapRef}
         symbol={symbol}
         onSymbolChange={setSymbol}
@@ -1210,16 +1310,15 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         onRefetchQuote={refetch}
         priceChange={priceChange}
         changePct={changePct}
-        autoSyncSupported={autoSyncSupported}
-        autoSyncName={autoSyncName}
-        autoSyncError={autoSyncError}
-        onDismissAutoSyncError={() => setAutoSyncError(null)}
-        onSyncNow={syncNow}
-        onUnlinkBackup={unlinkBackup}
-        onLinkBackup={linkBackup}
-        onReloadData={reloadData}
         onOpenHelp={() => setHelpOpen(true)}
       />
+
+      {showAnalysisGuide && !isCompareMode && (
+        <HelpPanel moduleId="analysis" variant="gate" onClose={() => setShowAnalysisGuide(false)} />
+      )}
+      {showCompareGuide && isCompareMode && (
+        <HelpPanel moduleId="compare" variant="gate" onClose={() => setShowCompareGuide(false)} />
+      )}
 
       {simOrigin && (
         <div className="shrink-0 border-b border-emerald-800/40 bg-emerald-950/30 px-4 py-1.5 text-[11px] text-emerald-300">
@@ -1236,7 +1335,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               strategyName={strategyName}
               customPresets={customPresets}
               legsCount={legs.length}
-              isCompareMode={isCompareMode}
             />
             {!isCompareMode && (
                 <div className="col-span-2 row-start-2 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 pt-0.5">
@@ -1282,15 +1380,19 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   </div>
                 </div>
               )}
-            {/* flex-wrap (not nowrap+shrink-0): the health badge is the last
-                item here, and once the net-Greeks readout was added
-                alongside pop/breakeven, the row's min-content width could
-                exceed this column's width — with nowrap that silently
-                pushed the badge outside the panel's clipped/auto-scrolling
-                bounds, hiding it with no visual sign anything was missing.
-                Wrapping keeps every item visible, just on a second line
-                when the column is too narrow. Fixed 2026-09-06 — see
-                claude/analysis-compare-mode-review-2026-09-06.md. */}
+            {/* flex-wrap (not nowrap+shrink-0): once the net-Greeks readout
+                was added alongside pop/breakeven, the row's min-content
+                width could exceed this column's width — with nowrap that
+                silently pushed content outside the panel's
+                clipped/auto-scrolling bounds, hiding it with no visual sign
+                anything was missing. Wrapping keeps every item visible, just
+                on a second line when the column is too narrow. Fixed
+                2026-09-06 — see claude/analysis-compare-mode-review-2026-09-06.md.
+                The health badge itself no longer lives in this row — moved
+                2026-09-06 down to sit beside 保存策略组合/保存追踪快照 (see
+                LegListSection.tsx/TrackedComboSection.tsx) per xue's
+                request, since that's a calmer landing spot than this
+                already-crowded header row. */}
             <div className="col-start-2 row-start-1 ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
               {activeLegs.length > 0 && pop > 0 && (
                 <div className="flex shrink-0 items-center gap-2 border-r border-slate-800 pr-2">
@@ -1319,24 +1421,23 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 // panel's right edge (see the wrap note above).
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 border-r border-slate-800 pr-2" title={t("greeks.hint")}>
                   <div className="flex items-baseline gap-1">
-                    <span className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netDelta")}</span>
+                    <Term titleKey="glossary.delta" descKey="glossary.deltaDesc" className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netDelta")}</Term>
                     <span className="whitespace-nowrap text-xs font-semibold tabular-nums text-sky-300">{fmtGreek(displayGreeks.delta)}</span>
                   </div>
                   <div className="flex items-baseline gap-1">
-                    <span className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netTheta")}</span>
+                    <Term titleKey="glossary.theta" descKey="glossary.thetaDesc" className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netTheta")}</Term>
                     <span className={`whitespace-nowrap text-xs font-semibold tabular-nums ${displayGreeks.theta >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{fmtGreek(displayGreeks.theta)}</span>
                   </div>
                   <div className="flex items-baseline gap-1">
-                    <span className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netVega")}</span>
+                    <Term titleKey="glossary.vega" descKey="glossary.vegaDesc" className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netVega")}</Term>
                     <span className="whitespace-nowrap text-xs font-semibold tabular-nums text-sky-300">{fmtGreek(displayGreeks.vega)}</span>
                   </div>
                   <div className="flex items-baseline gap-1">
-                    <span className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netGamma")}</span>
+                    <Term titleKey="glossary.gamma" descKey="glossary.gammaDesc" className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netGamma")}</Term>
                     <span className="whitespace-nowrap text-xs font-semibold tabular-nums text-sky-300">{fmtGreek(displayGreeks.gamma, 3)}</span>
                   </div>
                 </div>
               )}
-              {positionHealth && <PositionHealthBadge health={positionHealth} />}
             </div>
           </div>
 
@@ -1347,6 +1448,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             activeSnapshotId={activeSnapshotId}
             onUpdateSnapshotTime={handleUpdateSnapshotTime}
             legToolbar={legToolbar}
+            positionHealth={positionHealth}
             spot={spot}
             openingAt={openingAt}
             activeLegs={activeLegs}
@@ -1389,6 +1491,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               onDeleteSnapshot={handleDeleteSnapshot}
               onSaveTracked={handleSaveTracked}
               trackedDirty={trackedDirty}
+              positionHealth={positionHealth}
               trackedResult={trackedResult}
               spot={spot}
               activeLegs={activeLegs}
@@ -1401,9 +1504,15 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               trackedLegPnlById={trackedLegPnlById}
               trackedLegRolesById={trackedLegRolesById}
               onChangeTrackedLeg={updateTrackedLeg}
-              onRoll={handleRoll}
-              onHedge={handleHedge}
-              onProtect={handleProtect}
+              // Explicitly tag these as targeting the TRACKED combo — see
+              // useLegEditing.ts's handleRoll/handleHedge/handleProtect,
+              // which default to the opening combo ("legs") otherwise.
+              // Before this, a Roll/Hedge/Protect clicked from a "今日组合"
+              // row silently mutated the opening combo instead of the row
+              // the person actually clicked on.
+              onRoll={(legId: string) => handleRoll(legId, "tracked")}
+              onHedge={() => handleHedge("tracked")}
+              onProtect={(legId: string) => handleProtect(legId, "tracked")}
               onMoveTrackedLeg={moveTrackedLeg}
             />
           )}
@@ -1471,7 +1580,9 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         </div>
       </div>
 
-      {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
+      {helpOpen && (
+        <HelpPanel moduleId={isCompareMode ? "compare" : "analysis"} variant="info" onClose={() => setHelpOpen(false)} />
+      )}
 
       <LegActionDialogs
         saveDialogOpen={saveDialogOpen}
@@ -1493,13 +1604,18 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           doClearAll();
         }}
         rollTarget={rollTarget}
+        rollTargetSource={rollTargetSource}
         onCloseRoll={() => setRollTarget(null)}
         onConfirmRoll={handleRollConfirm}
         protectTarget={protectTarget}
+        protectTargetSource={protectTargetSource}
         onCloseProtect={() => setProtectTarget(null)}
         onConfirmProtect={handleProtectConfirm}
         hedgeOpen={hedgeOpen}
+        hedgeTargetSource={hedgeTargetSource}
         legs={legs}
+        trackedLegsForDialogs={activeTrackedLegs ?? []}
+        trackedSpotForDialogs={effectiveTrackedSpot}
         onCloseHedge={() => setHedgeOpen(false)}
         onConfirmHedge={handleHedgeConfirm}
         compareTargetId={compareTargetId}

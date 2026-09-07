@@ -210,7 +210,7 @@ export default function PresetPicker({ onSelect, customPresets, onDeleteCustom }
 
           {/* Built-in presets */}
           {PRESET_GROUPS.map((group) => (
-            <div key={group.group}>
+            <div key={ls(group.group, "zh")}>
               <div className="sticky top-0 z-10 border-b border-slate-800 bg-slate-950 px-3 py-1.5">
                 <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">{ls(group.group, lang)}</span>
               </div>

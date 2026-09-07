@@ -3,10 +3,12 @@ import { Clock, Ban, Trash2, Plus, Save } from "lucide-react";
 import { useMemo, type ReactNode } from "react";
 import type { Leg } from "@/lib/types";
 import type { SavedStrategy } from "@/lib/savedStrategies";
+import type { HealthResult } from "@/lib/positionHealth";
 import { weightedAvgIV } from "@/lib/pricing";
 import { formatDateInput, parseDateInput } from "@/lib/dateUtils";
 import { explainLegRoles } from "@/lib/legRoles";
 import LegRow from "@/components/LegRow";
+import PositionHealthBadge from "@/components/PositionHealthBadge";
 import { useI18n } from "@/i18n/I18nContext";
 
 // This is the App.tsx split's second step (see the AppHeader extraction
@@ -23,6 +25,13 @@ interface Props {
   activeSnapshotId: string | null;
   onUpdateSnapshotTime: (snapshotId: string, savedAt: number) => void;
   legToolbar: ReactNode;
+  // Analysis mode's health badge only — App.tsx passes the same
+  // positionHealth value to TrackedComboSection too, but that component
+  // renders it next to 保存追踪快照 instead; this component only shows it
+  // (next to 保存策略组合) when !isCompareMode, so the badge doesn't appear
+  // twice at once. See App.tsx's positionHealth comment for what combo it's
+  // actually computed from in each mode.
+  positionHealth: HealthResult | null;
 
   spot: number;
   openingAt: number;
@@ -70,6 +79,7 @@ export default function LegListSection({
   activeSnapshotId,
   onUpdateSnapshotTime,
   legToolbar,
+  positionHealth,
   spot,
   openingAt,
   activeLegs,
@@ -223,6 +233,7 @@ export default function LegListSection({
                   </button>
                 </>
               )}
+              {!isCompareMode && positionHealth && <PositionHealthBadge health={positionHealth} />}
               <button
                 onClick={onSaveStrategy}
                 disabled={!canSaveStrategy}

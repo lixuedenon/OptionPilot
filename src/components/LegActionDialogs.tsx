@@ -34,15 +34,26 @@ interface Props {
   onSaveTrackedThenClear: () => void;
 
   rollTarget: Leg | null;
+  rollTargetSource: "legs" | "tracked";
   onCloseRoll: () => void;
   onConfirmRoll: (newLeg: Leg) => void;
 
   protectTarget: Leg | null;
+  protectTargetSource: "legs" | "tracked";
   onCloseProtect: () => void;
   onConfirmProtect: (protectLeg: Leg) => void;
 
   hedgeOpen: boolean;
+  hedgeTargetSource: "legs" | "tracked";
   legs: Leg[];
+  // The "今日组合" equivalents of `legs`/`spot` — used instead when
+  // rollTargetSource/protectTargetSource/hedgeTargetSource is "tracked", so
+  // Roll/Protect/Hedge triggered from TrackedComboSection price against the
+  // actual current tracked combo/spot rather than the (possibly stale,
+  // slider-shifted) opening one. See App.tsx's TrackedComboSection wiring
+  // for why these two need to travel together with the *TargetSource flags.
+  trackedLegsForDialogs: Leg[];
+  trackedSpotForDialogs: number;
   onCloseHedge: () => void;
   onConfirmHedge: (hedgeLeg: Leg) => void;
 
@@ -67,9 +78,9 @@ export default function LegActionDialogs({
   confirmClearOpen, onConfirmClear, onCancelClear,
   confirmBulkDeleteOpen, selectedCount, onConfirmBulkDelete, onCancelBulkDelete,
   confirmSaveTrackedOpen, onDontSaveTracked, onSaveTrackedThenClear,
-  rollTarget, onCloseRoll, onConfirmRoll,
-  protectTarget, onCloseProtect, onConfirmProtect,
-  hedgeOpen, legs, onCloseHedge, onConfirmHedge,
+  rollTarget, rollTargetSource, onCloseRoll, onConfirmRoll,
+  protectTarget, protectTargetSource, onCloseProtect, onConfirmProtect,
+  hedgeOpen, hedgeTargetSource, legs, trackedLegsForDialogs, trackedSpotForDialogs, onCloseHedge, onConfirmHedge,
   compareTargetId, shifts, onCloseCompare,
   showImpliedInfo, isCompareMode, effectiveTrackedSpot, correctedSpot, correcting, onCloseImplied, onCorrectSpot,
   spot, symbol,
@@ -108,8 +119,9 @@ export default function LegActionDialogs({
       {rollTarget && (
         <RollDialog
           leg={rollTarget}
-          spot={spot}
+          spot={rollTargetSource === "tracked" ? trackedSpotForDialogs : spot}
           symbol={symbol}
+          allLegs={rollTargetSource === "tracked" ? trackedLegsForDialogs : legs}
           onClose={onCloseRoll}
           onConfirm={onConfirmRoll}
         />
@@ -117,7 +129,7 @@ export default function LegActionDialogs({
       {protectTarget && (
         <ProtectDialog
           leg={protectTarget}
-          spot={spot}
+          spot={protectTargetSource === "tracked" ? trackedSpotForDialogs : spot}
           symbol={symbol}
           onClose={onCloseProtect}
           onConfirm={onConfirmProtect}
@@ -125,8 +137,8 @@ export default function LegActionDialogs({
       )}
       {hedgeOpen && (
         <HedgeDialog
-          legs={legs}
-          spot={spot}
+          legs={hedgeTargetSource === "tracked" ? trackedLegsForDialogs : legs}
+          spot={hedgeTargetSource === "tracked" ? trackedSpotForDialogs : spot}
           symbol={symbol}
           onClose={onCloseHedge}
           onConfirm={onConfirmHedge}

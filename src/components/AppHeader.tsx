@@ -1,14 +1,11 @@
 // src/components/AppHeader.tsx
-import { RefreshCw, TrendingUp, TrendingDown, ChevronDown, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle, GitCompare, History } from "lucide-react";
+import { RefreshCw, TrendingUp, TrendingDown, ChevronDown, HelpCircle } from "lucide-react";
 import type { RefObject } from "react";
 import type { PresetMeta } from "@/lib/presets";
 import type { CustomPreset } from "@/lib/customPresets";
 import type { StockQuote } from "@/lib/useStockQuote";
-import type { SavedStrategy } from "@/lib/savedStrategies";
 import PresetPicker from "@/components/PresetPicker";
-import DropdownMenu from "@/components/DropdownMenu";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
-import { exportAllData, importAllData } from "@/lib/dataTransfer";
 import { useI18n } from "@/i18n/I18nContext";
 
 // This is the App.tsx split's first (lowest-risk) step — see the App.tsx
@@ -17,9 +14,17 @@ import { useI18n } from "@/i18n/I18nContext";
 // the enclosing closure. Nothing here decides anything App.tsx didn't
 // already decide; this component only renders it and forwards clicks back
 // up. The prop list is long because the header genuinely touches this much
-// state (symbol, quote, presets, data-sync, help, the leave-confirmation
-// gate) — that surface area doesn't shrink by moving the JSX, only the
-// line count of App.tsx does.
+// state (symbol, quote, presets, help, the leave-confirmation gate) — that
+// surface area doesn't shrink by moving the JSX, only the line count of
+// App.tsx does.
+//
+// The "数据" (export/import/auto-sync-file) dropdown that used to live here
+// moved to HomePage.tsx's header, next to the language switcher (2026-09-06,
+// xue's request — she wants data management reachable from the home screen,
+// not duplicated inside both analysis and compare mode). App.tsx's
+// useAutoSync() call is UNCHANGED and keeps writing to the linked backup
+// file in the background while the user edits here; only the visible
+// button/dropdown and its export/import/link/unlink actions moved.
 interface Props {
   // navigation
   simOrigin?: boolean;
@@ -33,15 +38,6 @@ interface Props {
   customPresets: CustomPreset[];
   onDeleteCustomPreset: (id: string) => void;
   onSelectPreset: (preset: PresetMeta) => void;
-
-  // analysis ↔ compare mode switch — moved here (between the preset picker
-  // and the symbol field) per xue's request; used to live in the leg
-  // panel's title row (LegPanelTitleRow.tsx), which still owns the
-  // "对比模式" badge but no longer the switch controls themselves.
-  legsCount: number;
-  trackedStrategy: SavedStrategy | undefined;
-  onSwitchToCompare: () => void;
-  onSwitchToAnalysis: (source: "baseline" | "current" | string) => void;
 
   // symbol / quote
   symbolWrapRef: RefObject<HTMLDivElement>;
@@ -58,16 +54,6 @@ interface Props {
   priceChange: number | null;
   changePct: number | null;
 
-  // data sync menu
-  autoSyncSupported: boolean;
-  autoSyncName: string | null;
-  autoSyncError: string | null;
-  onDismissAutoSyncError: () => void;
-  onSyncNow: () => void;
-  onUnlinkBackup: () => void;
-  onLinkBackup: () => void;
-  onReloadData: () => Promise<void>;
-
   // help
   onOpenHelp: () => void;
 }
@@ -82,10 +68,6 @@ export default function AppHeader({
   customPresets,
   onDeleteCustomPreset,
   onSelectPreset,
-  legsCount,
-  trackedStrategy,
-  onSwitchToCompare,
-  onSwitchToAnalysis,
   symbolWrapRef,
   symbol,
   onSymbolChange,
@@ -99,14 +81,6 @@ export default function AppHeader({
   onRefetchQuote,
   priceChange,
   changePct,
-  autoSyncSupported,
-  autoSyncName,
-  autoSyncError,
-  onDismissAutoSyncError,
-  onSyncNow,
-  onUnlinkBackup,
-  onLinkBackup,
-  onReloadData,
   onOpenHelp,
 }: Props) {
   const { t } = useI18n();
@@ -136,55 +110,6 @@ export default function AppHeader({
           onDeleteCustom={onDeleteCustomPreset}
           onSelect={onSelectPreset}
         />
-
-        {!simOrigin && !isCompareMode && legsCount > 0 && (
-          <button
-            onClick={onSwitchToCompare}
-            title={t("leg.switchToCompareHint")}
-            className="flex shrink-0 items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50"
-          >
-            <GitCompare size={11} />
-            {t("leg.switchToCompare")}
-          </button>
-        )}
-        {!simOrigin && isCompareMode && (
-          <DropdownMenu label={t("leg.switchToAnalysis")} icon={<GitCompare size={11} />} menuClassName="w-64">
-            {(close) => (
-              <>
-                <button
-                  onClick={() => { close(); onSwitchToAnalysis("baseline"); }}
-                  className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left text-[11px] text-slate-300 transition hover:bg-slate-800"
-                >
-                  <span className="font-semibold">{t("leg.switchSourceBaseline")}</span>
-                  <span className="text-[9px] text-slate-500">{t("leg.switchSourceBaselineHint")}</span>
-                </button>
-                <button
-                  onClick={() => { close(); onSwitchToAnalysis("current"); }}
-                  className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left text-[11px] text-slate-300 transition hover:bg-slate-800"
-                >
-                  <span className="font-semibold">{t("leg.switchSourceCurrent")}</span>
-                  <span className="text-[9px] text-slate-500">{t("leg.switchSourceCurrentHint")}</span>
-                </button>
-                {(trackedStrategy?.trackedSnapshots?.length ?? 0) > 0 && (
-                  <>
-                    <div className="my-1 border-t border-slate-800" />
-                    <div className="px-3 py-1 text-[9px] font-bold uppercase tracking-wide text-slate-600">{t("leg.switchSourceSnapshot")}</div>
-                    {trackedStrategy!.trackedSnapshots!.map((sn, idx) => (
-                      <button
-                        key={sn.id}
-                        onClick={() => { close(); onSwitchToAnalysis(sn.id); }}
-                        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] text-slate-300 transition hover:bg-slate-800"
-                      >
-                        <History size={11} className="text-sky-500" />
-                        #{idx + 1} {new Date(sn.savedAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                      </button>
-                    ))}
-                  </>
-                )}
-              </>
-            )}
-          </DropdownMenu>
-        )}
 
         <div ref={symbolWrapRef} className="relative flex items-center gap-1.5">
           <span className="text-[10px] uppercase text-slate-500">{t("stock.code")}</span>
@@ -255,77 +180,6 @@ export default function AppHeader({
       </div>
 
       <div className="flex items-center gap-3">
-
-        <DropdownMenu
-          label={t("toolbar.dataLabel")}
-          icon={<Database size={11} />}
-          menuClassName="w-56"
-        >
-          {(close) => (
-            <>
-              {autoSyncSupported && (
-                <>
-                  <div className="px-3 py-1.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">
-                    {t("toolbar.fileLink")}
-                  </div>
-                  {autoSyncName ? (
-                    <>
-                      <div className="mx-2 mb-1 truncate rounded bg-slate-800 px-2 py-1 text-[10px] text-emerald-400" title={autoSyncName}>
-                        <FileSymlink size={10} className="mr-1 inline" />{autoSyncName}
-                      </div>
-                      <button
-                        onClick={onSyncNow}
-                        className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
-                      >
-                        <RefreshCw size={12} className="text-sky-400" /> {t("toolbar.syncNow")}
-                      </button>
-                      <button
-                        onClick={onUnlinkBackup}
-                        className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-rose-400 transition hover:bg-rose-950/40"
-                      >
-                        <Unlink size={12} /> {t("toolbar.unlink")}
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      onClick={onLinkBackup}
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
-                    >
-                      <FileSymlink size={12} className="text-emerald-400" /> {t("toolbar.linkBackup")}
-                    </button>
-                  )}
-                  <div className="my-1 border-t border-slate-800" />
-                </>
-              )}
-              <button
-                onClick={() => { close(); exportAllData(); }}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
-              >
-                <Download size={12} className="text-sky-400" /> {t("toolbar.exportData")}
-              </button>
-              <label className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800">
-                <Upload size={12} className="text-sky-400" /> {t("toolbar.importData")}
-                <input
-                  type="file"
-                  accept=".json"
-                  className="hidden"
-                  onChange={async (e) => {
-                    close();
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    try {
-                      await importAllData(file);
-                      await onReloadData();
-                    } catch {
-                      window.alert(t("toolbar.importFail"));
-                    }
-                    e.target.value = "";
-                  }}
-                />
-              </label>
-            </>
-          )}
-        </DropdownMenu>
         <LanguageSwitcher />
         <button
           onClick={onOpenHelp}
@@ -335,17 +189,6 @@ export default function AppHeader({
           <HelpCircle size={12} />
           <span>{t("toolbar.help")}</span>
         </button>
-        {autoSyncError && (
-          <div className="absolute right-2 top-full mt-1 z-50 max-w-xs rounded-lg border border-rose-700 bg-rose-950/90 px-3 py-2 text-[11px] text-rose-300 shadow-xl">
-            {autoSyncError}
-            <button
-              onClick={onDismissAutoSyncError}
-              className="ml-2 text-rose-500 hover:text-rose-300"
-            >
-              <X size={11} className="inline" />
-            </button>
-          </div>
-        )}
       </div>
     </header>
   );

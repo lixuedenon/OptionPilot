@@ -14,6 +14,7 @@ import {
 import { loadSimAccount, loadSimPositions, computeAvailableCapital, openSimPosition } from "@/lib/simAccount";
 import { fetchSpotPrice } from "@/lib/useStockQuote";
 import { useI18n } from "@/i18n/I18nContext";
+import Term from "@/components/Term";
 
 interface Props {
   onOpened: () => void; // called after all 3 groups are successfully opened — the caller navigates back to the simulator so the person sees the new positions
@@ -231,7 +232,7 @@ export default function EarningsIvCrashTab({ onOpened }: Props) {
                 <div className="font-bold tabular-nums text-rose-400">-${preview.totalMaxLoss.toFixed(0)}</div>
               </div>
               <div>
-                <span className="text-slate-600">{t("sim.marginRequired")}</span>
+                <Term titleKey="glossary.marginUsed" descKey="glossary.marginUsedDesc" className="text-slate-600">{t("sim.marginRequired")}</Term>
                 <div className={`font-bold tabular-nums ${marginExceedsCapital ? "text-rose-400" : "text-slate-200"}`}>${preview.totalMargin.toFixed(0)}</div>
               </div>
             </div>
