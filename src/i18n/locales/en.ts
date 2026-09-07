@@ -40,11 +40,6 @@ const en: Dict = {
   "leg.switchSourceSnapshot": "Or pick a snapshot",
   "leg.pop": "POP",
   "leg.breakeven": "Breakeven",
-  "greeks.netDelta": "Net Delta",
-  "greeks.netTheta": "Net Theta",
-  "greeks.netVega": "Net Vega",
-  "greeks.netGamma": "Net Gamma",
-  "greeks.hint": "Net Greeks for the whole combo: Delta = directional exposure, Theta = $/day time-decay P&L, Vega = exposure per 1 vol point, Gamma = how fast Delta itself moves with the stock price. Follows the scenario sliders in Analysis Mode; the real current value of \"今日组合\" in Compare Mode.",
   "health.title": "Position Health",
   // ── position health (src/lib/positionHealth.ts) ── computeHealth() takes
   // `t` and builds every label/note/meaning/summary string from these keys
@@ -193,6 +188,7 @@ const en: Dict = {
   // analysis+compare+data content into one doc shown everywhere, and the
   // home page's old catch-all help section, both removed 2026-09-06 ──
   "help.gateContinue": "Got it, continue",
+  "help.gateDontShowAgain": "Don't show again",
 
   "help.moduleAnalysisTitle": "Analysis Mode Guide",
   "help.moduleAnalysisBuild": "Building a Strategy",
@@ -352,14 +348,6 @@ const en: Dict = {
   "sim.statsEmptyHint": "No closed trades yet — stats start accumulating after your first close",
 
   // ── inline glossary tooltips (2026-09, see Term.tsx): click a term label for a one-line definition ──
-  "glossary.delta": "Delta (net)",
-  "glossary.deltaDesc": "How much the combo's value moves per $1 change in the stock. Positive = you gain when it rises, negative = you gain when it falls; the net value is the weighted sum across all legs.",
-  "glossary.theta": "Theta (net)",
-  "glossary.thetaDesc": "How much the combo's value changes per day that passes, other things equal. Most seller-side strategies want this positive — time decay working in your favor.",
-  "glossary.vega": "Vega (net)",
-  "glossary.vegaDesc": "How much the combo's value moves per 1-point change in implied volatility. Positive = you gain when IV rises, negative = you gain when it falls.",
-  "glossary.gamma": "Gamma (net)",
-  "glossary.gammaDesc": "How fast Delta itself changes as the stock moves. Higher gamma means Delta shifts faster with price, making the position's directional risk less stable.",
   "glossary.marginUsed": "Margin Used",
   "glossary.marginUsedDesc": "Capital your broker sets aside to cover this position's possible loss — not your actual loss. Computed dynamically per standard brokerage rules, not a flat worst-case reservation.",
   "sim.closeThisLeg": "Close this leg",
@@ -480,6 +468,7 @@ const en: Dict = {
   "roll.compareBefore": "Before",
   "roll.compareAfter": "After",
   "roll.compareMaxLoss": "Max loss",
+  "roll.compareSameShapeNote": "The two curves nearly overlap: the strike and premium barely changed, so this roll is mainly buying time / reducing early-assignment risk rather than reshaping the payoff at expiration — that kind of benefit doesn't show up on an at-expiration chart.",
 
   // ── protect dialog ──
   "protect.titleProtect": "Protect",

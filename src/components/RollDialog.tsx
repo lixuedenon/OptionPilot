@@ -127,9 +127,30 @@ export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConf
   // builds the real one that actually gets committed.
   const beforeLegs = useMemo(() => allLegs.filter((l) => !l.disabled), [allLegs]);
   const afterLegs = useMemo(() => {
-    const draftLeg: Leg = { ...leg, strike: newStrike, dte: newDte, premium: newPremium };
+    // Chart-only dte: pinned to the leg's OWN pre-roll dte rather than the
+    // real newDte (2026-09-07 fix — xue reported some strategies showing no
+    // visible before/after change, and multi-leg ones showed a warped,
+    // sometimes non-monotonic "after" curve instead). Root cause: once this
+    // leg's dte differs from its siblings, pnlAtExpiry() (pricing.ts) reads
+    // the combo as a genuine multi-expiry calendar/diagonal and prices the
+    // farther-dated leg's residual time value via Black-Scholes instead of
+    // pure intrinsic value at a shared horizon — correct for a deliberately
+    // -built calendar spread, wrong here, since "before" (single dte, pure
+    // intrinsic) and "after" (mixed dte, partly theoretical) would then be
+    // computed on two different bases, not a like-for-like comparison. A
+    // same-strike, same-net-cost duration roll (single leg, no dte
+    // siblings) genuinely produces IDENTICAL before/after curves regardless
+    // of this fix — a payoff-AT-EXPIRATION chart is timeless by
+    // construction, so pushing the date out with the strike/cost unchanged
+    // has nothing to show here; that's correct, not a bug (the real benefit
+    // of that kind of roll — more time, less assignment risk — doesn't
+    // show up on an at-expiration diagram either way). Pinning the dte
+    // keeps both curves on the same evaluation basis so the chart isolates
+    // what a roll-comparison should show: how the NEW strike/premium
+    // reshapes risk, not an artifact of the multi-expiry pricing branch.
+    const draftLeg: Leg = { ...leg, strike: newStrike, dte: leg.dte, premium: newPremium };
     return beforeLegs.map((l) => (l.id === leg.id ? draftLeg : l));
-  }, [beforeLegs, leg, newStrike, newDte, newPremium]);
+  }, [beforeLegs, leg, newStrike, newPremium]);
 
   const setExpiryPreset = (days: number) => {
     setPremiumTouched(false);

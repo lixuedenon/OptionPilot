@@ -1,4 +1,6 @@
 // src/lib/autoSync.ts
+import { collectBackupPayload } from "./dataTransfer";
+
 const DB_NAME = "optionpilot_fsa";
 const STORE = "handles";
 const KEY = "backup_file";
@@ -124,21 +126,12 @@ export async function requestSyncPermission(): Promise<boolean> {
 export async function autoSyncWrite(): Promise<void> {
   if (!fileHandle || !permissionGranted) return;
   try {
-    // Mirrors dataTransfer.ts's exportAllData — kept as a second copy rather
-    // than importing it because this write is triggered by a lighter,
-    // higher-frequency effect (see App.tsx's autoSyncName effect) and the
-    // two intentionally serialize the exact same shape so a linked backup
-    // file and a manual "export data" file stay interchangeable.
-    const data = {
-      version: 2,
-      exportedAt: Date.now(),
-      savedStrategies: JSON.parse(localStorage.getItem("optionpilot_saved_strategies") ?? "[]"),
-      customPresets: JSON.parse(localStorage.getItem("optionpilot_custom_presets") ?? "[]"),
-      recentSymbols: JSON.parse(localStorage.getItem("optionpilot_recent_symbols") ?? "[]"),
-      simAccount: JSON.parse(localStorage.getItem("optionpilot_sim_account") ?? "null"),
-      simPositions: JSON.parse(localStorage.getItem("optionpilot_sim_positions") ?? "[]"),
-      simSnapshots: JSON.parse(localStorage.getItem("optionpilot_sim_snapshots") ?? "[]"),
-    };
+    // Was a second hand-maintained copy of dataTransfer.ts's exportAllData
+    // serialization — collapsed onto collectBackupPayload() (2026-09-07) so
+    // a linked backup file and a manual "export data" file can't silently
+    // drift apart when the backup shape changes in the future. No behavior
+    // change: same six localStorage keys, same shape.
+    const data = collectBackupPayload();
     const writable = await fileHandle.createWritable();
     await writable.write(JSON.stringify(data, null, 2));
     await writable.close();

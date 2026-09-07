@@ -1,3 +1,4 @@
+// src/lib/dataTransfer.ts
 import type { SavedStrategy } from "./savedStrategies";
 import type { CustomPreset } from "./customPresets";
 import type { SimAccount, SimPosition, PositionSnapshot } from "./simAccount";
@@ -18,8 +19,16 @@ export interface ExportData {
   simSnapshots?: PositionSnapshot[];
 }
 
-export function exportAllData(): void {
-  const data: ExportData = {
+// Reads every localStorage key this app backs up into one ExportData
+// snapshot. Exported (2026-09-07) so autoSync.ts's autoSyncWrite() can call
+// this instead of keeping its own second copy of the same six getItem/
+// JSON.parse lines — that duplication was flagged as a real risk (a future
+// schema change, e.g. a version-3 field, is easy to land in only one of the
+// two copies, silently making manual "export data" backups and the
+// auto-synced file diverge). Pure refactor: byte-for-byte the same object
+// shape either call site produced before.
+export function collectBackupPayload(): ExportData {
+  return {
     version: 2,
     exportedAt: Date.now(),
     savedStrategies: JSON.parse(localStorage.getItem("optionpilot_saved_strategies") ?? "[]"),
@@ -29,6 +38,10 @@ export function exportAllData(): void {
     simPositions: JSON.parse(localStorage.getItem("optionpilot_sim_positions") ?? "[]"),
     simSnapshots: JSON.parse(localStorage.getItem("optionpilot_sim_snapshots") ?? "[]"),
   };
+}
+
+export function exportAllData(): void {
+  const data: ExportData = collectBackupPayload();
 
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);

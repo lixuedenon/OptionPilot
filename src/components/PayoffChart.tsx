@@ -1,10 +1,12 @@
 // src/components/PayoffChart.tsx
-import { useMemo, useState, useEffect, useRef, useCallback } from "react";
+import { useMemo, useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import type { Leg, Shifts } from "@/lib/types";
+import type { HealthResult } from "@/lib/positionHealth";
 import { blackScholes } from "@/lib/bs";
 import { resolveOpeningLeg } from "@/lib/pricing";
 import { useI18n } from "@/i18n/I18nContext";
 import { RefreshCw } from "lucide-react";
+import PositionHealthBadge from "@/components/PositionHealthBadge";
 
 export type AlertZone = "golden" | "danger" | "stop" | null;
 export interface AlertInfo {
@@ -29,6 +31,15 @@ interface Props {
   spot: number;
   shifts: Shifts;
   symbol: string;
+  // Health badge + mode-switch button (2026-09-07, per xue's request) —
+  // both used to live buried in the left panel (the badge next to 保存策略
+  // 组合/保存追踪快照, the switch button first in legToolbar) and moved here
+  // to sit right next to the ticker symbol instead, since that's what the
+  // eye actually goes to first. App.tsx still owns the state/handlers
+  // behind both — this component only renders what it's handed. Either can
+  // be omitted/null (e.g. before any legs exist) with nothing rendered.
+  positionHealth?: HealthResult | null;
+  modeSwitchButton?: ReactNode;
   pop: number;
   breakevens: number[];
   trackedLegs?: Leg[];   // 持仓组合 — drawn as a fixed curve, not affected by shifts
@@ -201,7 +212,7 @@ function getZone(pnl: number, netCredit: number, maxProfit: number, maxLoss: num
 
 const FAN_COLORS = ["#fbbf24", "#f59e0b", "#a3a3a3", "#475569"];
 
-export default function PayoffChart({ legs, spot, shifts, symbol, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, onAlert, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot }: Props) {
+export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, onAlert, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot }: Props) {
   const { t } = useI18n();
   const [showFan, setShowFan] = useState(false);
   // Off by default — this is a purely informational overlay (see the
@@ -514,8 +525,10 @@ export default function PayoffChart({ legs, spot, shifts, symbol, breakevens, tr
       {/* Headline P&L + per-leg values */}
       <div className="mb-1 flex flex-col gap-0.5 rounded-lg border border-slate-800 bg-slate-900/60 px-2.5 py-1">
         <div className="flex items-center justify-between">
-          <div className="flex items-baseline gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-sm font-extrabold text-slate-50">{symbol}</span>
+            {positionHealth && <PositionHealthBadge health={positionHealth} />}
+            {modeSwitchButton}
             <span className="text-[9px] text-slate-500">{t("chart.currentPnl")}</span>
           </div>
           <div className="flex items-baseline gap-3">

@@ -14,7 +14,6 @@ import { useStockQuote } from "@/lib/useStockQuote";
 import { loadRecentSymbols, addRecentSymbol } from "@/lib/recentSymbols";
 import { saveStrategy, overwriteStrategy, addTrackedSnapshot, updateSnapshotTime, deleteTrackedSnapshot, backfillTrackedSnapshots, serializeStrategyState, findDuplicate, type SavedStrategy, type TrackedSnapshot } from "@/lib/savedStrategies";
 import DropdownMenu from "@/components/DropdownMenu";
-import Term from "@/components/Term";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
 import { useSavedStrategies } from "@/hooks/useSavedStrategies";
@@ -28,7 +27,7 @@ import LegPanelTitleRow from "@/components/LegPanelTitleRow";
 import TrackedComboSection from "@/components/TrackedComboSection";
 import LegActionDialogs from "@/components/LegActionDialogs";
 import StrategyPersistenceDialogs from "@/components/StrategyPersistenceDialogs";
-import { AlertCard, HelpPanel } from "@/components/dialogs";
+import { AlertCard, HelpPanel, isGuideDismissed } from "@/components/dialogs";
 import ErrorBoundary from "@/components/ErrorBoundary";
 
 interface AppProps {
@@ -112,16 +111,22 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const { t } = useI18n();
 
   const [helpOpen, setHelpOpen] = useState(false);
-  // Per-module first-entry guides (2026-09-06). Analysis guide gates fresh
-  // entry into analysis mode (skipped for the auto-open-manage "Tracking"
-  // card flow and the simOrigin flow, which have their own onboarding);
-  // compare guide gates the first time this component ever flips into
-  // compare mode (via handleSwitchToCompare / loading a tracked strategy),
-  // guarded by compareGuideShown so it never reappears after being
-  // dismissed once, even if the user leaves and re-enters compare mode
-  // within the same mount. Both are separate from helpOpen, which is the
-  // dismissible "使用说明" button version of the same content.
-  const [showAnalysisGuide, setShowAnalysisGuide] = useState(() => !autoOpenManage && !simOrigin);
+  // Per-module first-entry guides (2026-09-06; persistent "don't show
+  // again" added 2026-09-07 — see HelpPanel.tsx's isGuideDismissed).
+  // Analysis guide gates fresh entry into analysis mode (skipped for the
+  // auto-open-manage "Tracking" card flow and the simOrigin flow, which
+  // have their own onboarding); compare guide gates the first time this
+  // component ever flips into compare mode (via handleSwitchToCompare /
+  // loading a tracked strategy), guarded by compareGuideShown so it never
+  // reappears after being dismissed once, even if the user leaves and
+  // re-enters compare mode within the same mount. Both are separate from
+  // helpOpen, which is the dismissible "使用说明" button version of the
+  // same content. Checking isGuideDismissed() in the initial state (rather
+  // than closing it a tick after mount) avoids flashing the gate open for
+  // a frame once the user has permanently dismissed it.
+  const [showAnalysisGuide, setShowAnalysisGuide] = useState(
+    () => !autoOpenManage && !simOrigin && !isGuideDismissed("analysis"),
+  );
   const [showCompareGuide, setShowCompareGuide] = useState(false);
   const compareGuideShown = useRef(false);
   const {
@@ -385,7 +390,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   useEffect(() => {
     if (isCompareMode && !compareGuideShown.current) {
       compareGuideShown.current = true;
-      setShowCompareGuide(true);
+      if (!isGuideDismissed("compare")) setShowCompareGuide(true);
     }
   }, [isCompareMode]);
 
@@ -417,8 +422,14 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // Deliberately a separate memo from trackedResult below (which only does
   // raw premium-difference P&L — no Black-Scholes needed for that — and
   // still carries its own hardcoded-zero breakdown, unused elsewhere) so
-  // this doesn't disturb that already-working P&L math. Feeds both Position
-  // Health's delta factor and the net-Greeks readout, in compare mode.
+  // this doesn't disturb that already-working P&L math. Feeds Position
+  // Health's delta/gamma factors in compare mode. The net-Greeks numbers
+  // themselves are no longer displayed anywhere (removed 2026-09-07, xue's
+  // call — the four-number readout wasn't earning its header-row space) but
+  // this computation stays: positionHealth's Gamma-risk and Delta-normalized
+  // factors still consume trackedGreeks.breakdown below, so it can't be
+  // deleted, only its now-unused display counterpart (displayGreeks/
+  // fmtGreek/the Term-wrapped JSX panel) was.
   const trackedGreeks = useMemo(() => {
     if (!isCompareMode || !activeTrackedLegs || activeTrackedLegs.length === 0 || effectiveTrackedSpot <= 0) return null;
     return priceCombo(activeTrackedLegs, { dS: 0, dT: 0, dV: 0 }, effectiveTrackedSpot);
@@ -444,14 +455,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     if (activeLegs.length === 0 || spot <= 0) return null;
     return computeHealth(activeLegs, spot, shifts, result.breakdown, t);
   }, [isCompareMode, activeTrackedLegs, effectiveTrackedSpot, trackedGreeks, activeLegs, spot, shifts, result, t]);
-
-  // Net combo Greeks actually shown to the user (see the small Greeks
-  // readout next to the Health badge below) — same source data
-  // positionHealth's delta factor already reads, just also surfacing
-  // gamma/theta/vega, which until now were computed by priceCombo but never
-  // displayed anywhere in either mode.
-  const displayGreeks = isCompareMode ? trackedGreeks?.breakdown ?? null : result.breakdown;
-  const fmtGreek = (v: number | undefined, decimals = 2) => (v == null ? "-" : `${v >= 0 ? "+" : ""}${v.toFixed(decimals)}`);
 
   const { pop, breakevens } = useMemo(() => probabilityOfProfit(activeLegs, spot), [activeLegs, spot]);
 
@@ -1172,17 +1175,15 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     performSwitchToAnalysis(source);
   }, [isCompareMode, trackedDirty, performSwitchToAnalysis]);
 
-  const legToolbar = (
+  // Analysis ↔ compare mode switch — split out of legToolbar (2026-09-07)
+  // and rendered instead next to the ticker symbol in PayoffChart.tsx's
+  // header, alongside the health badge — per xue's request: both were easy
+  // to miss buried in the crowded left-panel toolbar row, and the ticker
+  // symbol next to the chart is what a person's eye actually goes to first.
+  // legToolbar itself (+, 清空, 策略库, 加入模拟仓) keeps rendering in the
+  // same left-panel row it always has; only the switch button moved.
+  const modeSwitchButton = (
     <>
-      {/* Analysis ↔ compare mode switch — lives here, first in the toolbar
-          (left of "+"), per xue's request 2026-09-06: 切换按钮, +, 删除, 策略库.
-          Previously sat in AppHeader.tsx between the preset picker and the
-          symbol field; moved into legToolbar so it renders in whichever row
-          this toolbar itself renders in (the 开仓价/开仓日期 row in analysis
-          mode, the "开仓组合" header row in compare mode — see
-          LegListSection.tsx). LegPanelTitleRow.tsx no longer owns any of
-          this, including the "对比模式" text badge (removed per xue's
-          request) — it now only shows the strategy badge and leg count. */}
       {!simOrigin && !isCompareMode && legs.length > 0 && (
         <button
           onClick={handleSwitchToCompare}
@@ -1231,6 +1232,11 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           )}
         </DropdownMenu>
       )}
+    </>
+  );
+
+  const legToolbar = (
+    <>
       <button
         onClick={addLeg}
         disabled={legs.length >= 10}
@@ -1380,22 +1386,24 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   </div>
                 </div>
               )}
-            {/* flex-wrap (not nowrap+shrink-0): once the net-Greeks readout
-                was added alongside pop/breakeven, the row's min-content
-                width could exceed this column's width — with nowrap that
-                silently pushed content outside the panel's
-                clipped/auto-scrolling bounds, hiding it with no visual sign
-                anything was missing. Wrapping keeps every item visible, just
-                on a second line when the column is too narrow. Fixed
+            {/* flex-wrap (not nowrap+shrink-0): kept even after the
+                net-Greeks readout was removed (2026-09-07) — the pop/
+                breakeven block alone can still exceed this column's width
+                on a narrow left panel, and with nowrap that silently pushed
+                content outside the panel's clipped/auto-scrolling bounds,
+                hiding it with no visual sign anything was missing. Fixed
                 2026-09-06 — see claude/analysis-compare-mode-review-2026-09-06.md.
-                The health badge itself no longer lives in this row — moved
-                2026-09-06 down to sit beside 保存策略组合/保存追踪快照 (see
-                LegListSection.tsx/TrackedComboSection.tsx) per xue's
-                request, since that's a calmer landing spot than this
-                already-crowded header row. */}
+                The health badge itself no longer lives in this row. It sat
+                beside 保存策略组合/保存追踪快照 (LegListSection.tsx/
+                TrackedComboSection.tsx) from 2026-09-06, then moved again
+                2026-09-07 to PayoffChart.tsx's header, next to the ticker
+                symbol, alongside the mode-switch button (formerly the first
+                item in legToolbar) — per xue's request, since that's what
+                the eye actually goes to first, more than a spot buried in
+                the left panel. */}
             <div className="col-start-2 row-start-1 ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
               {activeLegs.length > 0 && pop > 0 && (
-                <div className="flex shrink-0 items-center gap-2 border-r border-slate-800 pr-2">
+                <div className="flex shrink-0 items-center gap-2">
                   <div className="flex items-baseline gap-1">
                     <span className="whitespace-nowrap text-[10px] text-slate-500">{t("leg.pop")}</span>
                     <span className={`text-base font-bold tabular-nums leading-none ${
@@ -1412,32 +1420,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   )}
                 </div>
               )}
-              {displayGreeks && (activeLegs.length > 0 || activeTrackedLegs) && (
-                // flex-wrap (not shrink-0): on a narrow left panel these 4
-                // stats plus the pop/breakeven block and the health badge
-                // no longer fit on one line — letting this group itself
-                // break into two rows keeps everything visible instead of
-                // this one block alone forcing the whole row past the
-                // panel's right edge (see the wrap note above).
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 border-r border-slate-800 pr-2" title={t("greeks.hint")}>
-                  <div className="flex items-baseline gap-1">
-                    <Term titleKey="glossary.delta" descKey="glossary.deltaDesc" className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netDelta")}</Term>
-                    <span className="whitespace-nowrap text-xs font-semibold tabular-nums text-sky-300">{fmtGreek(displayGreeks.delta)}</span>
-                  </div>
-                  <div className="flex items-baseline gap-1">
-                    <Term titleKey="glossary.theta" descKey="glossary.thetaDesc" className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netTheta")}</Term>
-                    <span className={`whitespace-nowrap text-xs font-semibold tabular-nums ${displayGreeks.theta >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{fmtGreek(displayGreeks.theta)}</span>
-                  </div>
-                  <div className="flex items-baseline gap-1">
-                    <Term titleKey="glossary.vega" descKey="glossary.vegaDesc" className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netVega")}</Term>
-                    <span className="whitespace-nowrap text-xs font-semibold tabular-nums text-sky-300">{fmtGreek(displayGreeks.vega)}</span>
-                  </div>
-                  <div className="flex items-baseline gap-1">
-                    <Term titleKey="glossary.gamma" descKey="glossary.gammaDesc" className="whitespace-nowrap text-[10px] text-slate-500">{t("greeks.netGamma")}</Term>
-                    <span className="whitespace-nowrap text-xs font-semibold tabular-nums text-sky-300">{fmtGreek(displayGreeks.gamma, 3)}</span>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
 
@@ -1448,14 +1430,9 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             activeSnapshotId={activeSnapshotId}
             onUpdateSnapshotTime={handleUpdateSnapshotTime}
             legToolbar={legToolbar}
-            positionHealth={positionHealth}
             spot={spot}
             openingAt={openingAt}
             activeLegs={activeLegs}
-            effectiveTrackedSpot={effectiveTrackedSpot}
-            liveSpot={liveTrackedSpot}
-            activeTrackedLegs={activeTrackedLegs}
-            effectiveDaysElapsed={effectiveDaysElapsed}
             legs={legs}
             selectedCount={selectedCount}
             selectedLegIds={selectedLegIds}
@@ -1491,7 +1468,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               onDeleteSnapshot={handleDeleteSnapshot}
               onSaveTracked={handleSaveTracked}
               trackedDirty={trackedDirty}
-              positionHealth={positionHealth}
               trackedResult={trackedResult}
               spot={spot}
               activeLegs={activeLegs}
@@ -1544,6 +1520,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 spot={spot}
                 shifts={shifts}
                 symbol={symbol}
+                positionHealth={positionHealth}
+                modeSwitchButton={modeSwitchButton}
                 pop={pop}
                 breakevens={breakevens}
                 trackedLegs={activeTrackedLegs ?? undefined}

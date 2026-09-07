@@ -61,6 +61,12 @@ export default function RollComparisonChart({ beforeLegs, afterLegs, spot }: Pro
   if (beforePts.length < 2 || afterPts.length < 2) return null;
 
   const { beforePath, afterPath, zeroY } = buildGeometry(beforePts, afterPts);
+  // A same-strike, same-net-cost duration roll genuinely produces identical
+  // (or near-identical) curves — see RollDialog.tsx's afterLegs comment.
+  // Surfaced as a note rather than left silent so it doesn't read as the
+  // chart being broken/frozen; tolerance is intentionally loose (this is a
+  // "why does this look the same" explainer, not a precise threshold).
+  const nearlyIdentical = beforePts.every((p, i) => Math.abs(p.pnl - afterPts[i].pnl) < 0.5);
   const spotXIndex = beforePts.reduce(
     (best, p, i) => (Math.abs(p.spot - spot) < Math.abs(beforePts[best].spot - spot) ? i : best),
     0,
@@ -96,6 +102,10 @@ export default function RollComparisonChart({ beforeLegs, afterLegs, spot }: Pro
         <path d={beforePath} fill="none" stroke="#94a3b8" strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" strokeDasharray="3,2" />
         <path d={afterPath} fill="none" stroke="#38bdf8" strokeWidth={1.75} strokeLinejoin="round" strokeLinecap="round" />
       </svg>
+
+      {nearlyIdentical && (
+        <p className="mt-2 text-[10px] leading-relaxed text-slate-500">{t("roll.compareSameShapeNote")}</p>
+      )}
 
       <div className="mt-2 grid grid-cols-2 gap-2 text-[10px] tabular-nums">
         <div className="rounded border border-slate-700/50 bg-slate-900/40 p-1.5">

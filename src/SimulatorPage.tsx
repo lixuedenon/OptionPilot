@@ -34,7 +34,7 @@ import ProtectDialog from "@/components/ProtectDialog";
 import HedgeDialog from "@/components/HedgeDialog";
 import StrategyBadge from "@/components/StrategyBadge";
 import { matchStrategy } from "@/lib/matchStrategy";
-import { ConfirmResetAccountDialog, HelpPanel } from "@/components/dialogs";
+import { ConfirmResetAccountDialog, HelpPanel, isGuideDismissed } from "@/components/dialogs";
 import SimStatsPanel from "@/components/SimStatsPanel";
 import { computeSimStats } from "@/lib/simStats";
 
@@ -588,7 +588,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
   // into the simulator, mirroring analysis/compare mode's showAnalysisGuide/
   // showCompareGuide in App.tsx; helpOpen is the dismissible re-open via the
   // header's new "使用说明" button (this module had no such button before).
-  const [showGuide, setShowGuide] = useState(true);
+  const [showGuide, setShowGuide] = useState(() => !isGuideDismissed("simulator"));
   const [helpOpen, setHelpOpen] = useState(false);
 
   useEffect(() => {

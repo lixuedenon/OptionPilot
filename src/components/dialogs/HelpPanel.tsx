@@ -1,8 +1,32 @@
 // src/components/dialogs/HelpPanel.tsx
+import { useState, useCallback } from "react";
 import { X } from "lucide-react";
 import { useI18n } from "@/i18n/I18nContext";
 
 export type HelpModuleId = "analysis" | "compare" | "simulator";
+
+// Persistent "don't show again" for the gate variant (2026-09-07). Separate
+// localStorage key per module so dismissing one module's first-entry guide
+// doesn't affect the other two. Exported so App.tsx/SimulatorPage.tsx can
+// fold this into their initial-open state and skip the gate entirely on
+// future visits instead of flashing it open for a frame before it closes.
+const GUIDE_DISMISSED_PREFIX = "optionpilot.guideDismissed.";
+
+export function isGuideDismissed(moduleId: HelpModuleId): boolean {
+  try {
+    return localStorage.getItem(GUIDE_DISMISSED_PREFIX + moduleId) === "1";
+  } catch {
+    return false; // storage unavailable (private mode, etc.) — fail open, just show the gate
+  }
+}
+
+function setGuideDismissed(moduleId: HelpModuleId) {
+  try {
+    localStorage.setItem(GUIDE_DISMISSED_PREFIX + moduleId, "1");
+  } catch {
+    // best-effort only — worst case the gate reappears next time
+  }
+}
 
 // Per-module usage guide content (2026-09-06). Previously this panel always
 // showed one generic doc (build/scenario/preset/tracking/chart/data) mixing
@@ -61,6 +85,12 @@ export default function HelpPanel({ moduleId, onClose, variant = "info" }: Props
   const { t } = useI18n();
   const isGate = variant === "gate";
   const { titleKey, sections } = MODULE_SECTIONS[moduleId];
+  const [dontShowAgain, setDontShowAgain] = useState(false);
+
+  const handleContinue = useCallback(() => {
+    if (dontShowAgain) setGuideDismissed(moduleId);
+    onClose();
+  }, [dontShowAgain, moduleId, onClose]);
 
   return (
     <div
@@ -88,9 +118,18 @@ export default function HelpPanel({ moduleId, onClose, variant = "info" }: Props
           ))}
         </div>
         {isGate && (
-          <div className="mt-5 flex justify-end">
+          <div className="mt-5 flex items-center justify-between">
+            <label className="flex items-center gap-2 text-[11px] text-slate-400">
+              <input
+                type="checkbox"
+                checked={dontShowAgain}
+                onChange={(e) => setDontShowAgain(e.target.checked)}
+                className="accent-emerald-500"
+              />
+              {t("help.gateDontShowAgain")}
+            </label>
             <button
-              onClick={onClose}
+              onClick={handleContinue}
               className="rounded-md bg-emerald-600 px-4 py-2 text-[12px] font-semibold text-white transition hover:bg-emerald-500"
             >
               {t("help.gateContinue")}

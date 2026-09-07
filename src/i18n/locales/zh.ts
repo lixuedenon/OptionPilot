@@ -40,11 +40,6 @@ const zh: Dict = {
   "leg.switchSourceSnapshot": "或选择一条快照",
   "leg.pop": "到期盈利",
   "leg.breakeven": "盈亏平衡",
-  "greeks.netDelta": "净Delta",
-  "greeks.netTheta": "净Theta",
-  "greeks.netVega": "净Vega",
-  "greeks.netGamma": "净Gamma",
-  "greeks.hint": "整个组合的净希腊值：Delta=方向暴露，Theta=每天的时间价值损益，Vega=每1个波动率点的敞口，Gamma=Delta本身随股价变化的速度。分析模式下随情景滑块变化；对比模式下是「今日组合」当前的真实值。",
   "health.title": "健康度",
   // ── position health (src/lib/positionHealth.ts) ── computeHealth() takes
   // `t` and builds every label/note/meaning/summary string from these keys
@@ -193,6 +188,7 @@ const zh: Dict = {
   // analysis+compare+data content into one doc shown everywhere, and the
   // home page's old catch-all "整体说明书" section, both removed 2026-09-06 ──
   "help.gateContinue": "明白了，继续",
+  "help.gateDontShowAgain": "不再显示",
 
   "help.moduleAnalysisTitle": "分析模式使用说明",
   "help.moduleAnalysisBuild": "策略构建",
@@ -352,14 +348,6 @@ const zh: Dict = {
   "sim.statsEmptyHint": "还没有已平仓的交易，统计会在第一笔平仓后开始累积",
 
   // ── 术语悬浮提示（2026-09，见 Term.tsx）：点一下术语标签弹出一句话定义 ──
-  "glossary.delta": "Delta（净）",
-  "glossary.deltaDesc": "衡量组合价值对股价每变动$1的敏感度。正值＝股价涨你赚，负值＝股价跌你赚；净值是所有腿位Delta的加权和。",
-  "glossary.theta": "Theta（净）",
-  "glossary.thetaDesc": "衡量组合价值每过一天（其他条件不变）的变化。多数卖方策略希望这个数是正的——时间流逝对你有利。",
-  "glossary.vega": "Vega（净）",
-  "glossary.vegaDesc": "衡量组合价值对隐含波动率每变动1个百分点的敏感度。正值＝波动率升你赚，负值＝波动率跌你赚。",
-  "glossary.gamma": "Gamma（净）",
-  "glossary.gammaDesc": "衡量Delta本身随股价变动的变化速度。Gamma越大，股价一动Delta跟着变得越快，仓位的方向性风险越不稳定。",
   "glossary.marginUsed": "保证金占用",
   "glossary.marginUsedDesc": "券商为担保这笔仓位可能的亏损而冻结的资金，不是你的实际亏损；按标准券商规则动态计算，不是无脑按最坏情况全额预留。",
   "sim.closeThisLeg": "平掉这条腿",
@@ -480,6 +468,7 @@ const zh: Dict = {
   "roll.compareBefore": "展期前",
   "roll.compareAfter": "展期后",
   "roll.compareMaxLoss": "最大亏损",
+  "roll.compareSameShapeNote": "两条曲线几乎重合：行权价和权利金变化很小，说明这次展期主要是换取更多时间/降低提前指派风险，不是改变到期损益结构——这类效果本来就不会体现在到期盈亏图上。",
 
   // ── protect dialog ──
   "protect.titleProtect": "保护",

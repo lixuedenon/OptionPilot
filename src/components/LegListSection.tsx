@@ -3,12 +3,9 @@ import { Clock, Ban, Trash2, Plus, Save } from "lucide-react";
 import { useMemo, type ReactNode } from "react";
 import type { Leg } from "@/lib/types";
 import type { SavedStrategy } from "@/lib/savedStrategies";
-import type { HealthResult } from "@/lib/positionHealth";
-import { weightedAvgIV } from "@/lib/pricing";
 import { formatDateInput, parseDateInput } from "@/lib/dateUtils";
 import { explainLegRoles } from "@/lib/legRoles";
 import LegRow from "@/components/LegRow";
-import PositionHealthBadge from "@/components/PositionHealthBadge";
 import { useI18n } from "@/i18n/I18nContext";
 
 // This is the App.tsx split's second step (see the AppHeader extraction
@@ -25,25 +22,10 @@ interface Props {
   activeSnapshotId: string | null;
   onUpdateSnapshotTime: (snapshotId: string, savedAt: number) => void;
   legToolbar: ReactNode;
-  // Analysis mode's health badge only — App.tsx passes the same
-  // positionHealth value to TrackedComboSection too, but that component
-  // renders it next to 保存追踪快照 instead; this component only shows it
-  // (next to 保存策略组合) when !isCompareMode, so the badge doesn't appear
-  // twice at once. See App.tsx's positionHealth comment for what combo it's
-  // actually computed from in each mode.
-  positionHealth: HealthResult | null;
 
   spot: number;
   openingAt: number;
   activeLegs: Leg[];
-  effectiveTrackedSpot: number;
-  // Real live market quote, decoupled from effectiveTrackedSpot — shown as
-  // the "当前" spot number here instead of the back-solved value, which
-  // keeps feeding the IV/attribution math elsewhere. Null when no quote is
-  // available yet (falls back to effectiveTrackedSpot for display too).
-  liveSpot: number | null;
-  activeTrackedLegs: Leg[] | null;
-  effectiveDaysElapsed: number;
 
   legs: Leg[];
   selectedCount: number;
@@ -79,14 +61,9 @@ export default function LegListSection({
   activeSnapshotId,
   onUpdateSnapshotTime,
   legToolbar,
-  positionHealth,
   spot,
   openingAt,
   activeLegs,
-  effectiveTrackedSpot,
-  liveSpot,
-  activeTrackedLegs,
-  effectiveDaysElapsed,
   legs,
   selectedCount,
   selectedLegIds,
@@ -166,40 +143,12 @@ export default function LegListSection({
             </div>
           </div>
         )}
-        {isCompareMode && (() => {
-          const openIV = spot > 0 ? weightedAvgIV(activeLegs, spot) : 0;
-          const currSpot = effectiveTrackedSpot;
-          const currIV = currSpot > 0 ? weightedAvgIV(activeTrackedLegs ?? [], currSpot) : 0;
-          // Display-only: the "当前" spot number shows the real market
-          // quote when available, NOT currSpot — IV above still uses
-          // currSpot so it stays consistent with the tracked legs' actual
-          // premiums (see the liveSpot prop comment).
-          const displaySpot = liveSpot ?? currSpot;
-          const spotChg = displaySpot - spot;
-          const ivChg = openIV > 0 && currIV > 0 ? (currIV - openIV) * 100 : 0;
-          return (
-            <div className="mb-1 grid grid-cols-3 gap-1.5 rounded-lg border border-slate-800 bg-slate-900/40 p-2 text-[10px]">
-              <div className="flex flex-col gap-0.5">
-                <span className="text-slate-500">{t("compare.spot")}</span>
-                <span className="tabular-nums text-slate-300">{t("compare.openLabel")} <span className="font-semibold text-emerald-400">{spot.toFixed(2)}</span></span>
-                <span className="tabular-nums text-slate-300">{t("compare.currentLabel")} <span className="font-semibold text-sky-400">{displaySpot.toFixed(2)}</span></span>
-                <span className={`tabular-nums font-semibold ${spotChg >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{spotChg >= 0 ? "+" : ""}{spotChg.toFixed(2)} ({spot > 0 ? (spotChg / spot * 100).toFixed(2) : "0.00"}%)</span>
-              </div>
-              <div className="flex flex-col gap-0.5">
-                <span className="text-slate-500">{t("compare.timeDecay")}</span>
-                <span className="tabular-nums text-slate-300">{t("compare.openLabel")} <span className="font-semibold text-emerald-400">{activeLegs.length > 0 ? Math.round(Math.max(...activeLegs.map((l) => l.dte))) : "-"}</span> {t("compare.days")}</span>
-                <span className="tabular-nums text-slate-300">{t("compare.currentLabel")} <span className="font-semibold text-sky-400">{activeLegs.length > 0 ? Math.max(0, Math.round(Math.max(...activeLegs.map((l) => l.dte)) - effectiveDaysElapsed)) : "-"}</span> {t("compare.days")}</span>
-                <span className="tabular-nums font-semibold text-amber-400">{t("compare.elapsed")} {Math.round(effectiveDaysElapsed)} {t("compare.days")}</span>
-              </div>
-              <div className="flex flex-col gap-0.5">
-                <span className="text-slate-500">{t("compare.iv")}</span>
-                <span className="tabular-nums text-slate-300">{t("compare.openLabel")} <span className="font-semibold text-emerald-400">{openIV > 0 ? (openIV * 100).toFixed(2) : "-"}%</span></span>
-                <span className="tabular-nums text-slate-300">{t("compare.currentLabel")} <span className="font-semibold text-sky-400">{currIV > 0 ? (currIV * 100).toFixed(2) : "-"}%</span></span>
-                <span className={`tabular-nums font-semibold ${ivChg >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{ivChg >= 0 ? "+" : ""}{ivChg.toFixed(2)}pp</span>
-              </div>
-            </div>
-          );
-        })()}
+        {/* The compare-mode 股价/时间流逝/隐含波动率 stats grid that used to
+            render here was removed 2026-09-07 — it was a near-duplicate of
+            TrackedComboSection.tsx's own grid just below it (same three
+            columns, computed from the same activeLegs/activeTrackedLegs/
+            spot values), except that one is a strict superset: it adds a
+            fourth 持仓盈亏 column. Per xue's request, only one survives. */}
         {legs.length > 0 && (
           <div className="mb-1 flex items-center gap-2 rounded border border-slate-800 bg-slate-900/40 px-2 py-1">
             <label className="flex shrink-0 items-center gap-1.5 text-[10px] text-slate-400">
@@ -233,7 +182,6 @@ export default function LegListSection({
                   </button>
                 </>
               )}
-              {!isCompareMode && positionHealth && <PositionHealthBadge health={positionHealth} />}
               <button
                 onClick={onSaveStrategy}
                 disabled={!canSaveStrategy}
