@@ -3,7 +3,7 @@ import { useMemo, useState, useEffect, useRef, useCallback, type ReactNode } fro
 import type { Leg, Shifts } from "@/lib/types";
 import type { HealthResult } from "@/lib/positionHealth";
 import { blackScholes } from "@/lib/bs";
-import { resolveOpeningLeg } from "@/lib/pricing";
+import { resolveOpeningLeg, impliedVol } from "@/lib/pricing";
 import { useI18n } from "@/i18n/I18nContext";
 import { RefreshCw } from "lucide-react";
 import PositionHealthBadge from "@/components/PositionHealthBadge";
@@ -67,15 +67,8 @@ const POINTS = 200;
 const RATE = 0.05;
 const PAD = { t: 12, r: 16, b: 32, l: 52 };
 
-function impliedVol(spot: number, strike: number, dte: number, premium: number, type: "call" | "put"): number {
-  let lo = 0.01, hi = 5.0;
-  for (let i = 0; i < 60; i++) {
-    const mid = (lo + hi) / 2;
-    const p = blackScholes({ spot, strike, dte, vol: mid, rate: RATE, type }).price;
-    if (p < premium) lo = mid; else hi = mid;
-  }
-  return (lo + hi) / 2;
-}
+// impliedVol lives in lib/pricing.ts — imported above, not redefined here
+// (used to be a byte-for-byte duplicate of pricing.ts's version).
 
 function calcPnL(legs: Leg[], spot: number, shifts: Shifts, sTest: number): number {
   let pnl = 0;

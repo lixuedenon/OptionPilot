@@ -779,17 +779,10 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
   const openHedge = async (pos: SimPosition, triggeringLegId: string) => {
     setLegActionLoading(triggeringLegId);
     try {
-      const spot = await fetchSpotPrice(pos.symbol);
-      const liveLegs = await Promise.all(pos.legs.map(async (l) => {
-        if (l.kind === "stock" || l.disabled) return l;
-        const currentDte = Math.max(0, Math.round(l.dte - daysSince(pos.openedAt)));
-        try {
-          const result = await fetchLegPremium(pos.symbol, l.type, l.strike, currentDte, true);
-          return { ...l, premium: result.premium, dte: result.actualDte };
-        } catch {
-          return l;
-        }
-      }));
+      // Was a hand-rolled Promise.all duplicating refreshLegs's own fetch
+      // loop (same skip-stock/skip-disabled logic) — reuse the shared
+      // helper instead of maintaining a second copy of it.
+      const { spot, legs: liveLegs } = await refreshLegs(pos.symbol, pos.legs, pos.openedAt);
       setHedgeTarget({ pos, legs: liveLegs, spot });
     } catch (e) {
       window.alert(e instanceof Error ? e.message : t("sim.refreshFailed"));
@@ -963,19 +956,14 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
       for (const posId of selectedPositionIds) {
         const pos = positions.find((p) => p.id === posId);
         if (!pos || pos.status !== "open") continue;
-        const spot = await fetchSpotPrice(pos.symbol);
-        const liveLegs: Leg[] = [];
-        for (const l of pos.legs) {
-          if (l.disabled) continue;
-          if (l.kind === "stock") { liveLegs.push(l); continue; }
-          const currentDte = Math.max(0, Math.round(l.dte - daysSince(pos.openedAt)));
-          try {
-            const result = await fetchLegPremium(pos.symbol, l.type, l.strike, currentDte, true);
-            liveLegs.push({ ...l, premium: result.premium, dte: result.actualDte });
-          } catch {
-            liveLegs.push(l);
-          }
-        }
+        // Was a hand-rolled loop that dropped disabled legs entirely
+        // instead of passing them through unrefreshed — inconsistent with
+        // handleClose (single-position close), which stores whatever
+        // refreshLegs last put in `marks[pos.id].legs`, disabled legs
+        // included (computeMarkValue/ComparePanel already filter them back
+        // out wherever it matters). Reusing refreshLegs here fixes that
+        // inconsistency along with the duplication.
+        const { spot, legs: liveLegs } = await refreshLegs(pos.symbol, pos.legs, pos.openedAt);
         const { account: a, positions: p } = await closeSimPosition(posId, liveLegs, spot);
         setAccount(a);
         setPositions(p);
@@ -1013,21 +1001,11 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
         const legsToClose = pos.legs.filter((l) => legIds.includes(l.id));
         if (legsToClose.length === 0) continue;
 
-        const spot = await fetchSpotPrice(pos.symbol);
-        const liveLegs: Leg[] = [];
-        for (const l of legsToClose) {
-          if (l.kind === "stock") {
-            liveLegs.push(l);
-            continue;
-          }
-          const currentDte = Math.max(0, Math.round(l.dte - daysSince(pos.openedAt)));
-          try {
-            const result = await fetchLegPremium(pos.symbol, l.type, l.strike, currentDte, true);
-            liveLegs.push({ ...l, premium: result.premium, dte: result.actualDte });
-          } catch {
-            liveLegs.push(l);
-          }
-        }
+        // legsToClose can never include a disabled leg — the checkbox that
+        // populates selectedLegKeys only renders for `!l.disabled` legs —
+        // so refreshLegs's disabled-skip branch is simply never exercised
+        // here; safe to reuse instead of hand-rolling the same fetch loop.
+        const { spot, legs: liveLegs } = await refreshLegs(pos.symbol, legsToClose, pos.openedAt);
 
         const { account: a, positions: p } = await adjustSimPosition(posId, {
           removeLegIds: legIds,
