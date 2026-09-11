@@ -12,6 +12,14 @@ interface Props {
   trackedDays?: number;
   trackedVolShift?: number;
   disabled?: boolean;
+  // "解释当前情况" button (2026-09-09) — rendered in the header row next to
+  // the title, same slot for both modes (this row renders whether or not
+  // `disabled` is set, unlike `onReset` which only shows when enabled). A
+  // plain ReactNode so this component doesn't need to know anything about
+  // situationExplainer.ts/SituationExplainDialog — App.tsx builds the button
+  // and owns the dialog's open state, same pattern as PayoffChart.tsx's
+  // modeSwitchButton prop.
+  explainButton?: React.ReactNode;
 }
 
 function Slider({
@@ -99,15 +107,18 @@ function Slider({
   );
 }
 
-export default function ShiftSliders({ shifts, onChange, spot, maxDte, onReset, trackedSpot, trackedDays, trackedVolShift, disabled }: Props) {
+export default function ShiftSliders({ shifts, onChange, spot, maxDte, onReset, trackedSpot, trackedDays, trackedVolShift, disabled, explainButton }: Props) {
   const { t } = useI18n();
   return (
     <div className={disabled ? "pointer-events-none" : ""}>
       <div className="mb-1 flex items-center justify-between">
         <span className="text-[13px] font-bold text-sky-400">{disabled ? t("shift.scenarioFrozen") : t("shift.scenario")}</span>
-        {!disabled && (
-          <button onClick={onReset} className="text-[9px] font-semibold text-slate-500 transition hover:text-slate-300">{t("shift.reset")}</button>
-        )}
+        <div className="pointer-events-auto flex items-center gap-2">
+          {explainButton}
+          {!disabled && (
+            <button onClick={onReset} className="text-[9px] font-semibold text-slate-500 transition hover:text-slate-300">{t("shift.reset")}</button>
+          )}
+        </div>
       </div>
       <div className="flex flex-col gap-1">
         <Slider

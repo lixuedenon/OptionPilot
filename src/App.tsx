@@ -1,34 +1,34 @@
 // src/App.tsx
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Layers, Settings2, RefreshCw, TrendingUp, TrendingDown, ChevronDown, Trash2, Clock, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle, DollarSign, Ban, Wallet, GitCompare, History } from "lucide-react";
+import { Plus, Layers, Settings2, RefreshCw, TrendingUp, TrendingDown, ChevronDown, Trash2, Clock, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle, DollarSign, Ban, Wallet, GitCompare, History, Lightbulb } from "lucide-react";
 import type { Leg, Shifts } from "@/lib/types";
-import { priceCombo, probabilityOfProfit, weightedAvgIV, impliedSpotFromPremiums, attributePnl, maxProfitLoss, resolveOpeningLeg } from "@/lib/pricing";
-import { explainLegRoles } from "@/lib/legRoles";
 import PnlAttributionPanel from "@/components/PnlAttributionPanel";
-import { computeHealth } from "@/lib/positionHealth";
 import { matchStrategy } from "@/lib/matchStrategy";
 import LegListSection from "@/components/LegListSection";
 import ShiftSliders from "@/components/ShiftSliders";
 import PayoffChart, { type AlertInfo } from "@/components/PayoffChart";
 import { useStockQuote } from "@/lib/useStockQuote";
 import { loadRecentSymbols, addRecentSymbol } from "@/lib/recentSymbols";
-import { saveStrategy, overwriteStrategy, addTrackedSnapshot, updateSnapshotTime, deleteTrackedSnapshot, backfillTrackedSnapshots, serializeStrategyState, findDuplicate, type SavedStrategy, type TrackedSnapshot } from "@/lib/savedStrategies";
+import { serializeStrategyState } from "@/lib/savedStrategies";
 import DropdownMenu from "@/components/DropdownMenu";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
 import { useSavedStrategies } from "@/hooks/useSavedStrategies";
 import { useLegEditing } from "@/hooks/useLegEditing";
-import { nearestFridayDte, formatDateInput, parseDateInput, calendarDaysSince } from "@/lib/dateUtils";
-import { uid, blankLeg, PRESET_DTE_SET, asOpeningLeg } from "@/lib/legFactory";
-import { getOptionChain, peekResolvedChain, nearestStrikeToSpot, resolveFromCache } from "@/lib/optionChain";
+import { useComboAnalytics } from "@/hooks/useComboAnalytics";
+import { useStrategyOrchestration } from "@/hooks/useStrategyOrchestration";
+import { nearestFridayDte, formatDateInput, parseDateInput } from "@/lib/dateUtils";
+import { uid, PRESET_DTE_SET } from "@/lib/legFactory";
+import { getOptionChain, resolveFromCache } from "@/lib/optionChain";
 import { useI18n } from "@/i18n/I18nContext";
 import AppHeader from "@/components/AppHeader";
 import LegPanelTitleRow from "@/components/LegPanelTitleRow";
 import TrackedComboSection from "@/components/TrackedComboSection";
 import LegActionDialogs from "@/components/LegActionDialogs";
 import StrategyPersistenceDialogs from "@/components/StrategyPersistenceDialogs";
-import { AlertCard, HelpPanel, isGuideDismissed } from "@/components/dialogs";
+import { AlertCard, HelpPanel, isGuideDismissed, SituationExplainDialog } from "@/components/dialogs";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import { explainAnalysisScenario, explainTrackedPosition } from "@/lib/situationExplainer";
 
 interface AppProps {
   onBackHome?: () => void;
@@ -111,6 +111,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const { t } = useI18n();
 
   const [helpOpen, setHelpOpen] = useState(false);
+  // "解释当前情况" dialog (2026-09-09) — separate open-state from helpOpen,
+  // which is the static per-module usage guide; this one is generated content
+  // (situationExplainer.ts) describing whatever the sliders/tracked position
+  // currently show. See the situationExplanation useMemo below (placed after
+  // useComboAnalytics's destructure, since it depends on nearly everything
+  // that chain returns) for how the content itself is built.
+  const [explainOpen, setExplainOpen] = useState(false);
   // Per-module first-entry guides (2026-09-06; persistent "don't show
   // again" added 2026-09-07 — see HelpPanel.tsx's isGuideDismissed).
   // Analysis guide gates fresh entry into analysis mode (skipped for the
@@ -383,9 +390,80 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // P&L attribution's 交叉项).
   const liveTrackedSpot = quote && quote.price > 0 ? quote.price : null;
 
-  const activeLegs = useMemo(() => legs.filter((l) => !l.disabled), [legs]);
-  const activeTrackedLegs = useMemo(() => trackedLegs?.filter((l) => !l.disabled) ?? null, [trackedLegs]);
-  const isCompareMode = trackedLegs !== null;
+  // Pure-computation chain (activeLegs through pnlAttribution) lives in
+  // useComboAnalytics.ts — moved there verbatim, 2026-09-08 file-size pass.
+  // See that file's own header comment for why strategyName/canSaveStrategy
+  // and the showCompareGuide effect right below stay here instead.
+  // impliedSpot is returned by the hook (other future callers might want it)
+  // but nothing in App.tsx itself reads it directly — it only ever fed
+  // effectiveTrackedSpot inside the hook — so it's intentionally left out of
+  // this destructure. trackedGreeks used to be in the same situation
+  // ("only used internally", feeding positionHealth) but situationExplainer's
+  // compare-mode explainer needs the REAL Greeks (not trackedResult's
+  // hardcoded-zero breakdown, see that file's own comment), so it's
+  // destructured here now too.
+  const {
+    activeLegs,
+    activeTrackedLegs,
+    isCompareMode,
+    result,
+    scenarioPriceById,
+    effectiveTrackedSpot,
+    trackedGreeks,
+    positionHealth,
+    pop,
+    breakevens,
+    analysisAttribution,
+    attributionMaxAbs,
+    effectiveDaysElapsed,
+    trackedResult,
+    trackedLegPnlById,
+    trackedLegRolesById,
+    trackedStrategy,
+    trackedVolShift,
+    pnlAttribution,
+  } = useComboAnalytics({ legs, trackedLegs, trackedSpot, correctedSpot, trackedDaysElapsed, spot, shifts, trackingStrategyId, savedStrategies, t });
+
+  // "解释当前情况" content (2026-09-09) — rule-based, built from values this
+  // chain already computed (no new pricing math, no AI call, see
+  // situationExplainer.ts's own header comment). Placed right after the
+  // useComboAnalytics destructure since that's the first point every value
+  // it depends on (activeLegs/activeTrackedLegs/result/trackedResult/
+  // trackedGreeks/positionHealth/analysisAttribution/pnlAttribution/
+  // breakevens/effectiveTrackedSpot/effectiveDaysElapsed) is already in
+  // scope — see CLAUDE.md's TDZ-risk note on where new memos in this file
+  // need to go. Returns null when there's nothing to explain yet (no legs),
+  // same "return null" convention positionHealth.computeHealth uses.
+  const situationExplanation = useMemo(() => {
+    if (isCompareMode) {
+      if (!activeTrackedLegs || !trackedResult) return null;
+      return explainTrackedPosition({
+        legs: activeTrackedLegs,
+        openingSpot: spot,
+        trackedSpot: effectiveTrackedSpot,
+        daysElapsed: effectiveDaysElapsed,
+        result: trackedResult,
+        greeks: trackedGreeks,
+        health: positionHealth,
+        attribution: pnlAttribution,
+        breakevens,
+        t,
+      });
+    }
+    return explainAnalysisScenario({
+      legs: activeLegs,
+      spot,
+      shifts,
+      result,
+      health: positionHealth,
+      attribution: analysisAttribution,
+      breakevens,
+      t,
+    });
+  }, [
+    isCompareMode, activeTrackedLegs, trackedResult, spot, effectiveTrackedSpot, effectiveDaysElapsed,
+    trackedGreeks, positionHealth, pnlAttribution, breakevens, t, activeLegs, shifts, result, analysisAttribution,
+  ]);
 
   useEffect(() => {
     if (isCompareMode && !compareGuideShown.current) {
@@ -396,784 +474,49 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
   const strategyName = useMemo(() => matchStrategy(activeLegs, spot, customPresets), [activeLegs, spot, customPresets]);
   const canSaveStrategy = activeLegs.length > 0 && serializeStrategyState(symbol, legs, shifts, openingAt) !== strategyBaseline;
-  const result = useMemo(() => priceCombo(activeLegs, shifts, spot), [activeLegs, shifts, spot]);
 
-  const scenarioPriceById = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const pl of result.perLeg) m.set(pl.leg.id, pl.shifted);
-    return m;
-  }, [result]);
+  // Combo-mutation + strategy-persistence/mode-switch cluster — moved to
+  // useStrategyOrchestration.ts verbatim, 2026-09-08 (second file-size pass).
+  // CLAUDE.md flags this as the HIGHER-risk of the two "intentionally not
+  // yet split" clusters (historically the highest bug-density code in the
+  // project) — see that file's header comment for why it was bundled as one
+  // big hook rather than split further, and for why every ref below is
+  // passed through rather than returned.
+  const {
+    handleAddCustom,
+    addingToSim,
+    handleAddToSimAccount,
+    addLeg,
+    clearAllLegs,
+    applyPreset,
+    doClearAll,
+    updateTrackedLeg,
+    handleCorrectSpot,
+    comboDirection,
+    handleSaveStrategy,
+    handleOverwriteStrategy,
+    handleTrack,
+    handleSaveTracked,
+    handleSelectSnapshot,
+    handleDeleteSnapshot,
+    handleUpdateSnapshotTime,
+    handleOpenStrategy,
+    handleSwitchToCompare,
+    performSwitchToAnalysis,
+    handleSwitchToAnalysis,
+  } = useStrategyOrchestration({
+    symbol, legs, activeLegs, spot, shifts, openingAt,
+    setSymbol, setLegs, setSpot, setShifts, setOpeningAt, setCorrectedSpot, setCorrecting,
+    isCompareMode, trackedLegs, trackedSpot, trackedDirty, effectiveTrackedSpot,
+    setTrackedLegs, setTrackedSpot, setTrackedDaysElapsed, setTrackedDirty, setActiveSnapshotId, setConfirmSaveTrackedOpen,
+    savedStrategies, trackingStrategyId, trackedStrategy,
+    setSavedStrategies, setTrackingStrategyId, setStrategyBaseline, setSaveStrategyOpen, setManageStrategyOpen,
+    setConfirmClearOpen, setConfirmSwitchOpen,
+    legBaseSpot, legBaseSymbol, spotManuallySet,
+    pendingPreset, pendingPresetReplace, pendingLeaveAfterSave, pendingSaveTrackedAfterStrategy, pendingSwitchSource,
+    clearLegSelection, onBackHome, onAddToSimAccount, addCustomPresetToLibrary, quote, t,
+  });
 
-  // In compare mode, back-solve the implied stock price from the premiums the user
-  // enters for each tracked leg. Different premiums imply different stock prices —
-  // e.g. if a short straddle's call premium drops while put premium rises, the stock
-  // has fallen. Falls back to the live quote when back-solve fails (e.g. only stock legs).
-  const impliedSpot = useMemo(() => {
-    if (!isCompareMode || !activeTrackedLegs || !activeLegs || spot <= 0) return null;
-    return impliedSpotFromPremiums(activeLegs, activeTrackedLegs, spot);
-  }, [isCompareMode, activeTrackedLegs, activeLegs, spot]);
-
-  const effectiveTrackedSpot = correctedSpot ?? impliedSpot ?? trackedSpot ?? spot;
-
-  // Real Black-Scholes combo Greeks (delta/gamma/theta/vega) for "今日组合"
-  // at ITS OWN current spot/premiums, zero shift — compare mode's sliders
-  // are frozen read-only telemetry, not a scenario to rehearse (see
-  // ShiftSliders.tsx), so there's no "shifted" version of this to compute.
-  // Deliberately a separate memo from trackedResult below (which only does
-  // raw premium-difference P&L — no Black-Scholes needed for that — and
-  // still carries its own hardcoded-zero breakdown, unused elsewhere) so
-  // this doesn't disturb that already-working P&L math. Feeds Position
-  // Health's delta/gamma factors in compare mode. The net-Greeks numbers
-  // themselves are no longer displayed anywhere (removed 2026-09-07, xue's
-  // call — the four-number readout wasn't earning its header-row space) but
-  // this computation stays: positionHealth's Gamma-risk and Delta-normalized
-  // factors still consume trackedGreeks.breakdown below, so it can't be
-  // deleted, only its now-unused display counterpart (displayGreeks/
-  // fmtGreek/the Term-wrapped JSX panel) was.
-  const trackedGreeks = useMemo(() => {
-    if (!isCompareMode || !activeTrackedLegs || activeTrackedLegs.length === 0 || effectiveTrackedSpot <= 0) return null;
-    return priceCombo(activeTrackedLegs, { dS: 0, dT: 0, dV: 0 }, effectiveTrackedSpot);
-  }, [isCompareMode, activeTrackedLegs, effectiveTrackedSpot]);
-
-  // Position Health follows whichever combo is actually on screen: analysis
-  // mode's shifted opening combo (rehearsing the sliders — result.breakdown
-  // is itself computed at the live shifts, so all four factors, delta
-  // included, move together as the sliders move), or compare mode's real
-  // CURRENT tracked combo at zero shift — never the stale opening combo
-  // once something is actually being tracked. (Previously this always read
-  // the opening combo/`result` even in compare mode; fixed 2026-09-06 —
-  // see claude/analysis-compare-mode-review-2026-09-06.md.) Because this
-  // now keys off `activeTrackedLegs`/`effectiveTrackedSpot` — which change
-  // with whichever snapshot is selected — switching snapshots naturally
-  // gives each one its own health score, with no separate per-snapshot
-  // storage needed.
-  const positionHealth = useMemo(() => {
-    if (isCompareMode) {
-      if (!activeTrackedLegs || activeTrackedLegs.length === 0 || effectiveTrackedSpot <= 0 || !trackedGreeks) return null;
-      return computeHealth(activeTrackedLegs, effectiveTrackedSpot, { dS: 0, dT: 0, dV: 0 }, trackedGreeks.breakdown, t);
-    }
-    if (activeLegs.length === 0 || spot <= 0) return null;
-    return computeHealth(activeLegs, spot, shifts, result.breakdown, t);
-  }, [isCompareMode, activeTrackedLegs, effectiveTrackedSpot, trackedGreeks, activeLegs, spot, shifts, result, t]);
-
-  const { pop, breakevens } = useMemo(() => probabilityOfProfit(activeLegs, spot), [activeLegs, spot]);
-
-  // Analysis-mode P/L attribution — same attributePnl() used in tracking
-  // mode, just fed the slider's own dS/dT/dV instead of a tracked-vs-
-  // opening comparison. The sliders ARE the price/time/IV shift already;
-  // result.change is already the combo's total change under exactly those
-  // shifts, so this is a direct reuse, not new pricing logic. Only shown
-  // once at least one slider has actually moved — at rest all four numbers
-  // are zero and there's nothing useful to attribute.
-  const analysisAttribution = useMemo(() => {
-    if (isCompareMode || activeLegs.length === 0 || spot <= 0) return null;
-    if (shifts.dS === 0 && shifts.dT === 0 && shifts.dV === 0) return null;
-    return attributePnl(activeLegs, spot, shifts.dS, shifts.dT, shifts.dV, result.change);
-  }, [isCompareMode, activeLegs, spot, shifts, result]);
-
-  // Fixed reference scale for the attribution bars in both modes — see
-  // PnlAttributionPanel's own comments on why this needs to be something
-  // that doesn't move with the slider. Both analysisAttribution and
-  // pnlAttribution are built from activeLegs/spot (the opening combo), so
-  // one shared scale computed the same way covers both panels.
-  const attributionMaxAbs = useMemo(() => {
-    if (activeLegs.length === 0 || spot <= 0) return 0.01;
-    const { maxProfit, maxLoss } = maxProfitLoss(activeLegs, spot);
-    return Math.max(Math.abs(maxProfit), Math.abs(maxLoss), 0.01);
-  }, [activeLegs, spot]);
-
-  // Days elapsed: derived from the DTE difference between opening and tracked legs,
-  // so it stays in sync when the user manually adjusts the tracked legs' DTE.
-  const effectiveDaysElapsed = useMemo(() => {
-    if (!isCompareMode || activeLegs.length === 0 || !activeTrackedLegs || activeTrackedLegs.length === 0) return trackedDaysElapsed;
-    const openMaxDte = Math.max(...activeLegs.filter((l) => l.kind !== "stock").map((l) => l.dte));
-    const trackedMaxDte = Math.max(...activeTrackedLegs.filter((l) => l.kind !== "stock").map((l) => l.dte));
-    const fromDte = Math.max(0, openMaxDte - trackedMaxDte);
-    return Math.max(fromDte, trackedDaysElapsed);
-  }, [isCompareMode, activeLegs, activeTrackedLegs, trackedDaysElapsed]);
-
-  const trackedResult = useMemo(() => {
-    if (!isCompareMode || !activeTrackedLegs) return null;
-
-    const currentSpot = effectiveTrackedSpot;
-    // Pair each tracked leg with its opening counterpart via
-    // resolveOpeningLeg (id-based, with fallbacks for pre-existing data —
-    // see its own comment in pricing.ts), not by raw array position —
-    // trackedLegs can be reordered (moveTrackedLeg) or grown independently
-    // of legs (a roll/hedge/protect added straight to the tracked side, see
-    // useLegEditing.ts), at which point
-    // `activeTrackedLegs[index]`/`activeLegs[index]` silently stop being
-    // "the same leg". A tracked leg with no resolvable opening leg falls
-    // through to `base = 0` below, same as the old "no opening leg at this
-    // index" fallback.
-    const openingById = new Map(activeLegs.map((l) => [l.id, l]));
-    let shiftedValue = 0;
-    let netPremium = 0;
-    const perLeg = activeTrackedLegs.map((leg, index) => {
-      const openingLeg = resolveOpeningLeg(leg, index, activeLegs, openingById);
-      const sign = leg.action === "buy" ? 1 : -1;
-      const openingSign = openingLeg?.action === "buy" ? 1 : -1;
-      const shifted = leg.kind === "stock" ? sign * (currentSpot - leg.strike) : sign * leg.premium;
-      const base = openingLeg
-        ? openingLeg.kind === "stock"
-          ? openingSign * (spot - openingLeg.strike)
-          : openingSign * openingLeg.premium
-        : 0;
-      const change = shifted - base;
-
-      shiftedValue += shifted;
-      netPremium += base;
-      return {
-        leg,
-        base,
-        shifted,
-        change: { delta: 0, gamma: 0, theta: 0, vega: 0, total: change },
-      };
-    });
-
-    return {
-      netPremium,
-      shiftedValue,
-      change: shiftedValue - netPremium,
-      breakdown: { delta: 0, gamma: 0, theta: 0, vega: 0, total: shiftedValue - netPremium },
-      perLeg,
-    };
-  }, [isCompareMode, activeTrackedLegs, activeLegs, effectiveTrackedSpot, spot]);
-
-  // Per-leg P&L for the tracked ("今日组合") list — trackedResult.perLeg
-  // already computes each tracked leg's change vs. its opening counterpart,
-  // this just re-keys it by id so LegRow can look its own value up the
-  // same way scenarioPriceById already works for the opening combo list.
-  const trackedLegPnlById = useMemo(() => {
-    const m = new Map<string, number>();
-    if (!trackedResult) return m;
-    for (const pl of trackedResult.perLeg) m.set(pl.leg.id, pl.change.total);
-    return m;
-  }, [trackedResult]);
-
-  // Same per-leg role explanation the analysis-mode leg list gets (see
-  // LegListSection.tsx), computed here separately for "today's combo"
-  // since that list is still rendered directly in App.tsx rather than
-  // through LegListSection — a role like "anchor leg" is relative to the
-  // CURRENT tracked strikes/premiums, which can differ from the opening
-  // combo's roles if the person has edited a tracked leg's premium.
-  const trackedLegRolesById = useMemo(() => {
-    const map = new Map<string, { label: string; explanation: string }>();
-    if (!trackedLegs) return map;
-    for (const r of explainLegRoles(trackedLegs)) map.set(r.legId, { label: r.label, explanation: r.explanation });
-    return map;
-  }, [trackedLegs]);
-
-  const trackedStrategy = trackingStrategyId ? savedStrategies.find((s) => s.id === trackingStrategyId) : undefined;
-
-  // Volatility difference between opening and tracked combos (in percentage points).
-  // Uses the current tracked legs (with time-adjusted DTE and user-updated premium) to back-solve
-  // the current IV, compared against the opening IV from the original legs.
-  // If the user updates the tracked premium to reflect the current market price, this shows the
-  // real implied vol change. If premium is unchanged, the IV shift reflects time decay's effect.
-  const trackedVolShift = useMemo(() => {
-    if (!isCompareMode || !activeTrackedLegs || spot <= 0) return undefined;
-    const openIV = weightedAvgIV(activeLegs, spot);
-    const trackedIV = weightedAvgIV(activeTrackedLegs, effectiveTrackedSpot);
-    if (openIV <= 0 || trackedIV <= 0) return undefined;
-    return (trackedIV - openIV) * 100;
-  }, [isCompareMode, activeTrackedLegs, activeLegs, spot, effectiveTrackedSpot]);
-
-  // P/L attribution — decomposes trackedResult.change (the real observed
-  // P&L move) into price/time/IV contributions. See attributePnl's own
-  // comments in pricing.ts for why the three don't sum exactly to the
-  // total and what the residual represents.
-  const pnlAttribution = useMemo(() => {
-    if (!isCompareMode || !trackedResult || activeLegs.length === 0 || spot <= 0) return null;
-    const dSpot = effectiveTrackedSpot - spot;
-    const dDays = effectiveDaysElapsed;
-    const dVolPct = trackedVolShift ?? 0;
-    return attributePnl(activeLegs, spot, dSpot, dDays, dVolPct, trackedResult.change);
-  }, [isCompareMode, trackedResult, activeLegs, spot, effectiveTrackedSpot, effectiveDaysElapsed, trackedVolShift]);
-
-  const handleAddCustom = useCallback(async (data: { name: string; desc: string; market: string; stocks: string; direction: string }) => {
-    const base = spot > 0 ? spot : (legs[0]?.strike || 100);
-    const norm = base / 100;
-    const normalizedLegs = activeLegs.map((l) => {
-      if (l.kind === "stock") {
-        return { ...l, strike: Math.round((l.strike / norm) * 100) / 100 };
-      }
-      return {
-        ...l,
-        strike: Math.round((l.strike / norm) * 100) / 100,
-        premium: Math.round((l.premium / norm) * 100) / 100,
-      };
-    });
-    await addCustomPresetToLibrary(data, normalizedLegs);
-  }, [legs, spot, activeLegs, addCustomPresetToLibrary]);
-
-  // Push the current analysis-mode combo straight into a new simulated
-  // position. Distinct from the simOrigin flow (which starts FROM the
-  // simulator and builds a combo here) — this is the reverse shortcut for
-  // when someone already has a combo built in ordinary analysis mode and
-  // wants to paper-trade it without rebuilding it a second time.
-  const [addingToSim, setAddingToSim] = useState(false);
-  const handleAddToSimAccount = useCallback(async () => {
-    if (!onAddToSimAccount || activeLegs.length === 0 || spot <= 0) return;
-    setAddingToSim(true);
-    try {
-      // openingAt carries over the combo's real opening date (e.g. restored
-      // from a saved strategy that was actually opened days/weeks ago) so
-      // the resulting sim position's clock starts from when the position
-      // was truly opened, not from the moment this button was clicked —
-      // otherwise every DTE/P&L figure downstream in the simulator is
-      // computed against the wrong elapsed time. See simAccount.ts's
-      // openSimPosition for the other half of this.
-      const result = await onAddToSimAccount({ symbol: symbol.trim(), legs: activeLegs, spot, openingAt });
-      if (!result.ok && result.needsSetup) {
-        window.alert(t("sim.needSetupFirst"));
-      }
-    } finally {
-      setAddingToSim(false);
-    }
-  }, [onAddToSimAccount, activeLegs, spot, symbol, openingAt, t]);
-
-  const addLeg = () => {
-    let strikeHint = spot > 0 ? Math.round(spot * 2) / 2 : 0;
-    if (spot > 0 && symbol.trim()) {
-      const cached = peekResolvedChain(symbol.trim(), nearestFridayDte(30));
-      if (cached) {
-        const atm = nearestStrikeToSpot(cached.calls, spot);
-        if (atm !== null) strikeHint = atm;
-      }
-    }
-    // Legs added purely via "+" (never through a preset) never had these refs
-    // set, so a later symbol change had nothing to compare against and the
-    // strike silently stayed frozen. Initialize them here the first time.
-    if (spot > 0 && legBaseSpot.current === 0) {
-      legBaseSpot.current = spot;
-      legBaseSymbol.current = symbol;
-    }
-    setLegs((prev) =>
-      prev.length < 10
-        ? [...prev, blankLeg(strikeHint)]
-        : prev
-    );
-  };
-  const clearAllLegs = () => {
-    setConfirmClearOpen(false);
-    if (isCompareMode && trackedDirty) {
-      setConfirmSaveTrackedOpen(true);
-      return;
-    }
-    doClearAll();
-  };
-
-  const applyPreset = (rawLegs: Leg[]) => {
-    if (spot > 0) {
-      const scale = spot / 100;
-      const scaled = rawLegs.map((l) => {
-        if (l.kind === "stock") {
-          return { ...l, id: uid(), strike: Math.round(spot * 100) / 100, shares: l.shares ?? 100 };
-        }
-        const targetDte = nearestFridayDte(l.dte);
-        const targetStrike = Math.round(l.strike * scale * 2) / 2;
-        const resolved = symbol.trim() ? resolveFromCache(symbol.trim(), l.type, targetStrike, targetDte) : null;
-        return {
-          ...l,
-          id: uid(),
-          strike: resolved ? resolved.strike : targetStrike,
-          premium: resolved ? resolved.premium : 0, // falls back to 0; per-leg auto-fill effect corrects it if not yet cached
-          dte: resolved ? resolved.dte : targetDte,
-        };
-      });
-      setLegs(scaled);
-      setShifts({ dS: 0, dT: 0, dV: 0 });
-      pendingPreset.current = null;
-      legBaseSpot.current = spot;
-      legBaseSymbol.current = symbol;
-      spotManuallySet.current = false;
-    } else {
-      pendingPreset.current = { name: "", rawLegs };
-      setLegs(rawLegs.map((l) => ({ ...l, id: uid(), dte: l.kind === "stock" ? l.dte : nearestFridayDte(l.dte) })));
-      setShifts({ dS: 0, dT: 0, dV: 0 });
-    }
-    setTrackedLegs(null);
-    setTrackingStrategyId(null);
-    setTrackedSpot(null);
-    setActiveSnapshotId(null);
-    setTrackedDirty(false);
-    setTrackedDaysElapsed(0);
-    setOpeningAt(Date.now());
-    setStrategyBaseline(null);
-    setCorrectedSpot(null);
-    clearLegSelection();
-  };
-
-  const doClearAll = () => {
-    setLegs([]);
-    setShifts({ dS: 0, dT: 0, dV: 0 });
-    setTrackedLegs(null);
-    setTrackingStrategyId(null);
-    setTrackedSpot(null);
-    setActiveSnapshotId(null);
-    setCorrectedSpot(null);
-    setTrackedDirty(false);
-    setOpeningAt(Date.now());
-    legBaseSpot.current = 0;
-    legBaseSymbol.current = "";
-    setStrategyBaseline(null);
-    clearLegSelection();
-  };
-
-  const updateTrackedLeg = (id: string, patch: Partial<Leg>) => {
-    setTrackedLegs((prev) => prev?.map((l) => (l.id === id ? { ...l, ...patch } : l)) ?? null);
-    setTrackedDirty(true);
-    if (patch.premium !== undefined) setCorrectedSpot(null);
-  }
-
-  const handleCorrectSpot = useCallback(async () => {
-    setCorrecting(true);
-    try {
-      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stock-quote?symbol=${encodeURIComponent(symbol.trim())}`;
-      const resp = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-          "Content-Type": "application/json",
-        },
-      });
-      if (!resp.ok) {
-        const body = await resp.json().catch(() => ({}));
-        throw new Error(body.error || `Request failed (${resp.status})`);
-      }
-      const data = await resp.json();
-      if (typeof data.price !== "number" || isNaN(data.price) || data.price <= 0) {
-        throw new Error("Invalid price data");
-      }
-      setCorrectedSpot(data.price);
-    } catch (e) {
-      console.error("Failed to fetch quote for correction:", e);
-    } finally {
-      setCorrecting(false);
-    }
-  }, [symbol]);
-
-  const comboDirection = activeLegs.length > 0 && activeLegs.every((l) => l.action === "buy") ? "buy" : "sell";
-
-  // Shared by handleSaveTracked's normal path and its "save the strategy
-  // first, then attach the snapshot" fallback below — appends trackedLegs
-  // as a new TrackedSnapshot on the given (already-saved) strategy id.
-  const saveTrackedSnapshotTo = useCallback(async (strategyId: string) => {
-    if (!trackedLegs) return;
-    const updated = await addTrackedSnapshot(strategyId, trackedLegs, trackedSpot ?? spot, Date.now());
-    setSavedStrategies(updated);
-    const updatedStrategy = updated.find((s) => s.id === strategyId);
-    const newSnaps = updatedStrategy?.trackedSnapshots ?? [];
-    if (newSnaps.length > 0) setActiveSnapshotId(newSnaps[newSnaps.length - 1].id);
-    setTrackedDirty(false);
-  }, [trackedLegs, trackedSpot, spot]);
-
-  const handleSaveStrategy = useCallback(async (filename: string) => {
-    const updated = await saveStrategy({ filename, symbol, spot, legs: activeLegs, shifts, openingAt });
-    setSavedStrategies(updated);
-    setSaveStrategyOpen(false);
-    setStrategyBaseline(serializeStrategyState(symbol, legs, shifts, openingAt));
-    if (pendingPresetReplace.current) {
-      const rawLegs = pendingPresetReplace.current;
-      pendingPresetReplace.current = null;
-      applyPreset(rawLegs);
-    }
-    if (pendingLeaveAfterSave.current) {
-      pendingLeaveAfterSave.current = false;
-      onBackHome?.();
-    }
-    if (pendingSaveTrackedAfterStrategy.current) {
-      pendingSaveTrackedAfterStrategy.current = false;
-      // saveStrategy() unshifts the new record, so it's always updated[0].
-      const newId = updated[0]?.id;
-      if (newId) {
-        setTrackingStrategyId(newId);
-        await saveTrackedSnapshotTo(newId);
-      }
-    }
-  }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset, onBackHome, saveTrackedSnapshotTo]);
-
-  const handleOverwriteStrategy = useCallback(async (id: string, filename: string) => {
-    const updated = await overwriteStrategy(id, { filename, symbol, spot, legs: activeLegs, shifts, openingAt });
-    setSavedStrategies(updated);
-    setSaveStrategyOpen(false);
-    setStrategyBaseline(serializeStrategyState(symbol, legs, shifts, openingAt));
-    if (pendingPresetReplace.current) {
-      const rawLegs = pendingPresetReplace.current;
-      pendingPresetReplace.current = null;
-      applyPreset(rawLegs);
-    }
-    if (pendingLeaveAfterSave.current) {
-      pendingLeaveAfterSave.current = false;
-      onBackHome?.();
-    }
-    if (pendingSaveTrackedAfterStrategy.current) {
-      pendingSaveTrackedAfterStrategy.current = false;
-      setTrackingStrategyId(id);
-      await saveTrackedSnapshotTo(id);
-    }
-  }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset, onBackHome, saveTrackedSnapshotTo]);
-
-  const handleTrack = useCallback(async (s: SavedStrategy) => {
-    setSymbol(s.symbol);
-    setLegs(s.legs.map((l) => ({ ...l, id: uid() })));
-    setShifts({ dS: 0, dT: 0, dV: 0 });
-    setSpot(s.spot);
-    setOpeningAt(s.openingAt ?? s.createdAt);
-    legBaseSpot.current = s.spot;
-    legBaseSymbol.current = s.symbol;
-    spotManuallySet.current = true;
-
-    // Fill in any missed trading days since this strategy was last tracked
-    // before deciding what "最新快照" even means — reuses the Simulator
-    // Timeline's theoretical-backfill approach (historicalBackfill.ts) so
-    // "今日组合" doesn't default to a snapshot from days or weeks ago just
-    // because nobody happened to have the app open in between. Backfilled
-    // days are marked `estimated` and never overwrite a real, manually-saved
-    // snapshot for the same day (see backfillTrackedSnapshots).
-    const refreshedStrategies = await backfillTrackedSnapshots(s.id);
-    setSavedStrategies(refreshedStrategies);
-    const refreshed = refreshedStrategies.find((st) => st.id === s.id) ?? s;
-
-    // "今日组合" should open on whatever the person actually saw and saved
-    // last time (the newest real OR backfilled trackedSnapshot), not a
-    // fresh copy of the opening combo with the DTE merely decremented —
-    // that "recompute from opening" fallback is only correct when NO
-    // snapshot exists at all. Loading the opening combo here when a
-    // snapshot already exists would silently discard whatever the person
-    // had edited/recorded into that snapshot, which is exactly what this
-    // branch exists to avoid (see handleSelectSnapshot below, whose decay
-    // logic this mirrors).
-    const snaps = refreshed.trackedSnapshots ?? [];
-    const latestSnap = snaps.length > 0 ? snaps[snaps.length - 1] : null;
-    if (latestSnap) {
-      // Two different "days" here, easy to conflate (2026-09-04 bug): the
-      // snapshot's own legs were already decayed once, up to whatever
-      // moment it was saved — `calendarDaysSince(latestSnap.savedAt)` is
-      // exactly the ADDITIONAL decay needed to bring that dte current to
-      // right now, and nothing else should use it. The "已过X天" stat, by
-      // contrast, is meant to read as "how long ago did this position
-      // actually open" — that's `calendarDaysSince(s.openingAt ??
-      // s.createdAt)` regardless of when the snapshot happened to be saved.
-      // Reusing the snapshot-relative number for both meant reloading a
-      // same-day snapshot always showed "已过0天" even when the real
-      // opening date was days in the past.
-      //
-      // Both use calendarDaysBetween/calendarDaysSince (whole calendar
-      // days, e.g. via `Math.round` on local-midnight-to-local-midnight)
-      // rather than `daysSince` (a continuous count of 24h periods since
-      // the exact opening TIMESTAMP) — 2026-09-05 bug: a strategy opened
-      // 09-01 and checked on 09-04 showed "已过2天" instead of 3, because
-      // fewer than 3 full 24-hour periods had passed since the opening
-      // moment's time-of-day, even though 3 calendar days separate the two
-      // dates the way a person reads "开仓日 09-01" vs "今天 09-04". See
-      // dateUtils.ts's comment on daysBetweenLocalDates for the full story.
-      const snapshotDecay = calendarDaysSince(latestSnap.savedAt);
-      setTrackedDaysElapsed(calendarDaysSince(s.openingAt ?? s.createdAt));
-      setTrackedLegs(
-        latestSnap.legs.map((l) => ({
-          ...l,
-          id: uid(),
-          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - snapshotDecay),
-        })),
-      );
-      setTrackedSpot(latestSnap.spot);
-      setActiveSnapshotId(latestSnap.id);
-    } else {
-      const daysElapsed = calendarDaysSince(s.openingAt ?? s.createdAt);
-      setTrackedDaysElapsed(daysElapsed);
-      setTrackedLegs(
-        s.legs.map((l) => ({
-          ...l,
-          id: uid(),
-          // Record which opening leg (s.legs, about to become `legs`) this
-          // tracked leg was derived from — see types.ts's comment on
-          // openLegId. Must be captured before `id` above overwrites it.
-          openLegId: l.id,
-          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - daysElapsed),
-        })),
-      );
-      setTrackedSpot(s.spot);
-      setActiveSnapshotId(null);
-    }
-    setCorrectedSpot(null);
-    setTrackingStrategyId(s.id);
-    setTrackedDirty(false);
-    setManageStrategyOpen(false);
-    setStrategyBaseline(serializeStrategyState(s.symbol, s.legs, { dS: 0, dT: 0, dV: 0 }, s.openingAt ?? s.createdAt));
-    clearLegSelection();
-  }, []);
-
-  const handleSaveTracked = useCallback(async () => {
-    if (!trackedLegs) return;
-    if (!trackingStrategyId) {
-      // No backing SavedStrategy yet (e.g. entered compare mode directly via
-      // "切换到对比模式", or opened an existing strategy then switched
-      // straight into compare mode instead of going through "跟踪") —
-      // normally there's nowhere to attach a snapshot yet. But if the
-      // opening combo already matches an existing saved strategy exactly
-      // (same symbol/legs/shifts — findDuplicate is the same check
-      // SaveStrategyDialog itself runs before saving), there's no need to
-      // make the person re-save or "overwrite" anything just to get an id
-      // to attach a snapshot to — that strategy already exists untouched,
-      // silently adopt it and attach the snapshot straight to it. Only
-      // prompt to name/save a brand-new strategy when no match exists.
-      const existing = findDuplicate({ symbol, spot, legs: activeLegs, shifts }, savedStrategies);
-      if (existing) {
-        setTrackingStrategyId(existing.id);
-        await saveTrackedSnapshotTo(existing.id);
-        return;
-      }
-      pendingSaveTrackedAfterStrategy.current = true;
-      setSaveStrategyOpen(true);
-      return;
-    }
-    await saveTrackedSnapshotTo(trackingStrategyId);
-  }, [trackingStrategyId, trackedLegs, saveTrackedSnapshotTo, symbol, spot, activeLegs, shifts, savedStrategies]);
-
-  const handleSelectSnapshot = useCallback((snap: TrackedSnapshot) => {
-    // Same distinction as handleTrack's snapshot branch above: the snapshot's
-    // legs only need decaying by the time since IT was saved (snapshotDecay)
-    // to be current as of today, but "已过X天" should stay pinned to the
-    // real opening date (`openingAt`, unaffected by which snapshot happens
-    // to be selected) — not reset to ~0 just because the snapshot picked
-    // was saved recently.
-    const snapshotDecay = calendarDaysSince(snap.savedAt);
-    setTrackedDaysElapsed(calendarDaysSince(openingAt));
-    setTrackedLegs(
-      snap.legs.map((l) => ({
-        ...l,
-        id: uid(),
-        dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - snapshotDecay),
-      })),
-    );
-    setTrackedSpot(snap.spot);
-    setCorrectedSpot(null);
-    setActiveSnapshotId(snap.id);
-    setTrackedDirty(false);
-  }, [openingAt]);
-
-  const handleDeleteSnapshot = useCallback(async (snapshotId: string) => {
-    if (!trackingStrategyId) return;
-    const updated = await deleteTrackedSnapshot(trackingStrategyId, snapshotId);
-    setSavedStrategies(updated);
-    const updatedStrategy = updated.find((s) => s.id === trackingStrategyId);
-    const remainingSnaps = updatedStrategy?.trackedSnapshots ?? [];
-    if (remainingSnaps.length === 0) {
-      setActiveSnapshotId(null);
-    } else {
-      const last = remainingSnaps[remainingSnaps.length - 1];
-      handleSelectSnapshot(last);
-    }
-  }, [trackingStrategyId, handleSelectSnapshot]);
-
-  const handleUpdateSnapshotTime = useCallback(async (snapshotId: string, savedAt: number) => {
-    if (!trackingStrategyId) return;
-    const updated = await updateSnapshotTime(trackingStrategyId, snapshotId, savedAt);
-    setSavedStrategies(updated);
-    const daysElapsed = calendarDaysSince(savedAt);
-    // Same open-vs-snapshot distinction as handleTrack/handleSelectSnapshot
-    // above — "已过X天" tracks the real opening date, not this snapshot's
-    // (just-edited) saved time.
-    setTrackedDaysElapsed(calendarDaysSince(openingAt));
-    if (trackedLegs) {
-      setTrackedLegs(
-        trackedLegs.map((l) => ({
-          ...l,
-          id: uid(),
-          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - daysElapsed),
-        })),
-      );
-    }
-  }, [trackingStrategyId, trackedLegs, openingAt]);
-
-  const handleOpenStrategy = useCallback((s: SavedStrategy) => {
-    setSymbol(s.symbol);
-    setLegs(s.legs.map((l) => ({ ...l, id: uid() })));
-    setShifts(s.shifts);
-    setSpot(s.spot);
-    setOpeningAt(s.openingAt ?? s.createdAt);
-    legBaseSpot.current = s.spot;
-    legBaseSymbol.current = s.symbol;
-    spotManuallySet.current = true;
-    setTrackedLegs(null);
-    setTrackingStrategyId(null);
-    setTrackedSpot(null);
-    setActiveSnapshotId(null);
-    setTrackedDaysElapsed(0);
-    setCorrectedSpot(null);
-    setManageStrategyOpen(false);
-    setStrategyBaseline(serializeStrategyState(s.symbol, s.legs, s.shifts, s.openingAt ?? s.createdAt));
-    clearLegSelection();
-  }, [quote]);
-
-  // Direct switch from plain analysis mode into compare mode, carrying the
-  // legs/spot/openingAt currently being edited — the "live" equivalent of
-  // handleTrack() above, which does the same thing but reads from a
-  // persisted SavedStrategy instead of the in-editor state. No days have
-  // elapsed yet (we're switching right now), so trackedLegs starts as an
-  // exact copy of legs with no DTE reduction — "today" and "opening" are
-  // the same combo until the person edits the tracked side or time passes.
-  const handleSwitchToCompare = useCallback(async () => {
-    if (isCompareMode || legs.length === 0) return;
-    // The opening combo being edited right now might already BE an existing
-    // saved strategy — e.g. it was opened via "打开策略" (handleOpenStrategy
-    // deliberately leaves trackingStrategyId null, same as this function
-    // used to unconditionally do) or it was tracked earlier this session and
-    // then switched back to analysis mode (performSwitchToAnalysis also
-    // resets trackingStrategyId to null by design). Either way, if the combo
-    // still matches that strategy exactly, this compare-mode session should
-    // link back up to it — same findDuplicate check handleSaveTracked runs —
-    // so the "持仓组合" header's snapshot picker can show/reload whatever was
-    // already saved for it, instead of looking like a brand-new untracked
-    // combo just because compare mode was entered via this direct-switch
-    // button instead of "跟踪" from the strategy library.
-    let existing = findDuplicate({ symbol, spot, legs, shifts }, savedStrategies);
-    if (existing) {
-      // Same missed-trading-days backfill as handleTrack — see its comment
-      // for why this needs to happen before "latest snapshot" is decided.
-      const refreshedStrategies = await backfillTrackedSnapshots(existing.id);
-      setSavedStrategies(refreshedStrategies);
-      existing = refreshedStrategies.find((st) => st.id === existing!.id) ?? existing;
-    }
-    const snaps = existing?.trackedSnapshots ?? [];
-    const latestSnap = snaps.length > 0 ? snaps[snaps.length - 1] : null;
-    if (latestSnap) {
-      // The matched strategy already has real tracked history — open on
-      // THAT (same decay-from-savedAt logic handleTrack/handleSelectSnapshot
-      // use), not a fresh "today == opening" copy of legs. 2026-09-04 bug:
-      // linking trackingStrategyId here without also loading the snapshot
-      // left trackedLegs as a plain copy of legs while the snapshot picker
-      // still rendered (it only depends on trackingStrategyId) — and its
-      // <select> falls back to displaying the LATEST snapshot as "selected"
-      // whenever activeSnapshotId is null, so the newest snapshot LOOKED
-      // selected without actually being loaded. Picking a different entry
-      // then this one again only "fixed" it because that was the first time
-      // the <select>'s value genuinely changed and fired onChange — the real
-      // bug was the initial state not matching the picker's own displayed
-      // selection.
-      // Same open-vs-snapshot distinction as handleTrack/handleSelectSnapshot
-      // (2026-09-05 bug — this branch got missed in the first pass at that
-      // fix): the snapshot's legs only need decaying by the time since IT
-      // was saved, but "已过X天" belongs to the real opening date.
-      const snapshotDecay = calendarDaysSince(latestSnap.savedAt);
-      setTrackedDaysElapsed(calendarDaysSince(openingAt));
-      setTrackedLegs(
-        latestSnap.legs.map((l) => ({
-          ...l,
-          id: uid(),
-          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - snapshotDecay),
-        })),
-      );
-      setTrackedSpot(latestSnap.spot);
-      setActiveSnapshotId(latestSnap.id);
-    } else {
-      // No tracked history yet (brand-new combo, or matched a strategy that
-      // was only ever "saved", never tracked). This does NOT mean zero days
-      // have elapsed — `openingAt` can genuinely be in the past (a saved
-      // strategy opened days ago via "打开策略", or a hand-edited 开仓日期),
-      // and switching to compare mode "right now" should reflect that real
-      // gap, same as handleTrack's own no-snapshot fallback does via
-      // `calendarDaysSince(s.openingAt ?? s.createdAt)`. The old code here
-      // hardcoded 0 regardless of `openingAt`, so both stat boxes
-      // (LegListSection's 开仓组合 summary and TrackedComboSection's
-      // 持仓组合 grid — they share this same `effectiveDaysElapsed`) always
-      // showed "已过0天" and left the tracked legs' DTE identical to the
-      // opening legs', even when the opening date was days in the past —
-      // 2026-09-04 bug.
-      const daysElapsed = calendarDaysSince(openingAt);
-      setTrackedDaysElapsed(daysElapsed);
-      setTrackedLegs(
-        legs.map((l) => ({
-          ...l,
-          id: uid(),
-          // See types.ts's comment on openLegId — same reasoning as
-          // handleTrack's no-snapshot branch above, just deriving directly
-          // from the in-editor `legs` instead of a persisted SavedStrategy.
-          openLegId: l.id,
-          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - daysElapsed),
-        })),
-      );
-      setTrackedSpot(spot);
-      setActiveSnapshotId(null);
-    }
-    setCorrectedSpot(null);
-    setTrackingStrategyId(existing ? existing.id : null);
-    setTrackedDirty(false);
-    clearLegSelection();
-  }, [isCompareMode, legs, spot, symbol, shifts, savedStrategies, openingAt]);
-
-  // Direct switch from compare mode back into plain analysis mode. Which
-  // data becomes the new (single) analysis-mode baseline depends on
-  // `source`:
-  // - "baseline": the opening combo as-is (legs/spot/openingAt already ARE
-  //   this — same as handleOpenStrategy's "just drop the tracked half").
-  // - "current": whatever the "今日组合" side currently shows
-  //   (trackedLegs/effectiveTrackedSpot), promoted to be the new baseline.
-  // - a snapshot id: that specific saved snapshot's legs/spot.
-  // For "current" and a snapshot, openingAt resets to when THAT data was
-  // true (now, or the snapshot's savedAt) rather than staying on the
-  // original real opening date — otherwise a later re-track would use
-  // calendarDaysSince(openingAt) to reduce DTE a second time on top of legs whose
-  // DTE already reflects that elapsed time once (see
-  // claude/wiring-check-2026-09-03.md for the fuller design discussion).
-  const performSwitchToAnalysis = useCallback((source: "baseline" | "current" | string) => {
-    if (!isCompareMode) return;
-    let newLegs: Leg[];
-    let newSpot: number;
-    let newOpeningAt: number;
-    if (source === "baseline") {
-      newLegs = legs;
-      newSpot = spot;
-      newOpeningAt = openingAt;
-    } else if (source === "current") {
-      // These legs are becoming the new OPENING combo — strip openLegId
-      // (it referenced a now-irrelevant prior opening leg; see types.ts)
-      // rather than carrying a stale cross-reference forward. A fresh
-      // trackedLegs derived from this new baseline later gets its own
-      // correct openLegId pointing back to these ids, same as any other
-      // switch-to-compare.
-      newLegs = (trackedLegs ?? legs).map((l) => asOpeningLeg(l, uid()));
-      newSpot = effectiveTrackedSpot;
-      newOpeningAt = Date.now();
-    } else {
-      const snap = trackedStrategy?.trackedSnapshots?.find((sn) => sn.id === source);
-      if (!snap) return;
-      newLegs = snap.legs.map((l) => asOpeningLeg(l, uid()));
-      newSpot = snap.spot;
-      newOpeningAt = snap.savedAt;
-    }
-    setLegs(newLegs);
-    setSpot(newSpot);
-    setOpeningAt(newOpeningAt);
-    setShifts({ dS: 0, dT: 0, dV: 0 });
-    legBaseSpot.current = newSpot;
-    legBaseSymbol.current = symbol;
-    spotManuallySet.current = true;
-    setTrackedLegs(null);
-    setTrackingStrategyId(null);
-    setTrackedSpot(null);
-    setActiveSnapshotId(null);
-    setTrackedDaysElapsed(0);
-    setCorrectedSpot(null);
-    setStrategyBaseline(serializeStrategyState(symbol, newLegs, { dS: 0, dT: 0, dV: 0 }, newOpeningAt));
-    clearLegSelection();
-  }, [isCompareMode, legs, spot, openingAt, trackedLegs, effectiveTrackedSpot, trackedStrategy, symbol]);
-
-  // Public entry point used by the UI. Switching to "current" carries the
-  // dirty edits themselves into analysis mode, so it never loses anything
-  // and skips the confirmation. Switching to "baseline" or a snapshot would
-  // silently drop them, so — same protection as the existing preset-switch
-  // and clear-all flows — ask first via ConfirmSnapshotDialog.
-  const handleSwitchToAnalysis = useCallback((source: "baseline" | "current" | string) => {
-    if (!isCompareMode) return;
-    if (trackedDirty && source !== "current") {
-      pendingSwitchSource.current = source;
-      setConfirmSwitchOpen(true);
-      return;
-    }
-    performSwitchToAnalysis(source);
-  }, [isCompareMode, trackedDirty, performSwitchToAnalysis]);
 
   // Analysis ↔ compare mode switch — split out of legToolbar (2026-09-07)
   // and rendered instead next to the ticker symbol in PayoffChart.tsx's
@@ -1233,6 +576,26 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         </DropdownMenu>
       )}
     </>
+  );
+
+  // "解释当前情况" button — rendered into ShiftSliders' header row via its
+  // explainButton prop (same "App.tsx builds the JSX, the child component
+  // just renders it" pattern as modeSwitchButton/PayoffChart.tsx above).
+  // Disabled (not hidden) when there's nothing to explain yet, same
+  // "展示框架+解释原因" convention CLAUDE.md documents elsewhere — an empty
+  // combo still shows the button, just inert, rather than the row shifting
+  // around as legs are added.
+  const explainButton = (
+    <button
+      onClick={() => setExplainOpen(true)}
+      disabled={!situationExplanation}
+      title={t("explain.button")}
+      aria-label={t("explain.button")}
+      className="inline-flex items-center gap-1 text-[9px] font-semibold text-amber-400 transition hover:text-amber-300 disabled:cursor-not-allowed disabled:text-slate-600"
+    >
+      <Lightbulb size={11} />
+      {t("explain.button")}
+    </button>
   );
 
   const legToolbar = (
@@ -1490,6 +853,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               onHedge={() => handleHedge("tracked")}
               onProtect={(legId: string) => handleProtect(legId, "tracked")}
               onMoveTrackedLeg={moveTrackedLeg}
+              breakevens={breakevens}
             />
           )}
 
@@ -1553,6 +917,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               trackedDays={isCompareMode ? effectiveDaysElapsed : undefined}
               trackedVolShift={trackedVolShift}
               disabled={isCompareMode}
+              explainButton={explainButton}
             />
           </div>
         </div>
@@ -1560,6 +925,14 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
       {helpOpen && (
         <HelpPanel moduleId={isCompareMode ? "compare" : "analysis"} variant="info" onClose={() => setHelpOpen(false)} />
+      )}
+
+      {explainOpen && situationExplanation && (
+        <SituationExplainDialog
+          title={t(isCompareMode ? "explain.dialogTitleCompare" : "explain.dialogTitleAnalysis")}
+          explanation={situationExplanation}
+          onClose={() => setExplainOpen(false)}
+        />
       )}
 
       <LegActionDialogs

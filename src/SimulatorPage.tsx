@@ -4,7 +4,12 @@ import { createPortal } from "react-dom";
 import { ArrowLeft, Plus, RefreshCw, X, Trash2, History, Search, Undo2, TrendingUp, TrendingDown, Minus, ChevronDown, MoreVertical, CalendarClock, Shield, Layers, Ban, Wallet, DollarSign, Compass, RotateCcw, Target, LineChart, HelpCircle, AlertTriangle } from "lucide-react";
 import type { Leg } from "@/lib/types";
 import type { CurvePosition } from "@/lib/pricing";
-import { probabilityOfProfit, legGreekBreakdown } from "@/lib/pricing";
+import { probabilityOfProfit, legGreekBreakdown } from "@/lib/pricing"; // findBreakevens only used by the paused advice feature, see below
+// "持仓处置建议" retrieval feature paused 2026-09-10 (xue: redesigning the
+// advice content/format — see claude/retrieval-feature-design.md) — button
+// + dialog render commented out below, not deleted. Re-enable by
+// uncommenting this import and the two blocks marked "PAUSED" below.
+// import PositionAdviceDialog from "@/components/PositionAdviceDialog";
 import { dateFromDte, formatDateInput, parseDateInput } from "@/lib/dateUtils";
 import PayoffChart from "@/components/PayoffChart";
 import ErrorBoundary from "@/components/ErrorBoundary";
@@ -574,6 +579,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
   // so the curve never grew past whatever day it happened to load on.
   const [timelinesDate, setTimelinesDate] = useState<Record<string, string>>({});
   const [timelineLoading, setTimelineLoading] = useState<Record<string, boolean>>({});
+  // PAUSED (see import comment above): const [adviceTarget, setAdviceTarget] = useState<SimPosition | null>(null); // "持仓处置建议" — see claude/retrieval-feature-design.md
   const [rollTarget, setRollTarget] = useState<{ pos: SimPosition; leg: Leg; spot: number } | null>(null);
   const [protectTarget, setProtectTarget] = useState<{ pos: SimPosition; leg: Leg; spot: number } | null>(null);
   const [hedgeTarget, setHedgeTarget] = useState<{ pos: SimPosition; legs: Leg[]; spot: number } | null>(null);
@@ -1426,6 +1432,17 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                                   <span>{t("sim.compareLabel")}</span>
                                   <ChevronDown size={9} className={`transition-transform ${expandedCompare[p.id] ? "rotate-180" : ""}`} />
                                 </button>
+                                {/* PAUSED (see import comment above): "持仓处置建议" button
+                                <button
+                                  onClick={() => setAdviceTarget(p)}
+                                  disabled={!mark?.legs || mark.spot === null}
+                                  title={!mark?.legs ? t("sim.refreshFirst") : t("advice.button")}
+                                  className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-violet-400 transition hover:border-violet-500/50 disabled:opacity-40"
+                                >
+                                  <Sparkles size={10} />
+                                  <span>{t("advice.button")}</span>
+                                </button>
+                                */}
                                 <button
                                   onClick={() => handleClose(p)}
                                   disabled={!mark?.legs || mark.spot === null}
@@ -1583,6 +1600,30 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
         )}
       </div>
 
+      {/* PAUSED (see import comment above): "持仓处置建议" dialog
+      {adviceTarget && (() => {
+        const mark = marks[adviceTarget.id];
+        const legs = mark?.legs ?? adviceTarget.legs;
+        const spot = mark?.spot ?? adviceTarget.spot;
+        const activeLegs = legs.filter((l) => !l.disabled);
+        const markValue = mark?.legs && mark.spot !== null ? computeMarkValue(mark.legs, mark.spot) : null;
+        const change = markValue !== null ? markValue - adviceTarget.costBasis : 0;
+        const dteLeft = nearestDteRemaining(adviceTarget);
+        return (
+          <PositionAdviceDialog
+            title={t("advice.dialogTitle")}
+            legs={activeLegs}
+            spot={spot}
+            change={change}
+            entryNetPremium={adviceTarget.costBasis}
+            breakevens={spot > 0 ? findBreakevens(activeLegs, spot) : []}
+            dte={dteLeft}
+            matchedStrategyName={matchStrategy(adviceTarget.legs, adviceTarget.spot, [])}
+            onClose={() => setAdviceTarget(null)}
+          />
+        );
+      })()}
+      */}
       {rollTarget && (
         <RollDialog
           leg={rollTarget.leg}

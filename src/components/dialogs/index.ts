@@ -10,3 +10,4 @@ export { default as ImpliedSpotInfoPanel } from "./ImpliedSpotInfoPanel";
 export { default as MarginErrorDialog } from "./MarginErrorDialog";
 export { default as ConfirmResetAccountDialog } from "./ConfirmResetAccountDialog";
 export { default as ConfirmLeaveDialog } from "./ConfirmLeaveDialog";
+export { default as SituationExplainDialog } from "./SituationExplainDialog";
