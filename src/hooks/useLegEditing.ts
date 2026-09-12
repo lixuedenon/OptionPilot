@@ -97,6 +97,46 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
     clearLegSelection();
   };
 
+  // "统一数量/行权价/到期日" (2026-09-12, xue's request): sync the rest of
+  // the selected legs to match the FIRST selected leg's value, so adjusting
+  // a multi-leg combo (e.g. every leg of an iron condor) doesn't mean
+  // repeating the same qty/strike/expiry edit on every row by hand.
+  // Restricted to option legs — a stock leg's `strike` field is actually
+  // its entry price and it has neither `dte` nor `qty` (see types.ts), so
+  // letting one anchor or receive one of these values would silently apply
+  // a number that means something else entirely on that row. Fewer than
+  // two eligible (option) legs selected means there's nothing to sync, so
+  // both the availability flag and the action itself are no-ops then.
+  const eligibleForUnify = useMemo(
+    () => selectedLegsList.filter((l) => l.kind !== "stock"),
+    [selectedLegsList],
+  );
+  const canUnifyLegs = eligibleForUnify.length >= 2;
+
+  const unifyLegField = (field: "qty" | "strike" | "dte") => {
+    if (eligibleForUnify.length < 2) return;
+    const baseline = eligibleForUnify[0];
+    const targetIds = new Set(eligibleForUnify.slice(1).map((l) => l.id));
+    setLegs((prev) =>
+      prev.map((l) => {
+        if (!targetIds.has(l.id)) return l;
+        if (field === "qty") return { ...l, qty: baseline.qty ?? 1 };
+        // Strike/expiry changing invalidates whatever premium was quoted
+        // for the leg's OLD contract — resetting it to 0 here is exactly
+        // what LegRow's own strike/expiry pickers already do
+        // (handleSelectExpiry), which lets each affected row's existing
+        // auto-fill effect fetch the right premium for its new strike/
+        // expiry, rather than this hook trying to fetch option chains
+        // itself.
+        if (field === "strike") return { ...l, strike: baseline.strike, premium: 0 };
+        return { ...l, dte: baseline.dte, premium: 0 };
+      }),
+    );
+  };
+  const unifyQty = () => unifyLegField("qty");
+  const unifyStrike = () => unifyLegField("strike");
+  const unifyDte = () => unifyLegField("dte");
+
   // `source` picks which combo the leg is looked up in AND which combo the
   // confirm handler below eventually mutates — "legs" (the default, so
   // every existing legId-only call site keeps working unchanged) for a row
@@ -199,6 +239,10 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
     bulkToggleDisable,
     requestBulkDelete,
     confirmBulkDelete,
+    canUnifyLegs,
+    unifyQty,
+    unifyStrike,
+    unifyDte,
     handleRoll,
     handleRollConfirm,
     handleProtect,

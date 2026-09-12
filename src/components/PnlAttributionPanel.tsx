@@ -1,6 +1,8 @@
+// src/components/PnlAttributionPanel.tsx
 import { TrendingUp, Clock, Activity, HelpCircle } from "lucide-react";
 import type { PnlAttribution } from "@/lib/pricing";
 import { useI18n } from "@/i18n/I18nContext";
+import Term from "@/components/Term";
 
 interface Props {
   attribution: PnlAttribution;
@@ -38,6 +40,14 @@ function Bar({ value, maxAbs }: { value: number; maxAbs: number }) {
   );
 }
 
+// Format with an explicit sign, matching the "+"/"-" + 2-decimal convention
+// already used for every value rendered in this panel — so the numbers
+// quoted inside the residual explanation below read exactly like the ones
+// on screen.
+function fmtSigned(n: number): string {
+  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}`;
+}
+
 export default function PnlAttributionPanel({ attribution, maxAbs }: Props) {
   const { t } = useI18n();
   const { priceEffect, timeEffect, ivEffect, residual, totalChange } = attribution;
@@ -49,16 +59,29 @@ export default function PnlAttributionPanel({ attribution, maxAbs }: Props) {
     { icon: Activity, label: t("attribution.iv"), value: ivEffect, color: "text-violet-400" },
   ];
 
+  // The residual/"cross term" explanation used to be a static, abstract
+  // paragraph (still kept below as attribution.residualHint, now unused —
+  // Xue reviews dead i18n keys manually). That abstraction was the
+  // complaint: plugging in this combo's actual numbers turns "the three
+  // effects don't simply add up" into a worked example the person can
+  // check against the numbers already on their screen.
+  const sum = priceEffect + timeEffect + ivEffect;
+  const residualVars = {
+    price: fmtSigned(priceEffect),
+    time: fmtSigned(timeEffect),
+    iv: fmtSigned(ivEffect),
+    sum: fmtSigned(sum),
+    total: fmtSigned(totalChange),
+    residual: fmtSigned(residual),
+  };
+
   return (
     <div className="mt-1.5 rounded-lg border border-slate-800 bg-slate-900/40 p-2.5">
       <div className="mb-2 flex items-center gap-1.5">
         <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{t("attribution.title")}</span>
-        <span
-          title={t("attribution.residualHint")}
-          className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full text-slate-600 hover:text-slate-400"
-        >
+        <Term titleKey="attribution.panelTitle" descKey="attribution.panelExplain" iconTrigger>
           <HelpCircle size={11} />
-        </span>
+        </Term>
       </div>
 
       <div className="space-y-1.5">
@@ -75,7 +98,15 @@ export default function PnlAttributionPanel({ attribution, maxAbs }: Props) {
           </div>
         ))}
         <div className="flex items-center gap-2 text-[10px] opacity-70">
-          <HelpCircle size={11} className="text-slate-500" />
+          <Term
+            titleKey="attribution.residualTitle"
+            descKey="attribution.residualExplain"
+            descVars={residualVars}
+            iconTrigger
+            className="text-slate-500 hover:text-slate-300"
+          >
+            <HelpCircle size={11} />
+          </Term>
           <span className="w-14 shrink-0 text-slate-500">{t("attribution.residual")}</span>
           <div className="flex-1">
             <Bar value={residual} maxAbs={scale} />

@@ -1,5 +1,5 @@
 // src/components/LegListSection.tsx
-import { Clock, Ban, Trash2, Plus, Save } from "lucide-react";
+import { Clock, Ban, Trash2, Plus, Save, Hash, Crosshair, CalendarClock } from "lucide-react";
 import { useMemo, type ReactNode } from "react";
 import type { Leg } from "@/lib/types";
 import type { SavedStrategy } from "@/lib/savedStrategies";
@@ -37,6 +37,15 @@ interface Props {
   allSelectedDisabled: boolean;
   onBulkToggleDisable: () => void;
   onRequestBulkDelete: () => void;
+  // "统一数量/行权价/到期日" — syncs the rest of the selected legs to the
+  // first selected leg's value (option legs only; see useLegEditing.ts).
+  // canUnifyLegs is false whenever fewer than two selected legs are
+  // eligible, which disables all three buttons at once rather than each
+  // silently no-op'ing on click.
+  canUnifyLegs: boolean;
+  onUnifyQty: () => void;
+  onUnifyStrike: () => void;
+  onUnifyDte: () => void;
 
   scenarioPriceById: Map<string, number>;
   symbol: string;
@@ -74,6 +83,10 @@ export default function LegListSection({
   allSelectedDisabled,
   onBulkToggleDisable,
   onRequestBulkDelete,
+  canUnifyLegs,
+  onUnifyQty,
+  onUnifyStrike,
+  onUnifyDte,
   scenarioPriceById,
   symbol,
   onChangeLeg,
@@ -180,6 +193,33 @@ export default function LegListSection({
                     <Trash2 size={11} />
                     {t("leg.bulkDelete")}
                   </button>
+                  <button
+                    onClick={onUnifyQty}
+                    disabled={!canUnifyLegs}
+                    title={t("leg.unifyHint")}
+                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Hash size={11} />
+                    {t("leg.unifyQty")}
+                  </button>
+                  <button
+                    onClick={onUnifyStrike}
+                    disabled={!canUnifyLegs}
+                    title={t("leg.unifyHint")}
+                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Crosshair size={11} />
+                    {t("leg.unifyStrike")}
+                  </button>
+                  <button
+                    onClick={onUnifyDte}
+                    disabled={!canUnifyLegs}
+                    title={t("leg.unifyHint")}
+                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <CalendarClock size={11} />
+                    {t("leg.unifyDte")}
+                  </button>
                 </>
               )}
               <button
@@ -207,6 +247,7 @@ export default function LegListSection({
               index={i}
               scenarioPrice={isCompareMode ? undefined : scenarioPriceById.get(leg.id)}
               symbol={symbol}
+              spot={spot}
               roleInfo={legRolesById.get(leg.id)}
               // Compare mode only, matched by position against the backing
               // SavedStrategy's own legs (not by id — these ids get

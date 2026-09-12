@@ -1,5 +1,5 @@
 // src/components/LegRow.tsx
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   MoreVertical,
   Ban,
@@ -25,6 +25,13 @@ interface Props {
   scenarioPrice?: number;
   legPnl?: number;
   symbol?: string;
+  // Current underlying price, used only to auto-scroll the strike-picker
+  // dropdown so the strike closest to the money opens already centered in
+  // view, instead of the list always opening scrolled to its lowest strike
+  // — for a wide chain that's dozens of far-OTM rows away from anything
+  // most people actually pick. Undefined/0 just skips the auto-scroll and
+  // leaves the dropdown's default scroll position alone.
+  spot?: number;
   // What this specific leg is doing in the combo (主力腿/保护腿/etc, computed
   // across the whole leg list by legRoles.ts) — shown inside the "..."
   // menu rather than a separate always-visible panel, per Xue's request:
@@ -310,6 +317,7 @@ export default function LegRow({
   scenarioPrice,
   legPnl,
   symbol,
+  spot,
   roleInfo,
   restoreOriginal,
   onChange,
@@ -337,6 +345,19 @@ export default function LegRow({
   const [chainError, setChainError] = useState<string | null>(null);
   const [strikeMenuOpen, setStrikeMenuOpen] = useState(false);
   const [expiryMenuOpen, setExpiryMenuOpen] = useState(false);
+  // Toggle state for the (non-compare-mode) premium refresh button: first
+  // click fetches and shows today's market price, second click reverts to
+  // whatever premium was showing right before that fetch — no network call
+  // needed for the revert since it's just replaying a value already in
+  // hand. `openingPremiumRef` holds that pre-fetch value; it's a ref rather
+  // than state because writing it must never itself trigger a re-render.
+  // Any OTHER path that changes premium (manual edit, picking a strike from
+  // the chain, picking a new expiry) resets `priceView` back to "opening" —
+  // otherwise a stale `openingPremiumRef` could get restored by a later
+  // toggle click after the person has already moved on to a different
+  // premium entirely.
+  const [priceView, setPriceView] = useState<"opening" | "market">("opening");
+  const openingPremiumRef = useRef<number | null>(null);
 
   const sym = symbol?.trim() ?? "";
   const canAutoPrice = leg.kind !== "stock" && !disabled && sym.length > 0;
@@ -380,6 +401,36 @@ export default function LegRow({
     const rows = leg.type === "call" ? chain.calls : chain.puts;
     return [...rows].map((r) => r.strike).sort((a, b) => a - b);
   }, [chain, leg.type]);
+
+  // Whichever listed strike sits closest to the current underlying price —
+  // used only to auto-scroll the dropdown below to it when opened; the
+  // list itself stays in plain ascending order (easiest to scan), only the
+  // starting scroll position changes.
+  const nearestStrikeToSpot = useMemo(() => {
+    if (!spot || spot <= 0 || strikeOptions.length === 0) return null;
+    let best = strikeOptions[0];
+    let bestDiff = Math.abs(best - spot);
+    for (const s of strikeOptions) {
+      const diff = Math.abs(s - spot);
+      if (diff < bestDiff) {
+        best = s;
+        bestDiff = diff;
+      }
+    }
+    return best;
+  }, [strikeOptions, spot]);
+  const strikeListRef = useRef<HTMLDivElement>(null);
+
+  // Runs right after the dropdown mounts open, before paint, so the person
+  // never sees it flash open at the top and then jump — same reasoning as
+  // Term.tsx's own position effect.
+  useLayoutEffect(() => {
+    if (!strikeMenuOpen || nearestStrikeToSpot === null) return;
+    const el = strikeListRef.current?.querySelector<HTMLButtonElement>(
+      `[data-strike="${nearestStrikeToSpot}"]`,
+    );
+    el?.scrollIntoView({ block: "center" });
+  }, [strikeMenuOpen, nearestStrikeToSpot]);
 
   const expiryOptions = useMemo(() => {
     if (!chain) return [];
@@ -428,8 +479,24 @@ export default function LegRow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canAutoPrice, sym, leg.strike, leg.dte, leg.type, leg.premium]);
 
-  const handleRestorePrice = async () => {
+  // Opening -> market: remember the premium as it stands right now (before
+  // the fetch overwrites it), then force-fetch today's live price exactly
+  // like the old always-fetch button did. Market -> opening: no network
+  // round trip — just replay the value we stashed on the way in.
+  const handleTogglePrice = async () => {
     if (!canAutoPrice) return;
+
+    if (priceView === "market") {
+      setPriceError(null);
+      setPriceNote(null);
+      if (openingPremiumRef.current !== null) {
+        onChange({ premium: openingPremiumRef.current });
+      }
+      setPriceView("opening");
+      return;
+    }
+
+    openingPremiumRef.current = leg.premium;
     setPriceFetching(true);
     setPriceError(null);
     try {
@@ -443,6 +510,7 @@ export default function LegRow({
           ? t("leg.priceSnapNote", { strike: result.actualStrike, date: result.actualExpiryDate })
           : null,
       );
+      setPriceView("market");
     } catch (e) {
       setPriceError(e instanceof Error ? e.message : t("leg.fetchPriceFailed"));
     } finally {
@@ -480,6 +548,7 @@ export default function LegRow({
       const premium = premiumFromQuote(q);
       if (premium > 0) patch.premium = premium;
     }
+    setPriceView("opening");
     onChange(patch);
   };
 
@@ -490,6 +559,7 @@ export default function LegRow({
     setPriceError(null);
     setPriceNote(null);
     const d = dteFromDate(iso);
+    setPriceView("opening");
     if (d >= 0) onChange({ dte: d, premium: 0 });
   };
 
@@ -634,10 +704,11 @@ export default function LegRow({
           </button>
         )}
         {strikeMenuOpen && strikeOptions.length > 0 && (
-          <div className="absolute left-0 top-full z-[80] mt-1 max-h-52 w-24 overflow-y-auto rounded-lg border border-slate-700 bg-slate-900 py-1 shadow-2xl">
+          <div ref={strikeListRef} className="absolute left-0 top-full z-[80] mt-1 max-h-52 w-24 overflow-y-auto rounded-lg border border-slate-700 bg-slate-900 py-1 shadow-2xl">
             {strikeOptions.map((s) => (
               <button
                 key={s}
+                data-strike={s}
                 onClick={() => handleSelectStrike(s)}
                 className={`flex w-full items-center px-2 py-1 text-[11px] tabular-nums transition ${
                   s === leg.strike ? "bg-emerald-500/10 text-emerald-300" : "text-slate-300 hover:bg-slate-800"
@@ -692,7 +763,7 @@ export default function LegRow({
         )}
       </div>
       <div className="flex shrink-0 items-end gap-0.5">
-        <NumField label={t("leg.premium")} value={leg.premium} step={0.01}  width="76px" onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ premium: v }); }} disabled={disabled} />
+        <NumField label={t("leg.premium")} value={leg.premium} step={0.01}  width="76px" onChange={(v) => { setPriceError(null); setPriceNote(null); setPriceView("opening"); onChange({ premium: v }); }} disabled={disabled} />
         {!disabled && restoreOriginal && (
           <button
             onClick={handleRestoreOriginal}
@@ -709,18 +780,20 @@ export default function LegRow({
         )}
         {!disabled && !restoreOriginal && (
           <button
-            onClick={handleRestorePrice}
+            onClick={handleTogglePrice}
             disabled={priceFetching || !canAutoPrice}
             title={
               priceFetching
                 ? t("leg.fetchingPrice")
-                : priceError ?? priceNote ?? (canAutoPrice ? t("leg.restorePrice") : t("leg.noSymbolForPrice"))
+                : priceError ?? priceNote ?? (canAutoPrice ? (priceView === "market" ? t("leg.showOpeningPrice") : t("leg.restorePrice")) : t("leg.noSymbolForPrice"))
             }
             className={`mb-[1px] flex items-center rounded border px-1 py-1 transition disabled:cursor-not-allowed disabled:opacity-40 ${
               priceError
                 ? "border-rose-700/50 bg-rose-950/30 text-rose-400"
                 : priceNote
                 ? "border-sky-700/50 bg-sky-950/30 text-sky-400"
+                : priceView === "market"
+                ? "border-emerald-700/50 bg-emerald-950/20 text-emerald-400 hover:border-emerald-500"
                 : "border-slate-700 bg-slate-900 text-slate-400 hover:border-slate-500 hover:text-slate-200"
             }`}
           >

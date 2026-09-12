@@ -154,6 +154,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     bulkToggleDisable,
     requestBulkDelete,
     confirmBulkDelete,
+    canUnifyLegs,
+    unifyQty,
+    unifyStrike,
+    unifyDte,
     handleRoll,
     handleRollConfirm,
     handleProtect,
@@ -806,6 +810,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             allSelectedDisabled={allSelectedDisabled}
             onBulkToggleDisable={bulkToggleDisable}
             onRequestBulkDelete={requestBulkDelete}
+            canUnifyLegs={canUnifyLegs}
+            onUnifyQty={unifyQty}
+            onUnifyStrike={unifyStrike}
+            onUnifyDte={unifyDte}
             scenarioPriceById={scenarioPriceById}
             symbol={symbol}
             onChangeLeg={updateLeg}

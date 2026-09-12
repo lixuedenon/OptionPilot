@@ -6,8 +6,18 @@ import { useI18n } from "@/i18n/I18nContext";
 interface Props {
   titleKey: string; // i18n key for the popover's bold title line
   descKey: string; // i18n key for the one-line definition
+  // Optional interpolation vars for the description (e.g. live numbers baked
+  // into the sentence via t(descKey, descVars)) — omit for a static string,
+  // same as before this existed. Purely additive: no existing call site
+  // passes this, so none of them are affected.
+  descVars?: Record<string, string | number>;
   children: ReactNode; // the label itself — rendered inline with a dotted-underline affordance
   className?: string; // extra classes merged onto the trigger, e.g. to match surrounding text size/color
+  // true renders the trigger as a plain round icon button (no dotted-
+  // underline text styling) for icon-only triggers such as a "?" badge,
+  // instead of the default inline-text affordance. Defaults to false, so
+  // every existing call site (all of which pass a text label) is unaffected.
+  iconTrigger?: boolean;
 }
 
 // Generic "click a term, see a one-line definition" primitive (2026-09,
@@ -19,7 +29,7 @@ interface Props {
 // reusable for a single term anywhere in the app, instead of every call
 // site reinventing it. Click rather than CSS :hover so it works the same
 // on touch as on desktop.
-export default function Term({ titleKey, descKey, children, className }: Props) {
+export default function Term({ titleKey, descKey, descVars, children, className, iconTrigger = false }: Props) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
@@ -55,7 +65,11 @@ export default function Term({ titleKey, descKey, children, className }: Props) 
         ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className={`inline cursor-default border-b border-dotted border-slate-600 text-inherit transition hover:border-slate-400 ${className ?? ""}`}
+        className={
+          iconTrigger
+            ? `flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full text-slate-600 transition hover:text-slate-400 ${className ?? ""}`
+            : `inline cursor-default border-b border-dotted border-slate-600 text-inherit transition hover:border-slate-400 ${className ?? ""}`
+        }
       >
         {children}
       </button>
@@ -67,7 +81,7 @@ export default function Term({ titleKey, descKey, children, className }: Props) 
           style={{ top: pos.top, left: pos.left }}
         >
           <div className="mb-1 text-[11px] font-bold text-slate-200">{t(titleKey)}</div>
-          <div className="text-[10px] leading-relaxed text-slate-300">{t(descKey)}</div>
+          <div className="text-[10px] leading-relaxed text-slate-300">{t(descKey, descVars)}</div>
         </div>,
         document.body,
       )}

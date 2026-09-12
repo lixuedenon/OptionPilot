@@ -205,6 +205,7 @@ export default function TrackedComboSection({
             leg={leg}
             index={i}
             symbol={symbol}
+            spot={effectiveTrackedSpot}
             legPnl={trackedLegPnlById.get(leg.id)}
             roleInfo={trackedLegRolesById.get(leg.id)}
             onChange={(patch) => onChangeTrackedLeg(leg.id, patch)}
