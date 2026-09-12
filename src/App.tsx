@@ -167,7 +167,16 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     handleHedgeConfirm,
     moveLeg,
     moveTrackedLeg,
+    toggleTrackedLeg,
+    closeTrackedLeg,
   } = useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs });
+  // Which combo's "添加到预设" last opened the shared SavePresetDialog (see
+  // LegActionDialogs' `activeLegs` prop below) — "开仓组合" (legs) and
+  // "今日组合" (trackedLegs) are different arrays that both need to reach
+  // the same dialog. 2026-09-12: added so TrackedComboSection's leg menu
+  // can save FROM the tracked combo instead of always saving the opening
+  // combo regardless of which row's "..." menu was actually clicked.
+  const [presetSaveSource, setPresetSaveSource] = useState<"legs" | "tracked">("legs");
   const pendingPresetAction = useRef<{ name: string; rawLegs: Leg[] } | null>(null);
   const [confirmPresetOpen, setConfirmPresetOpen] = useState(false);
   const pendingPresetReplace = useRef<Leg[] | null>(null);
@@ -819,7 +828,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             onChangeLeg={updateLeg}
             onToggleLeg={toggleLeg}
             onDeleteLeg={deleteLeg}
-            onAddToPreset={() => setSaveDialogOpen(true)}
+            onAddToPreset={() => { setPresetSaveSource("legs"); setSaveDialogOpen(true); }}
             onRoll={handleRoll}
             onHedge={handleHedge}
             onProtect={handleProtect}
@@ -851,6 +860,16 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               trackedLegPnlById={trackedLegPnlById}
               trackedLegRolesById={trackedLegRolesById}
               onChangeTrackedLeg={updateTrackedLeg}
+              // 2026-09-12: was `() => {}` for all three — see
+              // TrackedComboSection.tsx's prop comments and
+              // useLegEditing.ts's toggleTrackedLeg/closeTrackedLeg. A
+              // rolled/protected/hedged tracked leg (or the leg it came
+              // from) looking permanently frozen was never a bug in
+              // handleRoll/handleHedge/handleProtect below — it was that
+              // this row's menu had nothing real to call.
+              onToggleTrackedLeg={toggleTrackedLeg}
+              onCloseTrackedLeg={closeTrackedLeg}
+              onAddTrackedLegToPreset={() => { setPresetSaveSource("tracked"); setSaveDialogOpen(true); }}
               // Explicitly tag these as targeting the TRACKED combo — see
               // useLegEditing.ts's handleRoll/handleHedge/handleProtect,
               // which default to the opening combo ("legs") otherwise.
@@ -947,7 +966,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         saveDialogOpen={saveDialogOpen}
         onCloseSaveDialog={() => setSaveDialogOpen(false)}
         onSaveCustomPreset={handleAddCustom}
-        activeLegs={activeLegs}
+        activeLegs={presetSaveSource === "tracked" ? (activeTrackedLegs ?? []) : activeLegs}
         confirmClearOpen={confirmClearOpen}
         onConfirmClear={clearAllLegs}
         onCancelClear={() => setConfirmClearOpen(false)}

@@ -5,6 +5,7 @@ import type { Leg } from "@/lib/types";
 import type { SavedStrategy } from "@/lib/savedStrategies";
 import { formatDateInput, parseDateInput } from "@/lib/dateUtils";
 import { explainLegRoles } from "@/lib/legRoles";
+import { computeLegLinks } from "@/lib/legLinks";
 import LegRow from "@/components/LegRow";
 import { useI18n } from "@/i18n/I18nContext";
 
@@ -113,6 +114,10 @@ export default function LegListSection({
     for (const r of explainLegRoles(activeLegs)) map.set(r.legId, { label: r.label, explanation: r.explanation });
     return map;
   }, [activeLegs]);
+
+  // Roll/Protect pairing badges (see lib/legLinks.ts) — computed off the
+  // full opening-combo leg list, same scope as legRolesById above.
+  const legLinksById = useMemo(() => computeLegLinks(legs), [legs]);
 
   return (
     <>
@@ -249,24 +254,24 @@ export default function LegListSection({
               symbol={symbol}
               spot={spot}
               roleInfo={legRolesById.get(leg.id)}
-              // Compare mode only, matched by position against the backing
-              // SavedStrategy's own legs (not by id — these ids get
-              // regenerated every time compare mode is entered, see
-              // App.tsx's handleTrack/handleSwitchToCompare). A leg added
-              // here after entering compare mode has no counterpart at its
-              // index, so restoreOriginal stays undefined for it and its
-              // restore button falls back to the normal live-fetch
-              // behavior — there's no "original" to revert an unsaved new
-              // leg to.
-              restoreOriginal={isCompareMode ? trackedStrategy?.legs[i] : undefined}
+              linkInfo={legLinksById.get(leg.id)}
+              // Compare mode's "开仓组合" (opening combo) is historical/
+              // fixed data — no market refresh makes sense for it, and its
+              // structure is locked (see App.tsx's compare-mode leg
+              // toolbar: add/clear/preset are all disabled there too), so
+              // delete/roll/hedge/protect/compare2 are all withheld in that
+              // mode — only move-up/down, add-to-preset, block/unblock, and
+              // role-info survive. Outside compare mode this is the one and
+              // only combo (analysis mode), so everything is live.
+              hidePriceRefresh={isCompareMode}
               onChange={(patch) => onChangeLeg(leg.id, patch)}
               onToggleDisable={() => onToggleLeg(leg.id)}
-              onDelete={() => onDeleteLeg(leg.id)}
+              onDelete={isCompareMode ? undefined : () => onDeleteLeg(leg.id)}
               onAddToPreset={onAddToPreset}
-              onRoll={() => onRoll(leg.id)}
-              onHedge={onHedge}
-              onProtect={() => onProtect(leg.id)}
-              onCompare={() => onCompare(leg.id)}
+              onRoll={isCompareMode ? undefined : () => onRoll(leg.id)}
+              onHedge={isCompareMode ? undefined : onHedge}
+              onProtect={isCompareMode ? undefined : () => onProtect(leg.id)}
+              onCompare={isCompareMode ? undefined : () => onCompare(leg.id)}
               onMoveUp={() => onMoveLeg(i, -1)}
               onMoveDown={() => onMoveLeg(i, 1)}
               canMoveUp={i > 0}

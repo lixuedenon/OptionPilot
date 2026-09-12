@@ -48,8 +48,26 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
   const toggleLeg = (id: string) => {
     setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, disabled: !l.disabled } : l)));
   };
+  // 2026-09-12: deleting a leg that was created by Roll (`derivedFrom.via
+  // === "roll"`) now auto-re-enables the leg it rolled away FROM, in the
+  // same state update — undoing a roll used to mean the person had to
+  // separately remember to go "取消屏蔽" the old leg AND delete the new one,
+  // and with more than one roll/protect/hedge on the board there was no way
+  // to tell which pair went together (see lib/legLinks.ts — that's the
+  // other half of this fix, the "linked to leg #N" badge). Protect/Hedge
+  // legs never disable anything to begin with (see handleProtectConfirm/
+  // handleHedgeConfirm below), so deleting one of those is still a plain
+  // removal — nothing extra to restore.
   const deleteLeg = (id: string) => {
-    setLegs((prev) => prev.filter((l) => l.id !== id));
+    setLegs((prev) => {
+      const target = prev.find((l) => l.id === id);
+      const filtered = prev.filter((l) => l.id !== id);
+      if (target?.derivedFrom?.via === "roll" && target.derivedFrom.legId) {
+        const sourceId = target.derivedFrom.legId;
+        return filtered.map((l) => (l.id === sourceId ? { ...l, disabled: false } : l));
+      }
+      return filtered;
+    });
     setSelectedLegIds((prev) => {
       if (!prev.has(id)) return prev;
       const next = new Set(prev);
@@ -156,15 +174,19 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
   };
   const handleRollConfirm = (newLeg: Leg) => {
     if (!rollTarget) return;
+    // Tags the new leg with where it came from — see types.ts's
+    // `derivedFrom` and lib/legLinks.ts — so the UI can badge the pair and
+    // deleteLeg/closeTrackedLeg can auto-restore rollTarget on undo.
+    const taggedLeg: Leg = { ...newLeg, derivedFrom: { legId: rollTarget.id, via: "roll" } };
     if (rollTargetSource === "tracked") {
       setTrackedLegs((prev) => (prev ? prev.map((l) => (l.id === rollTarget.id ? { ...l, disabled: true } : l)) : prev));
       // The new rolled-to leg has no opening-combo counterpart of its own
       // (it didn't exist when trackedLegs was derived from legs) — leaving
       // openLegId unset is correct here, not a gap to fill in; see types.ts.
-      setTrackedLegs((prev) => (prev ? [...prev, newLeg] : prev));
+      setTrackedLegs((prev) => (prev ? [...prev, taggedLeg] : prev));
     } else {
       setLegs((prev) => prev.map((l) => l.id === rollTarget.id ? { ...l, disabled: true } : l));
-      setLegs((prev) => [...prev, newLeg]);
+      setLegs((prev) => [...prev, taggedLeg]);
     }
     setRollTarget(null);
   };
@@ -178,10 +200,12 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
     }
   };
   const handleProtectConfirm = (protectLeg: Leg) => {
+    if (!protectTarget) return;
+    const taggedLeg: Leg = { ...protectLeg, derivedFrom: { legId: protectTarget.id, via: "protect" } };
     if (protectTargetSource === "tracked") {
-      setTrackedLegs((prev) => (prev ? [...prev, protectLeg] : prev));
+      setTrackedLegs((prev) => (prev ? [...prev, taggedLeg] : prev));
     } else {
-      setLegs((prev) => [...prev, protectLeg]);
+      setLegs((prev) => [...prev, taggedLeg]);
     }
     setProtectTarget(null);
   };
@@ -193,10 +217,15 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
     setHedgeTargetSource(source);
   };
   const handleHedgeConfirm = (hedgeLeg: Leg) => {
+    // No legId here — hedge targets the whole combo, not one specific leg
+    // (handleHedge above never takes a legId either), so there's no single
+    // "source" leg to link back to or restore on undo. Tagged only so the
+    // menu can still show "撤销对冲" instead of a generic "删除"/"平仓".
+    const taggedLeg: Leg = { ...hedgeLeg, derivedFrom: { via: "hedge" } };
     if (hedgeTargetSource === "tracked") {
-      setTrackedLegs((prev) => (prev ? [...prev, hedgeLeg] : prev));
+      setTrackedLegs((prev) => (prev ? [...prev, taggedLeg] : prev));
     } else {
-      setLegs((prev) => [...prev, hedgeLeg]);
+      setLegs((prev) => [...prev, taggedLeg]);
     }
     setHedgeOpen(false);
   };
@@ -210,6 +239,31 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
       return arr;
     });
   };
+  // "今日组合"版的 toggleLeg/deleteLeg — added 2026-09-12 as part of giving
+  // TrackedComboSection's three-dot menu real functionality instead of the
+  // `() => {}` no-ops it shipped with (see App.tsx's TrackedComboSection
+  // wiring). Xue reported that after Roll/Protect/Hedge on a tracked leg,
+  // neither the frozen original leg nor the newly-added leg could be
+  // touched again — that was never a freezing bug in handleRoll/
+  // handleProtect/handleHedge above, it was simply that TrackedComboSection
+  // had no real toggle/delete handlers to call. closeTrackedLeg carries the
+  // same roll-undo restore logic as deleteLeg above.
+  const toggleTrackedLeg = (id: string) => {
+    setTrackedLegs((prev) => (prev ? prev.map((l) => (l.id === id ? { ...l, disabled: !l.disabled } : l)) : prev));
+  };
+  const closeTrackedLeg = (id: string) => {
+    setTrackedLegs((prev) => {
+      if (!prev) return prev;
+      const target = prev.find((l) => l.id === id);
+      const filtered = prev.filter((l) => l.id !== id);
+      if (target?.derivedFrom?.via === "roll" && target.derivedFrom.legId) {
+        const sourceId = target.derivedFrom.legId;
+        return filtered.map((l) => (l.id === sourceId ? { ...l, disabled: false } : l));
+      }
+      return filtered;
+    });
+  };
+
   const moveTrackedLeg = (index: number, direction: -1 | 1) => {
     setTrackedLegs((prev) => {
       if (!prev) return prev;
@@ -252,5 +306,7 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
     handleHedgeConfirm,
     moveLeg,
     moveTrackedLeg,
+    toggleTrackedLeg,
+    closeTrackedLeg,
   };
 }

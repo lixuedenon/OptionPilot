@@ -29,6 +29,14 @@ interface Props {
   onSelect: (preset: PresetMeta) => void;
   customPresets: CustomPreset[];
   onDeleteCustom: (id: string) => void;
+  // 2026-09-12: compare mode's "开仓组合" is a saved strategy's frozen
+  // structure — applying a preset there would silently replace it (and,
+  // worse, wipe the whole tracked session per App.tsx's onSelectPreset
+  // guard), which xue confirmed should just be blocked outright rather than
+  // routed through a confirm dialog. Shows the button grayed out with an
+  // explanatory tooltip instead of hiding it — "展示框架+解释原因" per
+  // CLAUDE.md's design principle 8.
+  disabled?: boolean;
 }
 
 const dirColor: Record<string, string> = {
@@ -149,7 +157,7 @@ const dirKeyMap: Record<string, string> = {
   "双向波动": "volatile", "看涨/对冲": "bullishHedge",
 };
 
-export default function PresetPicker({ onSelect, customPresets, onDeleteCustom }: Props) {
+export default function PresetPicker({ onSelect, customPresets, onDeleteCustom, disabled = false }: Props) {
   const { t, lang } = useI18n();
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
@@ -197,8 +205,12 @@ export default function PresetPicker({ onSelect, customPresets, onDeleteCustom }
   return (
     <div ref={ref} className="relative">
       <button
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 rounded border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 transition hover:border-emerald-500/50 hover:text-slate-100"
+        onClick={() => !disabled && setOpen((v) => !v)}
+        disabled={disabled}
+        title={disabled ? t("leg.disabledInCompare") : undefined}
+        className={`flex items-center gap-1.5 rounded border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+          disabled ? "text-slate-500" : "text-slate-300 hover:border-emerald-500/50 hover:text-slate-100"
+        }`}
       >
         <span>{t("preset.presetBtn")}</span>
         <ChevronDown size={11} className={`transition-transform ${open ? "rotate-180" : ""}`} />

@@ -4,6 +4,8 @@ import {
   MoreVertical,
   Ban,
   Trash2,
+  LogOut,
+  Undo2,
   BookmarkPlus,
   CalendarClock,
   Shield,
@@ -40,23 +42,40 @@ interface Props {
   // Undefined for a disabled leg (legRoles.ts only classifies active legs)
   // or when it can't be confidently classified.
   roleInfo?: { label: string; explanation: string };
-  // When set, the restore button stops being "fetch today's live market
-  // price" and becomes "revert to this exact strike/dte/premium" instead —
-  // used for compare mode's "开仓组合" (opening combo) rows, where a fresh
-  // market quote makes no sense (that data is supposed to match what
-  // analysis mode originally recorded, not today's market). The caller
-  // (LegListSection) resolves this from the backing SavedStrategy's own
-  // leg at the same index; undefined here just means "no known original to
-  // revert to", which falls back to the normal live-fetch behavior below.
-  restoreOriginal?: { strike: number; dte: number; premium: number };
+  // Compare mode's "开仓组合" (opening combo) rows are historical/fixed —
+  // that data is supposed to match what analysis mode originally recorded,
+  // not today's market, so there's nothing sensible for a "refresh price"
+  // button to do there. Set by the caller (LegListSection) for those rows
+  // to suppress the premium refresh button entirely, rather than giving it
+  // a market-fetch behavior that doesn't apply. Undefined/false elsewhere
+  // keeps the normal live-fetch behavior below.
+  hidePriceRefresh?: boolean;
+  // Which leg(s), if any, this one was created from or gave rise to via
+  // Roll/Protect/Hedge — see lib/legLinks.ts and types.ts's
+  // `Leg.derivedFrom`. Drives the small pairing badge next to the leg
+  // index so more than one roll/protect/hedge on the board doesn't turn
+  // into guesswork about which rows go together (xue: "否则很容易乱").
+  linkInfo?: { role: "source" | "derived"; via: "roll" | "protect" | "hedge"; otherIndex: number };
   onChange: (patch: Partial<Leg>) => void;
   onToggleDisable: () => void;
-  onDelete: () => void;
+  // Optional: compare mode's "开仓组合" rows pass neither delete nor
+  // roll/hedge/protect — the opening combo's structure is locked there
+  // (see App.tsx's compare-mode leg toolbar). When provided, the label/
+  // icon/tone shown for it is resolved from `leg.derivedFrom` first (an
+  // "撤销展期/保护/对冲" undo action) and falls back to `deleteVariant`
+  // otherwise — see the deleteConfig logic below.
+  onDelete?: () => void;
   onAddToPreset: () => void;
-  onRoll: () => void;
-  onHedge: () => void;
-  onProtect: () => void;
+  onRoll?: () => void;
+  onHedge?: () => void;
+  onProtect?: () => void;
   onCompare?: () => void;
+  // "delete" (default) renders 删除/Trash2/rose; "close" renders 平仓/
+  // LogOut/sky — used by TrackedComboSection's "今日组合" rows, where
+  // removing a leg means closing that part of the position, not deleting a
+  // mistake. Ignored (overridden) when `leg.derivedFrom` is set — see
+  // deleteConfig below.
+  deleteVariant?: "delete" | "close";
   // Reordering — buttons in the "..." menu rather than drag-and-drop.
   // (An earlier version tried making the selection checkbox double as a
   // drag handle to save row width, but browsers treat a mousedown inside a
@@ -207,6 +226,7 @@ function LegMenu({
   disabled,
   onToggleDisable,
   onDelete,
+  deleteConfig,
   onAddToPreset,
   onRoll,
   onHedge,
@@ -220,11 +240,16 @@ function LegMenu({
 }: {
   disabled: boolean;
   onToggleDisable: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
+  deleteConfig: {
+    icon: React.ReactNode;
+    label: string;
+    tone: "default" | "amber" | "rose" | "emerald" | "sky" | "violet";
+  };
   onAddToPreset: () => void;
-  onRoll: () => void;
-  onHedge: () => void;
-  onProtect: () => void;
+  onRoll?: () => void;
+  onHedge?: () => void;
+  onProtect?: () => void;
   onCompare?: () => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
@@ -261,6 +286,7 @@ function LegMenu({
   };
 
   const showMove = onMoveUp !== undefined || onMoveDown !== undefined;
+  const showRollGroup = onRoll !== undefined || onHedge !== undefined || onProtect !== undefined;
 
   return (
     <div ref={ref} className="relative ml-1 shrink-0">
@@ -283,11 +309,13 @@ function LegMenu({
           <MenuItem icon={<BookmarkPlus size={12} />} label={t("leg.addToPreset")} hint={t("leg.all")} onClick={() => run(onAddToPreset)} tone="emerald" />
           <div className="my-0.5 border-t border-slate-800" />
           <MenuItem icon={<Ban size={12} />} label={disabled ? t("leg.unblock") : t("leg.block")} hint={t("leg.single")} onClick={() => run(onToggleDisable)} tone="amber" />
-          <MenuItem icon={<Trash2 size={12} />} label={t("leg.delete")} hint={t("leg.single")} onClick={() => run(onDelete)} tone="rose" />
-          <div className="my-0.5 border-t border-slate-800" />
-          <MenuItem icon={<CalendarClock size={12} />} label={t("leg.roll")} hint={t("leg.single")} onClick={() => run(onRoll)} tone="sky" />
-          <MenuItem icon={<Layers size={12} />} label={t("leg.hedge")} hint={t("leg.combo")} onClick={() => run(onHedge)} tone="violet" />
-          <MenuItem icon={<Shield size={12} />} label={t("leg.protect")} hint={t("leg.single")} onClick={() => run(onProtect)} tone="sky" />
+          {onDelete && (
+            <MenuItem icon={deleteConfig.icon} label={deleteConfig.label} hint={t("leg.single")} onClick={() => onDelete && run(onDelete)} tone={deleteConfig.tone} />
+          )}
+          {showRollGroup && <div className="my-0.5 border-t border-slate-800" />}
+          {onRoll && <MenuItem icon={<CalendarClock size={12} />} label={t("leg.roll")} hint={t("leg.single")} onClick={() => onRoll && run(onRoll)} tone="sky" />}
+          {onHedge && <MenuItem icon={<Layers size={12} />} label={t("leg.hedge")} hint={t("leg.combo")} onClick={() => onHedge && run(onHedge)} tone="violet" />}
+          {onProtect && <MenuItem icon={<Shield size={12} />} label={t("leg.protect")} hint={t("leg.single")} onClick={() => onProtect && run(onProtect)} tone="sky" />}
           {onCompare && (
             <>
               <div className="my-0.5 border-t border-slate-800" />
@@ -319,7 +347,8 @@ export default function LegRow({
   symbol,
   spot,
   roleInfo,
-  restoreOriginal,
+  hidePriceRefresh,
+  linkInfo,
   onChange,
   onToggleDisable,
   onDelete,
@@ -328,6 +357,7 @@ export default function LegRow({
   onHedge,
   onProtect,
   onCompare,
+  deleteVariant = "delete",
   onMoveUp,
   onMoveDown,
   canMoveUp,
@@ -518,23 +548,6 @@ export default function LegRow({
     }
   };
 
-  // Compare mode's opening-combo variant of "restore" — snaps strike/dte/
-  // premium back to what analysis mode originally recorded, no network
-  // round trip. Synchronous, so no loading state needed; only enabled when
-  // something actually differs from the original (nothing to undo
-  // otherwise).
-  const originalDirty = !!restoreOriginal && (
-    leg.strike !== restoreOriginal.strike ||
-    leg.dte !== restoreOriginal.dte ||
-    leg.premium !== restoreOriginal.premium
-  );
-  const handleRestoreOriginal = () => {
-    if (!restoreOriginal) return;
-    setPriceError(null);
-    setPriceNote(null);
-    onChange({ strike: restoreOriginal.strike, dte: restoreOriginal.dte, premium: restoreOriginal.premium });
-  };
-
   // Picking a strike from the real chain sets the premium instantly from
   // data already in hand — no extra network round trip needed.
   const handleSelectStrike = (strike: number) => {
@@ -586,11 +599,59 @@ export default function LegRow({
     <span className="w-4 shrink-0" />
   );
 
+  // What the delete/close menu item actually does, and how it's labeled —
+  // resolved from `leg.derivedFrom` first (this leg was created by a Roll/
+  // Protect/Hedge, so removing it means undoing that action — the handler
+  // passed in via `onDelete` already carries the compound revert logic,
+  // see useLegEditing.ts's deleteLeg/closeTrackedLeg), falling back to the
+  // plain `deleteVariant` prop otherwise. The click behavior is identical
+  // either way (just calls `onDelete`); only the label/icon/tone change, so
+  // the menu tells the person what will actually happen instead of always
+  // saying "删除" for what's really an undo.
+  const deleteConfig = (() => {
+    if (leg.derivedFrom) {
+      switch (leg.derivedFrom.via) {
+        case "roll":
+          return { icon: <Undo2 size={12} />, label: t("leg.undoRoll"), tone: "amber" as const };
+        case "protect":
+          return { icon: <Undo2 size={12} />, label: t("leg.undoProtect"), tone: "amber" as const };
+        case "hedge":
+          return { icon: <Undo2 size={12} />, label: t("leg.undoHedge"), tone: "amber" as const };
+      }
+    }
+    return deleteVariant === "close"
+      ? { icon: <LogOut size={12} />, label: t("leg.closePosition"), tone: "sky" as const }
+      : { icon: <Trash2 size={12} />, label: t("leg.delete"), tone: "rose" as const };
+  })();
+
+  // Small pairing badge next to the leg index — see linkInfo's own comment
+  // on the Props interface above. "source" (the original leg a roll/
+  // protect points away from) and "derived" (the new leg it points to) get
+  // the same icon (keyed by `via`) but different tone, so a glance at two
+  // badges pointing at each other's index number is enough to see they're
+  // a pair, without needing to open either menu.
+  const linkBadge = linkInfo && (
+    <span
+      className={`flex shrink-0 items-center ${linkInfo.role === "source" ? "text-slate-500" : "text-amber-400"}`}
+      title={t(
+        linkInfo.via === "roll"
+          ? linkInfo.role === "source" ? "leg.rollSourceHint" : "leg.rollDerivedHint"
+          : linkInfo.via === "protect"
+          ? linkInfo.role === "source" ? "leg.protectSourceHint" : "leg.protectDerivedHint"
+          : linkInfo.role === "source" ? "leg.hedgeSourceHint" : "leg.hedgeDerivedHint",
+        { index: linkInfo.otherIndex },
+      )}
+    >
+      {linkInfo.via === "roll" ? <CalendarClock size={10} /> : linkInfo.via === "protect" ? <Shield size={10} /> : <Layers size={10} />}
+    </span>
+  );
+
   const menu = (
     <LegMenu
       disabled={disabled}
       onToggleDisable={onToggleDisable}
       onDelete={onDelete}
+      deleteConfig={deleteConfig}
       onAddToPreset={onAddToPreset}
       onRoll={onRoll}
       onHedge={onHedge}
@@ -616,6 +677,7 @@ export default function LegRow({
       >
         {selectHandle}
         <span className="w-4 shrink-0 text-center text-[10px] font-semibold text-slate-500">{index + 1}</span>
+        {linkBadge}
         <div className="flex shrink-0 flex-col gap-0.5">
           <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{t("leg.type")}</span>
           <span className="rounded bg-amber-600 px-2 py-1 text-[10px] font-bold uppercase text-white">{t("hedge.stock")}</span>
@@ -656,6 +718,7 @@ export default function LegRow({
     >
       {selectHandle}
       <span className="w-4 shrink-0 text-center text-[10px] font-semibold text-slate-500">{index + 1}</span>
+      {linkBadge}
 
       <div className={`flex shrink-0 flex-col gap-0.5 ${disabled ? "opacity-40" : ""}`}>
         <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{t("leg.action")}</span>
@@ -764,21 +827,7 @@ export default function LegRow({
       </div>
       <div className="flex shrink-0 items-end gap-0.5">
         <NumField label={t("leg.premium")} value={leg.premium} step={0.01}  width="76px" onChange={(v) => { setPriceError(null); setPriceNote(null); setPriceView("opening"); onChange({ premium: v }); }} disabled={disabled} />
-        {!disabled && restoreOriginal && (
-          <button
-            onClick={handleRestoreOriginal}
-            disabled={!originalDirty}
-            title={originalDirty ? t("leg.restoreOriginal") : t("leg.restoreOriginalNoChange")}
-            className={`mb-[1px] flex items-center rounded border px-1 py-1 transition disabled:cursor-not-allowed disabled:opacity-40 ${
-              originalDirty
-                ? "border-amber-700/50 bg-amber-950/30 text-amber-400 hover:border-amber-500"
-                : "border-slate-700 bg-slate-900 text-slate-400"
-            }`}
-          >
-            <RefreshCw size={11} />
-          </button>
-        )}
-        {!disabled && !restoreOriginal && (
+        {!disabled && !hidePriceRefresh && (
           <button
             onClick={handleTogglePrice}
             disabled={priceFetching || !canAutoPrice}

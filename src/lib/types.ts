@@ -29,6 +29,23 @@ export interface Leg {
   // key off this field already treat "no match found" as a leg standing on
   // its own, not an error.
   openLegId?: string;
+  // 2026-09-12: records which leg (if any) this one was created FROM via
+  // Roll/Protect/Hedge, and which action created it — lets the UI show a
+  // "linked to leg #N" badge (see lib/legLinks.ts) and lets deleteLeg/
+  // closeTrackedLeg (useLegEditing.ts) auto-restore the source leg when the
+  // person undoes a roll, instead of leaving them to manually re-enable one
+  // leg and delete the other and hope they matched the right pair — xue
+  // reported that was exactly the confusing part once more than one
+  // roll/protect/hedge had happened. `legId` is present for roll/protect
+  // (both act on one specific existing leg) but absent for hedge, which
+  // targets the whole combo rather than any single leg (handleHedge takes
+  // no legId — see useLegEditing.ts). Only meaningful within the SAME
+  // legs/trackedLegs array it was set in — like openLegId above, leg ids
+  // get regenerated when a strategy is opened/tracked again, so this link
+  // isn't guaranteed to survive a save-and-reopen round trip; code reading
+  // it already has to treat "referenced leg not found" as "no link" rather
+  // than an error (see computeLegLinks in lib/legLinks.ts).
+  derivedFrom?: { legId?: string; via: "roll" | "protect" | "hedge" };
 }
 
 export interface Shifts {

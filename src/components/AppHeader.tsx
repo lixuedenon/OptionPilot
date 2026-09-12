@@ -109,6 +109,7 @@ export default function AppHeader({
           customPresets={customPresets}
           onDeleteCustom={onDeleteCustomPreset}
           onSelect={onSelectPreset}
+          disabled={isCompareMode}
         />
 
         <div ref={symbolWrapRef} className="relative flex items-center gap-1.5">

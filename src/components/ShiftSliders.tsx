@@ -112,13 +112,18 @@ export default function ShiftSliders({ shifts, onChange, spot, maxDte, onReset, 
   return (
     <div className={disabled ? "pointer-events-none" : ""}>
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-[13px] font-bold text-sky-400">{disabled ? t("shift.scenarioFrozen") : t("shift.scenario")}</span>
+        {/* explainButton sits right next to the title now (2026-09-12, per
+            Xue) instead of over on the far right by the reset button — it
+            used to be easy to miss all the way over there, separated from
+            the title by the whole width of this row; right next to the
+            title it's much more likely to actually get noticed. */}
         <div className="pointer-events-auto flex items-center gap-2">
+          <span className="text-[13px] font-bold text-sky-400">{disabled ? t("shift.scenarioFrozen") : t("shift.scenario")}</span>
           {explainButton}
-          {!disabled && (
-            <button onClick={onReset} className="text-[9px] font-semibold text-slate-500 transition hover:text-slate-300">{t("shift.reset")}</button>
-          )}
         </div>
+        {!disabled && (
+          <button onClick={onReset} className="pointer-events-auto text-[9px] font-semibold text-slate-500 transition hover:text-slate-300">{t("shift.reset")}</button>
+        )}
       </div>
       <div className="flex flex-col gap-1">
         <Slider

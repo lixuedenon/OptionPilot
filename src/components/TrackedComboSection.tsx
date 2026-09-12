@@ -1,9 +1,11 @@
 // src/components/TrackedComboSection.tsx
+import { useMemo } from "react";
 import { History, Save, Trash2 } from "lucide-react";
 import type { Leg } from "@/lib/types";
 import type { ComboResult } from "@/lib/pricing";
 import { weightedAvgIV } from "@/lib/pricing";
 import type { SavedStrategy, TrackedSnapshot } from "@/lib/savedStrategies";
+import { computeLegLinks } from "@/lib/legLinks";
 import LegRow from "@/components/LegRow";
 // "持仓处置建议" retrieval feature paused 2026-09-10 (xue: redesigning the
 // advice content/format — see claude/retrieval-feature-design.md) — button
@@ -44,6 +46,15 @@ interface Props {
   trackedLegPnlById: Map<string, number>;
   trackedLegRolesById: Map<string, { label: string; explanation: string }>;
   onChangeTrackedLeg: (id: string, patch: Partial<Leg>) => void;
+  // 2026-09-12: "今日组合"'s three-dot menu used to wire these three to
+  // `() => {}` no-ops — a rolled/protected/hedged tracked leg (or the leg
+  // it came from) looked permanently frozen not because Roll/Protect/Hedge
+  // themselves lock anything, but because there was simply nothing real to
+  // call. Now backed by useLegEditing.ts's toggleTrackedLeg/closeTrackedLeg
+  // and App.tsx's tracked-source preset dialog wiring.
+  onToggleTrackedLeg: (id: string) => void;
+  onCloseTrackedLeg: (id: string) => void;
+  onAddTrackedLegToPreset: () => void;
   onRoll: (id: string) => void;
   onHedge: () => void;
   onProtect: (id: string) => void;
@@ -73,6 +84,9 @@ export default function TrackedComboSection({
   trackedLegPnlById,
   trackedLegRolesById,
   onChangeTrackedLeg,
+  onToggleTrackedLeg,
+  onCloseTrackedLeg,
+  onAddTrackedLegToPreset,
   onRoll,
   onHedge,
   onProtect,
@@ -83,6 +97,12 @@ export default function TrackedComboSection({
   // PAUSED (see import comment above):
   // const [showAdvice, setShowAdvice] = useState(false);
   // const activeLegsForAdvice = (activeTrackedLegs ?? trackedLegs).filter((l) => !l.disabled);
+
+  // Roll/Protect pairing badges (see lib/legLinks.ts), scoped to the
+  // tracked-combo leg list — same helper LegListSection.tsx uses for the
+  // opening combo, kept as two separate calls since the two arrays' leg
+  // ids are independent (see types.ts's openLegId comment).
+  const trackedLegLinksById = useMemo(() => computeLegLinks(trackedLegs), [trackedLegs]);
   return (
     <div className="flex flex-col border-t-2 border-sky-700/40">
       <div className="flex flex-wrap items-center gap-2 bg-sky-950/30 px-2 py-1">
@@ -208,10 +228,12 @@ export default function TrackedComboSection({
             spot={effectiveTrackedSpot}
             legPnl={trackedLegPnlById.get(leg.id)}
             roleInfo={trackedLegRolesById.get(leg.id)}
+            linkInfo={trackedLegLinksById.get(leg.id)}
+            deleteVariant="close"
             onChange={(patch) => onChangeTrackedLeg(leg.id, patch)}
-            onToggleDisable={() => {}}
-            onDelete={() => {}}
-            onAddToPreset={() => {}}
+            onToggleDisable={() => onToggleTrackedLeg(leg.id)}
+            onDelete={() => onCloseTrackedLeg(leg.id)}
+            onAddToPreset={onAddTrackedLegToPreset}
             onRoll={() => onRoll(leg.id)}
             onHedge={() => onHedge()}
             onProtect={() => onProtect(leg.id)}

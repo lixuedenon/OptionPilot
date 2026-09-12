@@ -1,6 +1,6 @@
 // src/lib/savedStrategies.ts
 import type { Leg, Shifts } from "./types";
-import { formatDateInput, parseDateInput, daysBetweenLocalDates, todayISO } from "./dateUtils";
+import { formatDateInput, parseDateInput, daysBetweenLocalDates, todayISO, calendarDaysSince } from "./dateUtils";
 import { fetchHistoricalBars, repriceLegsAtDate } from "./historicalBackfill";
 
 export interface TrackedSnapshot {
@@ -287,7 +287,19 @@ export function findDuplicate(
   const candidateKey = candidate.legs.map(norm).join("|");
   for (const s of existing) {
     if (s.symbol !== candidate.symbol) continue;
-    const sKey = s.legs.map(norm).join("|");
+    // `candidate` (handleOpenStrategy/handleTrack's in-editor combo) always
+    // arrives with dte already decayed to "today" — but `s.legs` (the saved
+    // opening combo) never decays, it's frozen at save time. Comparing them
+    // raw made a strategy opened from the library, then switched into
+    // compare mode after any days had passed, fail to re-link via
+    // trackingStrategyId (its dte no longer matched byte-for-byte) — see
+    // 2026-09-12 bug report. Decay s.legs by the same elapsed-days amount
+    // before comparing so both sides are on the same footing.
+    const daysElapsed = calendarDaysSince(s.openingAt ?? s.createdAt);
+    const sLegsDecayed = s.legs.map((l) =>
+      l.kind === "stock" ? l : { ...l, dte: Math.max(0, l.dte - daysElapsed) },
+    );
+    const sKey = sLegsDecayed.map(norm).join("|");
     if (sKey === candidateKey) return s;
   }
   return null;
