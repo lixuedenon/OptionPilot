@@ -2,7 +2,7 @@
 
 # OptionPilot 交接文档（整合版）
 
-**版本**：整合版，更新于 2026-09-11。本次更新新增"四、10 持仓处置建议"（position-management-kb检索功能：架构、两个真实bug的完整记录、当前暂停状态和原因，见该节）、"六、backlog"新增第22条（建议呈现格式重新设计，待xue决定）和第23条（移动端适配，评估阶段未开始）、"五、核心设计原则"新增第16/17条（这次两个bug各自留下的通用教训）。此前的更新合并了 2026-09-05（预设风险揭示+到期盈亏小图+9条预设内容修正）、2026-09-06上半（zh.ts/en.ts严重滞后事故的修复与教训）、2026-09-06下半（对比模式健康度/Greeks修正、追踪快照自动回填、一个由此引入又当场修复的布局bug）、2026-09-07上半（竞品调研`FEATURE_PROPOSALS_2026-09.md`第20条里的四项一次性实现：仓位管理提醒、模拟账户交易统计面板、术语悬浮提示、展期前后风险对比图；随后做了一轮完整性/一致性复核，新增开头的"项目现状一览"速览表）、2026-09-07下半（功能精简走查：模块引导弹窗加"不再显示"持久化选项、移除组合级Greeks数字展示面板（保留计算供健康度使用）、修复展期风险对比图在"仅改到期日"场景下曲线失真/看似无变化的bug、备份序列化逻辑去重、评估localStorage容量隐患）、2026-09-07第三轮（UI布局微调：健康度徽章+分析↔对比模式切换按钮从左侧腿位面板搬到`PayoffChart.tsx`标题栏、紧挨着股票代码，`LegListSection.tsx`和`TrackedComboSection.tsx`各自独立的一份"开仓组合"统计网格——股价/时间流逝/隐含波动率——是完全重复的展示，删掉了信息量更少的`LegListSection.tsx`那一份，只保留`TrackedComboSection.tsx`带持仓盈亏列的那份）几轮会话的成果。**这是当前最新、最权威的交接文档版本**，跟仓库其它文件一起push到GitHub main分支后，应视为项目当前状态的唯一事实来源（直到下一次更新）。**这份文档替代了之前"按会话追加"的版本**——旧版本是每轮会话在文末加一个新章节，越滚越长，找一个功能的现状要翻好几个章节、对着时间戳自己判断哪段是最新的。这份文档**按功能/模块组织，只描述"现在是什么样"，不按时间顺序记流水账**。
+**版本**：整合版，更新于 2026-09-12。本次更新完整补写了"四、3.6"（此前只在别处留了交叉引用、章节本身是占位文字）：展期/保护/对冲的`source`参数选边、`derivedFrom`撤销与配对徽章、平仓/展期已实现盈亏记账（`closedPnl`/`realizedTrackedPnl`，只影响持仓盈亏汇总数字、不改到期盈亏图）、配对徽章的序号可见化、修复"展期/保护/对冲/平仓/取消屏蔽今日组合的腿之后保存快照按钮保持禁用"的bug（漏调`setTrackedDirty`），以及"保存快照即锁定"设计（保存后展期/保护/对冲永久不可撤销，保存前有确认提示）。同时补上了此前一直漏收录的`useStrategyOrchestration.ts`（全项目最大的hook）到"三、文件地图"。此前的更新新增"四、10 持仓处置建议"（position-management-kb检索功能：架构、两个真实bug的完整记录、当前暂停状态和原因，见该节）、"六、backlog"新增第22条（建议呈现格式重新设计，待xue决定）和第23条（移动端适配，评估阶段未开始）、"五、核心设计原则"新增第16/17条（这次两个bug各自留下的通用教训）。此前的更新合并了 2026-09-05（预设风险揭示+到期盈亏小图+9条预设内容修正）、2026-09-06上半（zh.ts/en.ts严重滞后事故的修复与教训）、2026-09-06下半（对比模式健康度/Greeks修正、追踪快照自动回填、一个由此引入又当场修复的布局bug）、2026-09-07上半（竞品调研`FEATURE_PROPOSALS_2026-09.md`第20条里的四项一次性实现：仓位管理提醒、模拟账户交易统计面板、术语悬浮提示、展期前后风险对比图；随后做了一轮完整性/一致性复核，新增开头的"项目现状一览"速览表）、2026-09-07下半（功能精简走查：模块引导弹窗加"不再显示"持久化选项、移除组合级Greeks数字展示面板（保留计算供健康度使用）、修复展期风险对比图在"仅改到期日"场景下曲线失真/看似无变化的bug、备份序列化逻辑去重、评估localStorage容量隐患）、2026-09-07第三轮（UI布局微调：健康度徽章+分析↔对比模式切换按钮从左侧腿位面板搬到`PayoffChart.tsx`标题栏、紧挨着股票代码，`LegListSection.tsx`和`TrackedComboSection.tsx`各自独立的一份"开仓组合"统计网格——股价/时间流逝/隐含波动率——是完全重复的展示，删掉了信息量更少的`LegListSection.tsx`那一份，只保留`TrackedComboSection.tsx`带持仓盈亏列的那份）几轮会话的成果。**这是当前最新、最权威的交接文档版本**，跟仓库其它文件一起push到GitHub main分支后，应视为项目当前状态的唯一事实来源（直到下一次更新）。**这份文档替代了之前"按会话追加"的版本**——旧版本是每轮会话在文末加一个新章节，越滚越长，找一个功能的现状要翻好几个章节、对着时间戳自己判断哪段是最新的。这份文档**按功能/模块组织，只描述"现在是什么样"，不按时间顺序记流水账**。
 
 **维护方式（重要，后续会话都要遵守）**：
 - 做完一个功能改动或修复了一个bug，**直接去改对应的章节内容**，让它反映当前状态，不要在文末追加"2026-xx-xx又做了什么"这种新章节。
@@ -159,7 +159,7 @@ isCompareMode = trackedLegs !== null
 
 ## `src/components/dialogs/`（小型确认弹窗集合，`index.ts`统一导出）
 
-`AlertCard.tsx`、`HelpPanel.tsx`、`ImpliedSpotInfoPanel.tsx`、`MarginErrorDialog.tsx`、`ConfirmClearDialog.tsx`、`ConfirmBulkDeleteDialog.tsx`、`ConfirmSaveTrackedDialog.tsx`、`ConfirmSnapshotDialog.tsx`（预设切换和模式切换两处复用同一个组件）、`ConfirmReplacePresetDialog.tsx`、`ConfirmLeaveDialog.tsx`、`ConfirmResetAccountDialog.tsx`——全是纯展示型的小确认框，逻辑都在调用方。
+`AlertCard.tsx`、`HelpPanel.tsx`、`ImpliedSpotInfoPanel.tsx`、`MarginErrorDialog.tsx`、`ConfirmClearDialog.tsx`、`ConfirmBulkDeleteDialog.tsx`、`ConfirmSaveTrackedDialog.tsx`、`ConfirmSnapshotDialog.tsx`（预设切换和模式切换两处复用同一个组件）、`ConfirmReplacePresetDialog.tsx`、`ConfirmLeaveDialog.tsx`、`ConfirmResetAccountDialog.tsx`、`ConfirmLockRollDialog.tsx`（2026-09-12新增，见"四、3.6"）——全是纯展示型的小确认框，逻辑都在调用方。
 
 `HelpPanel.tsx`是个例外，2026-09-06重构成了模块感知组件（不再是单一的通用说明文档），详见"四、9"。**2026-09-07下半新增持久化"不再显示"**：`gate`变体的确认按钮旁多了一个复选框，勾选后写入`localStorage`（`optionpilot.guideDismissed.<moduleId>`），该模块的首次引导以后永久不再自动弹出（除非清了浏览器数据）；同时导出了`isGuideDismissed(moduleId)`供`App.tsx`/`SimulatorPage.tsx`的初始state判断，避免"先闪一下再关掉"。`variant="info"`（header常驻的"使用说明"按钮）不受影响，永远可以手动重新打开同样的内容。
 
@@ -170,6 +170,7 @@ isCompareMode = trackedLegs !== null
 - `useSavedStrategies.ts`——已存策略列表的加载/增删状态封装
 - `useLegEditing.ts`——开仓组合单腿的增删改、批量选择/批量屏蔽/批量删除、展期/保护/对冲/比较四个弹窗的目标状态，以及`moveLeg`/`moveTrackedLeg`两个顺序调整函数。从`App.tsx`拆出，接收`{legs, setLegs, trackedLegs, setTrackedLegs}`。展期/保护/对冲三个handler（`handleRoll`/`handleProtect`/`handleHedge`）额外接受一个`source: "legs" | "tracked"`参数（默认`"legs"`），决定操作目标是开仓组合还是今日组合——2026-09-06修复前这三个handler无论从哪调用都写死操作`legs`，今日组合那边点展期/保护/对冲实际改的是开仓组合，见"四、3.6"
 - `useComboAnalytics.ts`（~271行）——`trackedResult`（今日组合定价+`netPremium`/`shiftedValue`/`change`）、`effectiveDaysElapsed`等对比模式派生计算的封装，"四、10"持仓处置建议功能读取`trackedResult.netPremium`就来自这里
+- `useStrategyOrchestration.ts`（~750+行，全项目最大的hook，此前文档一直漏收录）——2026-09-08从`App.tsx`整块搬出的"策略管理"handler+计算集群，按`App.tsx`原来的声明顺序原样打包成一个hook（不是重新架构），刻意没有进一步拆分——CLAUDE.md标注为"两个暂不拆分的簇"里风险更高的那个（历史上bug密度最高的代码，handler之间互相调用、共享一堆ref/setter）。包含：组合级操作（`addLeg`/`applyPreset`/`clearAllLegs`/`doClearAll`/`updateTrackedLeg`/`handleCorrectSpot`/`comboDirection`/`handleAddCustom`/`handleAddToSimAccount`）+ 策略持久化/模式切换（`handleSaveStrategy`...`handleSwitchToAnalysis`，含`handleTrack`/`handleSaveTracked`/`saveTrackedSnapshotTo`/`handleSelectSnapshot`/`handleDeleteSnapshot`/`handleUpdateSnapshotTime`，见"四、3.6"的快照保存+锁定逻辑）。`legBaseSpot`/`legBaseSymbol`/`spotManuallySet`/`pendingPreset`等好几个ref由`App.tsx`创建、原样传入，从不在这个hook里返回——`App.tsx`自己的effect和这个hook读写的是同一个mutable对象，不需要额外同步
 
 ## `src/lib/`（核心业务逻辑，无UI）
 
@@ -310,7 +311,34 @@ isCompareMode = trackedLegs !== null
 
 ## 3. 跟踪对比模式（"今日组合"）
 
-（本节内容未变动，详见文件地图与前述章节引用；核心机制：三条进入路径、模式互相切换、保存快照/保存策略组合、快照自动回填、开仓组合↔今日组合腿位对应关系`openLegId`。完整细节保留在本文档历史版本描述中，2026-09-07后无变化。）
+### 3.1-3.5 概览（未变动）
+
+核心机制：三条进入路径（首页"跟踪"卡片、`ManageStrategiesDialog.tsx`点"跟踪"、预设详情页）、分析模式↔对比模式互相切换（`isCompareMode = trackedLegs !== null`，见"二、整体架构"）、保存快照/保存策略组合、快照自动回填（`backfillTrackedSnapshots()`，"(估)"标记见`TrackedComboSection.tsx`条目）、换标的时的丢数据保护（"四、1.3"）。2026-09-07后这几块本身无变化，完整细节保留在本文档历史版本描述中。
+
+### 3.6 展期/保护/对冲的操作目标（`source`参数）+ 撤销与配对徽章 + 平仓/展期的已实现盈亏记账
+
+**背景：`source`参数（2026-09-06修复）**。`useLegEditing.ts`的`handleRoll`/`handleProtect`/`handleHedge`三个handler额外接受一个`source: "legs" | "tracked"`参数（默认`"legs"`）。修复前这三个handler无论从哪调用都写死操作`legs`（开仓组合），导致今日组合那边点展期/保护/对冲实际改的是开仓组合，跟用户在对比模式里看到的位置对不上。`Leg`的`openLegId?: string`字段（只在`trackedLegs`的腿上有意义）、`legFactory.ts`的`asOpeningLeg(leg, newId)`（克隆一条腿到开仓组合、同时去掉`openLegId`）都是配合这条修复的辅助设施。
+
+**撤销 + 配对徽章（`derivedFrom`字段）**。`Leg`新增`derivedFrom?: { legId?: string; via: "roll" | "protect" | "hedge" }`——记录一条腿是"由哪条腿、通过什么操作衍生出来的"。`lib/legLinks.ts`的`computeLegLinks(legs)`基于这个字段算出一个`Map<legId, LegLinkInfo>`（`LegLinkInfo = {role: "source" | "derived", via, otherIndex}`），`LegRow.tsx`拿这份map渲染一个配对徽章（图标随`via`变化：展期/保护/对冲）。**2026-09-12改进：徽章现在把配对腿的序号（`otherIndex`）直接显示成可见文字**（不再只在hover提示里），这样多条腿同时展期/保护/对冲时，各自的配对关系不需要逐一悬停就能一眼分辨（比如腿①↔腿⑤和腿②↔腿⑥这两组配对，靠数字直接区分）。
+
+`LegRow.tsx`的删除菜单项是一个按优先级判定的`deleteConfig`：①`leg.derivedFrom`存在→显示"撤销展期/保护/对冲"（`Undo2`图标），点击删掉这条衍生腿、并把源腿的`disabled`还原为`false`（展期还会把源腿的`closedPnl`一并清空，见下）；②`leg.closedPnl !== undefined`且无`derivedFrom`→显示"已平仓"（`Lock`图标，禁用/不可点，避免对已冻结的腿重复触发平仓）；③否则按`deleteVariant`显示普通的"删除"（开仓组合）或"平仓"（今日组合）。`useLegEditing.ts`里`deleteLeg`（开仓组合专用，展期的撤销逻辑跟之前一致，从不涉及`closedPnl`——开仓组合是假设性构造，没有"已实现盈亏"这个概念）和`closeTrackedLeg`（今日组合专用，见下）分别处理两侧。
+
+**平仓/展期的已实现盈亏记账（2026-09-12新增，`closedPnl`/`realizedTrackedPnl`）**。此前"今日组合"平仓一条腿是直接从数组里删掉，展期的源腿是单纯`disabled: true`——两种情况下这条腿在被平仓/展期那一刻已经实现的盈亏都会随之从界面上消失，没有被记录进持仓总盈亏。修复：`Leg`新增`closedPnl?: number`字段，只在**今日组合**的腿上、在它被平仓或展期离开的那一刻写入（记录当时的腿位盈亏，此后冻结不变），从不出现在开仓组合的腿上。
+
+- `useLegEditing.ts`的`closeTrackedLeg(id, pnl)`：如果这条腿有`derivedFrom`（说明这次点击其实是"撤销展期/保护/对冲"，走上面撤销分支的删除逻辑，展期还会把源腿的`disabled`/`closedPnl`都还原）；否则是一次真正的平仓——不再删除，而是软关闭成`{...leg, disabled: true, closedPnl: pnl}`。额外有一道防重复冻结的保护：如果这条腿已经是`disabled && closedPnl !== undefined`（已经平仓过），直接no-op，防止误触发把`closedPnl`错误覆盖成0（`trackedLegPnlById`只对活跃腿计算盈亏，已平仓腿去查会拿到`undefined ?? 0`）。
+- `handleRollConfirm(newLeg, sourcePnl?)`：新增`sourcePnl`参数，展期时如果源腿在今日组合，把它的`closedPnl`设为调用方（`App.tsx`）传入的、展期那一刻从`trackedLegPnlById`里取到的实时盈亏——源腿从"静默屏蔽、盈亏消失"变成跟平仓同样的"已实现盈亏"语义。开仓组合侧的展期不受影响（该组合没有`closedPnl`概念）。
+- `toggleTrackedLeg`（"取消屏蔽"重新启用一条腿）：一并把`closedPnl`清回`undefined`，防止腿被重新激活后，旧的冻结值和新算出的实时盈亏被`realizedTrackedPnl`重复计入总盈亏。
+- `useComboAnalytics.ts`新增`realizedTrackedPnl`（对`trackedLegs`里所有腿的`closedPnl`求和，包含非活跃腿）。**这个值故意不会反馈进`trackedResult.change`/`netChange`，也不影响`PayoffChart.tsx`画的跟踪曲线或`pnlAttribution`的盈亏归因分解**——只加进`TrackedComboSection.tsx`统计网格里显示的持仓盈亏合计数字（`totalChange = trackedChange + realizedTrackedPnl`），不重塑到期盈亏图（xue的明确选择：只更新盈亏汇总数字，不用为了展示已实现盈亏去改图表/核心定价逻辑）。当`realizedTrackedPnl !== 0`时，统计网格会在总盈亏下面加一行"含已实现: ±X"的次要说明，并在总数上加tooltip解释构成。
+- `LegRow.tsx`单腿的盈亏展示做了对应的回退：`displayPnl = legPnl ?? leg.closedPnl`，已平仓/已展期离开的腿显示"已实现盈亏"标签而不是"腿位盈亏"，说明这是冻结值不是实时值。
+
+**⚠️ 已修复的bug：展期/保护/对冲/平仓/取消屏蔽今日组合的腿之后，"保存追踪快照"按钮保持禁用（2026-09-12，xue真实使用发现）**。"保存追踪快照"按钮的可用条件是`disabled={!trackedDirty}`（`TrackedComboSection.tsx`），而`trackedDirty`只有`useStrategyOrchestration.ts`的`updateTrackedLeg`（今日组合里直接编辑行权价/权利金等字段）会置`true`——`useLegEditing.ts`里操作今日组合腿的那几个函数（`handleRollConfirm`/`handleProtectConfirm`/`handleHedgeConfirm`的tracked分支、`toggleTrackedLeg`、`closeTrackedLeg`、`moveTrackedLeg`）全部直接`setTrackedLegs`，从未涉及`trackedDirty`，导致今日组合的腿在展期/保护/对冲/平仓/取消屏蔽/调序之后，UI上确实变了，但保存按钮一直是灰的——这几个操作是`useLegEditing.ts`这一整轮才补上的新功能（`derivedFrom`撤销/`closedPnl`记账），从一开始就漏了`trackedDirty`这一步，不是这次改动引入的新回归。**修复**：`UseLegEditingParams`新增可选的`setTrackedDirty`，`useLegEditing()`调用时从`App.tsx`传入，上述六个函数各自在真正修改`trackedLegs`后调用`setTrackedDirty?.(true)`。**以后任何在`useLegEditing.ts`里新增的、会修改`trackedLegs`的函数，都要记得同样调用`setTrackedDirty?.(true)`，否则会复现同一个"改了但存不了"的问题**——这条和"五、11"（state从"总有值"变"可能为null"要回头检查所有假设）是同一类"新增代码路径要主动核对既有约定"的教训。
+
+**保存快照即锁定：展期/保护/对冲一旦存进快照就不能再撤销（2026-09-12，xue确认的产品设计）**。背景是xue问"保存快照之后，展期还能撤销吗"——原实现里"撤销"完全不看有没有保存过快照，纯粹靠这条腿身上的`derivedFrom`字段，导致一个已经存进历史快照的展期，之后还能在"今日组合"里被撤销掉，让live状态和已保存的快照记录变得不一致（快照里存的是"已展期"，但撤销后live组合又变回"展期前"，如果这时候再存一次快照，历史里就会同时有两条相互矛盾的记录）。**xue的决定：保存快照是这一系列操作的最后一道关口，一旦保存就永久锁定，不再允许撤销**，但要求保存前必须有明确提示，不能让用户事后才发现撤销不了了。
+
+- `types.ts`的`derivedFrom`新增`locked?: boolean`。`useStrategyOrchestration.ts`的`saveTrackedSnapshotTo`（`handleSaveTracked`/`handleSaveStrategy`/`handleOverwriteStrategy`三条路径的保存最终都走这个函数）在真正调用`addTrackedSnapshot`之前，把当前`trackedLegs`里所有带`derivedFrom`且未锁定的腿都打上`locked: true`，**同一份打好锁的数组既用于写入快照、也回写成新的live `trackedLegs`**——两者必须用同一份数据构造，否则如果只锁live状态、快照里存的还是未锁定的旧数据，以后重新加载这条快照（`handleSelectSnapshot`/`handleTrack`）时又会把"未锁定"的状态复活，等于没锁。已经锁定过的腿不会重复处理（避免每次保存都产生新的对象引用）。锁一旦打上永不清除；同一条腿之后如果又被展期（先撤销、再重新展期），那是一条全新的、`locked`未设置的腿，直到它自己也被存进快照才会被锁——不会因为之前锁过别的腿就连带锁住。
+- `LegRow.tsx`的`deleteConfig`：`leg.derivedFrom.locked`为true时，"撤销展期/保护/对冲"菜单项变成禁用状态（Lock图标+"展期/保护/对冲已锁定"文案），hover有tooltip解释原因（`leg.lockedHint`）。
+- **保存前的提示**：`App.tsx`新增`confirmLockRollOpen`，但**只挂在`TrackedComboSection.tsx`那个"保存追踪快照"按钮自己的点击上**（`handleSaveTrackedClick`包一层`handleSaveTracked`），不是改`handleSaveTracked`本身——这个函数还被"保存快照后再清空/切模式/切预设/换标的"另外四条已经各自有自己确认弹窗的路径直接调用，如果把锁定确认塞进`handleSaveTracked`内部，会让那几条路径出现"确认了一次又被迫再确认一次"的双重弹窗。点击"保存追踪快照"时，如果当前`trackedLegs`里存在未锁定的`derivedFrom`腿，先弹`ConfirmLockRollDialog.tsx`("保存后将无法撤销"+说明)，确认了才真正调用`handleSaveTracked`；没有待锁定的操作时跟以前一样直接保存，不加任何多余的确认步骤。
+- **已知的更深层限制（这次没有处理，值得记录）**：`derivedFrom.legId`本来就有"跨会话不保证存活"的问题（见`derivedFrom`字段自己的注释——`handleTrack`/`handleSelectSnapshot`重新加载组合时腿的`id`会用`uid()`重新生成，`legId`这个旧引用就对不上了）。这次的"锁定"只解决同一次live会话内"存了快照还能撤销"的问题；如果用户存了快照、关闭再重新打开这个策略、加载出一条历史快照后点"撤销"，因为`legId`早就跟当前腿对不上，撤销会静默地只删掉展期腿本身、恢复不了源腿，留下一条孤儿式的禁用腿——这是比这次修的bug更早就存在的独立缺口，本次没有顺手修，先记录在这里。
 
 ## 4. 模拟账户（`SimulatorPage.tsx` + `simAccount.ts`）
 

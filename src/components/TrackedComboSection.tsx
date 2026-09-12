@@ -31,6 +31,15 @@ interface Props {
   trackedDirty: boolean;
 
   trackedResult: ComboResult | null;
+  // Sum of `closedPnl` across all trackedLegs (see types.ts and
+  // useComboAnalytics.ts's realizedTrackedPnl) — the P&L already booked
+  // from legs that have been 平仓'd or rolled away from. Added to
+  // `trackedResult.change` only for the DISPLAYED total below, never fed
+  // back into `trackedResult` itself, so PayoffChart's tracked curve (which
+  // reads `trackedResult.change` via App.tsx's `netChange` prop) keeps
+  // reflecting only the still-open legs — xue chose "update the summary
+  // numbers only" over reshaping that curve.
+  realizedPnl: number;
   spot: number;
   activeLegs: Leg[];
   effectiveTrackedSpot: number;
@@ -51,9 +60,12 @@ interface Props {
   // it came from) looked permanently frozen not because Roll/Protect/Hedge
   // themselves lock anything, but because there was simply nothing real to
   // call. Now backed by useLegEditing.ts's toggleTrackedLeg/closeTrackedLeg
-  // and App.tsx's tracked-source preset dialog wiring.
+  // and App.tsx's tracked-source preset dialog wiring. `onCloseTrackedLeg`
+  // takes the leg's own live P&L (read from `trackedLegPnlById` right here,
+  // since that map is already a prop) so useLegEditing.ts can freeze it
+  // into `closedPnl` instead of just deleting the leg outright.
   onToggleTrackedLeg: (id: string) => void;
-  onCloseTrackedLeg: (id: string) => void;
+  onCloseTrackedLeg: (id: string, pnl: number) => void;
   onAddTrackedLegToPreset: () => void;
   onRoll: (id: string) => void;
   onHedge: () => void;
@@ -73,6 +85,7 @@ export default function TrackedComboSection({
   onSaveTracked,
   trackedDirty,
   trackedResult,
+  realizedPnl,
   spot,
   activeLegs,
   effectiveTrackedSpot,
@@ -183,6 +196,12 @@ export default function TrackedComboSection({
         const trackedNetPremium = trackedResult.netPremium;
         const trackedNetValue = trackedResult.shiftedValue;
         const trackedChange = trackedResult.change;
+        // Unrealized (still-open legs, from trackedResult.change) plus
+        // realized (closed/rolled-away legs' frozen closedPnl, summed in
+        // App.tsx as realizedPnl) — see this component's realizedPnl prop
+        // comment for why this combined number is display-only and never
+        // feeds back into trackedResult/the chart.
+        const totalChange = trackedChange + realizedPnl;
         return (
           <div className="mb-1 grid grid-cols-4 gap-1.5 rounded-lg border border-sky-800/40 bg-sky-950/20 p-2 text-[10px]">
             <div className="flex flex-col gap-0.5">
@@ -213,7 +232,14 @@ export default function TrackedComboSection({
               <span className="text-slate-500">{t("compare.pnl")}</span>
               <span className="tabular-nums text-slate-300">{t("compare.openLabel")} <span className="font-semibold text-emerald-400">{trackedNetPremium >= 0 ? "+" : ""}{trackedNetPremium.toFixed(2)}</span></span>
               <span className="tabular-nums text-slate-300">{t("compare.currentLabel")} <span className="font-semibold text-sky-400">{trackedNetValue >= 0 ? "+" : ""}{trackedNetValue.toFixed(2)}</span></span>
-              <span className={`tabular-nums font-semibold ${trackedChange >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{trackedChange >= 0 ? "+" : ""}{trackedChange.toFixed(2)}</span>
+              <span className={`tabular-nums font-semibold ${totalChange >= 0 ? "text-emerald-400" : "text-rose-400"}`} title={realizedPnl !== 0 ? t("compare.pnlIncludesRealized", { realized: `${realizedPnl >= 0 ? "+" : ""}${realizedPnl.toFixed(2)}` }) : undefined}>
+                {totalChange >= 0 ? "+" : ""}{totalChange.toFixed(2)}
+              </span>
+              {realizedPnl !== 0 && (
+                <span className="text-[9px] tabular-nums text-slate-500">
+                  {t("compare.realizedLabel")} <span className={realizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}>{realizedPnl >= 0 ? "+" : ""}{realizedPnl.toFixed(2)}</span>
+                </span>
+              )}
             </div>
           </div>
         );
@@ -232,7 +258,7 @@ export default function TrackedComboSection({
             deleteVariant="close"
             onChange={(patch) => onChangeTrackedLeg(leg.id, patch)}
             onToggleDisable={() => onToggleTrackedLeg(leg.id)}
-            onDelete={() => onCloseTrackedLeg(leg.id)}
+            onDelete={() => onCloseTrackedLeg(leg.id, trackedLegPnlById.get(leg.id) ?? 0)}
             onAddToPreset={onAddTrackedLegToPreset}
             onRoll={() => onRoll(leg.id)}
             onHedge={() => onHedge()}

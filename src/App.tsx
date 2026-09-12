@@ -26,7 +26,7 @@ import LegPanelTitleRow from "@/components/LegPanelTitleRow";
 import TrackedComboSection from "@/components/TrackedComboSection";
 import LegActionDialogs from "@/components/LegActionDialogs";
 import StrategyPersistenceDialogs from "@/components/StrategyPersistenceDialogs";
-import { AlertCard, HelpPanel, isGuideDismissed, SituationExplainDialog } from "@/components/dialogs";
+import { AlertCard, ConfirmLockRollDialog, HelpPanel, isGuideDismissed, SituationExplainDialog } from "@/components/dialogs";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { explainAnalysisScenario, explainTrackedPosition } from "@/lib/situationExplainer";
 
@@ -96,6 +96,17 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const [activeSnapshotId, setActiveSnapshotId] = useState<string | null>(null);
   const [trackedDirty, setTrackedDirty] = useState(false);
   const [confirmSaveTrackedOpen, setConfirmSaveTrackedOpen] = useState(false);
+  // 2026-09-12: gates the "保存追踪快照" BUTTON specifically (not
+  // handleSaveTracked itself, which useStrategyOrchestration.ts's other
+  // callers — save-then-clear/switch-mode/switch-preset/symbol-change — all
+  // call directly after their OWN confirm dialog already ran; nesting a
+  // second confirmation inside handleSaveTracked would double-prompt those
+  // flows for a comparatively rare edge case). See handleSaveTrackedClick
+  // below and lib/types.ts's `derivedFrom.locked` comment for why this
+  // exists: saving permanently locks any pending roll/protect/hedge against
+  // being undone, so this warns before that happens rather than only after,
+  // when the person notices "撤销" no longer works.
+  const [confirmLockRollOpen, setConfirmLockRollOpen] = useState(false);
   const [openingAt, setOpeningAt] = useState<number>(() => Date.now());
   // The "数据" button/dropdown (export/import/link/unlink) moved to
   // HomePage.tsx, next to the language switcher (2026-09-06, xue's request).
@@ -169,7 +180,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     moveTrackedLeg,
     toggleTrackedLeg,
     closeTrackedLeg,
-  } = useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs });
+  } = useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs, setTrackedDirty });
   // Which combo's "添加到预设" last opened the shared SavePresetDialog (see
   // LegActionDialogs' `activeLegs` prop below) — "开仓组合" (legs) and
   // "今日组合" (trackedLegs) are different arrays that both need to reach
@@ -430,6 +441,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     attributionMaxAbs,
     effectiveDaysElapsed,
     trackedResult,
+    realizedTrackedPnl,
     trackedLegPnlById,
     trackedLegRolesById,
     trackedStrategy,
@@ -529,6 +541,22 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     pendingPreset, pendingPresetReplace, pendingLeaveAfterSave, pendingSaveTrackedAfterStrategy, pendingSwitchSource,
     clearLegSelection, onBackHome, onAddToSimAccount, addCustomPresetToLibrary, quote, t,
   });
+
+  // 2026-09-12: wraps handleSaveTracked ONLY for TrackedComboSection's own
+  // "保存追踪快照" button (below) — the hook's other internal callers
+  // (save-then-clear/switch-mode/switch-preset/symbol-change) keep calling
+  // handleSaveTracked directly, unwrapped, so they're unaffected. See
+  // confirmLockRollOpen's comment above for why the warning lives here
+  // instead of inside handleSaveTracked itself, and types.ts's
+  // `derivedFrom.locked` for what's actually being warned about.
+  const hasUnlockedRollForSave = trackedLegs?.some((l) => l.derivedFrom && !l.derivedFrom.locked) ?? false;
+  const handleSaveTrackedClick = () => {
+    if (hasUnlockedRollForSave) {
+      setConfirmLockRollOpen(true);
+      return;
+    }
+    void handleSaveTracked();
+  };
 
 
   // Analysis ↔ compare mode switch — split out of legToolbar (2026-09-07)
@@ -846,9 +874,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               activeSnapshotId={activeSnapshotId}
               onSelectSnapshot={handleSelectSnapshot}
               onDeleteSnapshot={handleDeleteSnapshot}
-              onSaveTracked={handleSaveTracked}
+              onSaveTracked={handleSaveTrackedClick}
               trackedDirty={trackedDirty}
               trackedResult={trackedResult}
+              realizedPnl={realizedTrackedPnl}
               spot={spot}
               activeLegs={activeLegs}
               effectiveTrackedSpot={effectiveTrackedSpot}
@@ -962,6 +991,16 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         />
       )}
 
+      {confirmLockRollOpen && (
+        <ConfirmLockRollDialog
+          onCancel={() => setConfirmLockRollOpen(false)}
+          onConfirm={async () => {
+            setConfirmLockRollOpen(false);
+            await handleSaveTracked();
+          }}
+        />
+      )}
+
       <LegActionDialogs
         saveDialogOpen={saveDialogOpen}
         onCloseSaveDialog={() => setSaveDialogOpen(false)}
@@ -984,7 +1023,15 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         rollTarget={rollTarget}
         rollTargetSource={rollTargetSource}
         onCloseRoll={() => setRollTarget(null)}
-        onConfirmRoll={handleRollConfirm}
+        // Only a TRACKED roll ever needs a P&L to book (see types.ts's
+        // `closedPnl` and handleRollConfirm's own comment) — read the
+        // source leg's live P&L right here, the instant before confirming,
+        // from `trackedLegPnlById` (already computed for the leg list).
+        // The opening combo ("legs") has no realized-P&L concept, so its
+        // branch inside handleRollConfirm never uses this value.
+        onConfirmRoll={(newLeg) =>
+          handleRollConfirm(newLeg, rollTargetSource === "tracked" && rollTarget ? trackedLegPnlById.get(rollTarget.id) : undefined)
+        }
         protectTarget={protectTarget}
         protectTargetSource={protectTargetSource}
         onCloseProtect={() => setProtectTarget(null)}

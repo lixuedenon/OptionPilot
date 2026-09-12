@@ -6,6 +6,7 @@ import {
   Trash2,
   LogOut,
   Undo2,
+  Lock,
   BookmarkPlus,
   CalendarClock,
   Shield,
@@ -54,7 +55,10 @@ interface Props {
   // Roll/Protect/Hedge — see lib/legLinks.ts and types.ts's
   // `Leg.derivedFrom`. Drives the small pairing badge next to the leg
   // index so more than one roll/protect/hedge on the board doesn't turn
-  // into guesswork about which rows go together (xue: "否则很容易乱").
+  // into guesswork about which rows go together (xue: "否则很容易乱") —
+  // the badge shows the paired leg's own number directly, not just in a
+  // hover tooltip, so multiple simultaneous pairs stay distinguishable at
+  // a glance instead of all looking like the same generic icon.
   linkInfo?: { role: "source" | "derived"; via: "roll" | "protect" | "hedge"; otherIndex: number };
   onChange: (patch: Partial<Leg>) => void;
   onToggleDisable: () => void;
@@ -62,8 +66,9 @@ interface Props {
   // roll/hedge/protect — the opening combo's structure is locked there
   // (see App.tsx's compare-mode leg toolbar). When provided, the label/
   // icon/tone shown for it is resolved from `leg.derivedFrom` first (an
-  // "撤销展期/保护/对冲" undo action) and falls back to `deleteVariant`
-  // otherwise — see the deleteConfig logic below.
+  // "撤销展期/保护/对冲" undo action), then from `leg.closedPnl` (an
+  // already-closed leg, shown but no longer actionable), and falls back to
+  // `deleteVariant` otherwise — see the deleteConfig logic below.
   onDelete?: () => void;
   onAddToPreset: () => void;
   onRoll?: () => void;
@@ -73,8 +78,8 @@ interface Props {
   // "delete" (default) renders 删除/Trash2/rose; "close" renders 平仓/
   // LogOut/sky — used by TrackedComboSection's "今日组合" rows, where
   // removing a leg means closing that part of the position, not deleting a
-  // mistake. Ignored (overridden) when `leg.derivedFrom` is set — see
-  // deleteConfig below.
+  // mistake. Ignored (overridden) when `leg.derivedFrom` or `leg.closedPnl`
+  // is set — see deleteConfig below.
   deleteVariant?: "delete" | "close";
   // Reordering — buttons in the "..." menu rather than drag-and-drop.
   // (An earlier version tried making the selection checkbox double as a
@@ -190,6 +195,7 @@ function MenuItem({
   onClick,
   tone = "default",
   disabled = false,
+  title,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -197,6 +203,12 @@ function MenuItem({
   onClick: () => void;
   tone?: "default" | "amber" | "rose" | "emerald" | "sky" | "violet";
   disabled?: boolean;
+  // Native tooltip, distinct from `hint` (the small always-visible "single
+  // leg / whole combo" scope label) — used for the one case that needs a
+  // longer explanation than that hint area can fit: a locked "撤销" item
+  // (see deleteConfig's locked branch below), where hovering explains WHY
+  // it's disabled instead of just leaving the person to guess.
+  title?: string;
 }) {
   const toneCls = {
     default: "text-slate-300 hover:bg-slate-800",
@@ -211,6 +223,7 @@ function MenuItem({
     <button
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent ${toneCls}`}
     >
       <span className="flex items-center gap-2">
@@ -245,6 +258,9 @@ function LegMenu({
     icon: React.ReactNode;
     label: string;
     tone: "default" | "amber" | "rose" | "emerald" | "sky" | "violet";
+    disabled?: boolean;
+    hint?: string;
+    title?: string;
   };
   onAddToPreset: () => void;
   onRoll?: () => void;
@@ -310,7 +326,7 @@ function LegMenu({
           <div className="my-0.5 border-t border-slate-800" />
           <MenuItem icon={<Ban size={12} />} label={disabled ? t("leg.unblock") : t("leg.block")} hint={t("leg.single")} onClick={() => run(onToggleDisable)} tone="amber" />
           {onDelete && (
-            <MenuItem icon={deleteConfig.icon} label={deleteConfig.label} hint={t("leg.single")} onClick={() => onDelete && run(onDelete)} tone={deleteConfig.tone} />
+            <MenuItem icon={deleteConfig.icon} label={deleteConfig.label} hint={deleteConfig.hint ?? t("leg.single")} title={deleteConfig.title} onClick={() => onDelete && run(onDelete)} tone={deleteConfig.tone} disabled={deleteConfig.disabled} />
           )}
           {showRollGroup && <div className="my-0.5 border-t border-slate-800" />}
           {onRoll && <MenuItem icon={<CalendarClock size={12} />} label={t("leg.roll")} hint={t("leg.single")} onClick={() => onRoll && run(onRoll)} tone="sky" />}
@@ -600,16 +616,42 @@ export default function LegRow({
   );
 
   // What the delete/close menu item actually does, and how it's labeled —
-  // resolved from `leg.derivedFrom` first (this leg was created by a Roll/
-  // Protect/Hedge, so removing it means undoing that action — the handler
-  // passed in via `onDelete` already carries the compound revert logic,
-  // see useLegEditing.ts's deleteLeg/closeTrackedLeg), falling back to the
-  // plain `deleteVariant` prop otherwise. The click behavior is identical
-  // either way (just calls `onDelete`); only the label/icon/tone change, so
-  // the menu tells the person what will actually happen instead of always
-  // saying "删除" for what's really an undo.
+  // resolved in priority order:
+  // 1. `leg.derivedFrom` set → this leg was created by a Roll/Protect/
+  //    Hedge, so removing it means undoing that action (the `onDelete`
+  //    handler already carries the compound revert logic — see
+  //    useLegEditing.ts's deleteLeg/closeTrackedLeg). Locked (1a) once that
+  //    action has been captured into a saved snapshot — see types.ts's
+  //    comment on `derivedFrom.locked` — in which case the item is shown
+  //    disabled instead of actionable, so the record that was just saved
+  //    can't be silently invalidated by an undo a moment later.
+  // 2. `leg.closedPnl !== undefined` (and no derivedFrom) → this is an
+  //    organic leg that's already been closed (平仓) — shown so the row
+  //    stays visible with its frozen P&L (see the legPnl fallback below),
+  //    but there's nothing further to do here, so the item is disabled
+  //    rather than able to silently re-freeze at 0 (a closed leg has no
+  //    live P&L to read any more — see closeTrackedLeg's own guard).
+  // 3. Otherwise → the plain `deleteVariant` prop ("delete" or "close").
+  // The click behavior itself never changes (always just calls
+  // `onDelete`); only the label/icon/tone/disabled state do, so the menu
+  // tells the person what will actually happen instead of always saying
+  // "删除" for what might really be an undo or a no-op.
   const deleteConfig = (() => {
     if (leg.derivedFrom) {
+      if (leg.derivedFrom.locked) {
+        const lockedLabel =
+          leg.derivedFrom.via === "roll" ? t("leg.rollLocked")
+          : leg.derivedFrom.via === "protect" ? t("leg.protectLocked")
+          : t("leg.hedgeLocked");
+        return {
+          icon: <Lock size={12} />,
+          label: lockedLabel,
+          tone: "default" as const,
+          disabled: true,
+          hint: t("leg.lockedShortHint"),
+          title: t("leg.lockedHint"),
+        };
+      }
       switch (leg.derivedFrom.via) {
         case "roll":
           return { icon: <Undo2 size={12} />, label: t("leg.undoRoll"), tone: "amber" as const };
@@ -619,6 +661,9 @@ export default function LegRow({
           return { icon: <Undo2 size={12} />, label: t("leg.undoHedge"), tone: "amber" as const };
       }
     }
+    if (leg.closedPnl !== undefined) {
+      return { icon: <Lock size={12} />, label: t("leg.alreadyClosed"), tone: "default" as const, disabled: true };
+    }
     return deleteVariant === "close"
       ? { icon: <LogOut size={12} />, label: t("leg.closePosition"), tone: "sky" as const }
       : { icon: <Trash2 size={12} />, label: t("leg.delete"), tone: "rose" as const };
@@ -627,12 +672,14 @@ export default function LegRow({
   // Small pairing badge next to the leg index — see linkInfo's own comment
   // on the Props interface above. "source" (the original leg a roll/
   // protect points away from) and "derived" (the new leg it points to) get
-  // the same icon (keyed by `via`) but different tone, so a glance at two
-  // badges pointing at each other's index number is enough to see they're
-  // a pair, without needing to open either menu.
+  // the same icon (keyed by `via`) but different tone, and both show the
+  // OTHER leg's own number right in the badge (not just in the tooltip) —
+  // so two separate roll pairs on the board (e.g. #1↔#5 and #2↔#6) stay
+  // tellable apart at a glance instead of showing as identical icons that
+  // only differ once you hover to read the tooltip text.
   const linkBadge = linkInfo && (
     <span
-      className={`flex shrink-0 items-center ${linkInfo.role === "source" ? "text-slate-500" : "text-amber-400"}`}
+      className={`flex shrink-0 items-center gap-0.5 ${linkInfo.role === "source" ? "text-slate-500" : "text-amber-400"}`}
       title={t(
         linkInfo.via === "roll"
           ? linkInfo.role === "source" ? "leg.rollSourceHint" : "leg.rollDerivedHint"
@@ -643,6 +690,7 @@ export default function LegRow({
       )}
     >
       {linkInfo.via === "roll" ? <CalendarClock size={10} /> : linkInfo.via === "protect" ? <Shield size={10} /> : <Layers size={10} />}
+      <span className="text-[8px] font-bold tabular-nums">{linkInfo.otherIndex}</span>
     </span>
   );
 
@@ -860,14 +908,26 @@ export default function LegRow({
         </div>
       )}
 
-      {legPnl !== undefined && (
-        <div className="flex shrink-0 flex-col gap-0.5" title={t("leg.legPnlHint")}>
-          <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{t("leg.legPnl")}</span>
-          <span className={`rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-semibold tabular-nums ${legPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-            {legPnl >= 0 ? "+" : ""}{legPnl.toFixed(2)}
-          </span>
-        </div>
-      )}
+      {(() => {
+        // A closed leg has no live per-leg P&L any more (it's excluded from
+        // the active-legs calculation that produces `legPnl` — see
+        // useComboAnalytics.ts's trackedLegPnlById), so this falls back to
+        // the frozen `closedPnl` snapshot taken the instant it was closed,
+        // and relabels the box so it reads as "已实现" rather than the
+        // live "腿位盈亏" — the number itself won't move again either way,
+        // but the label is what tells the person why.
+        const displayPnl = legPnl ?? leg.closedPnl;
+        if (displayPnl === undefined) return null;
+        const closed = leg.closedPnl !== undefined;
+        return (
+          <div className="flex shrink-0 flex-col gap-0.5" title={closed ? t("leg.closedPnlHint") : t("leg.legPnlHint")}>
+            <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{closed ? t("leg.closedPnlLabel") : t("leg.legPnl")}</span>
+            <span className={`rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-semibold tabular-nums ${displayPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+              {displayPnl >= 0 ? "+" : ""}{displayPnl.toFixed(2)}
+            </span>
+          </div>
+        );
+      })()}
 
       {menu}
     </div>

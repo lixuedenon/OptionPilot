@@ -45,7 +45,43 @@ export interface Leg {
   // isn't guaranteed to survive a save-and-reopen round trip; code reading
   // it already has to treat "referenced leg not found" as "no link" rather
   // than an error (see computeLegLinks in lib/legLinks.ts).
-  derivedFrom?: { legId?: string; via: "roll" | "protect" | "hedge" };
+  // `locked`: true once this leg's derivedFrom state has been captured into
+  // at least one saved TrackedSnapshot (useStrategyOrchestration.ts's
+  // saveTrackedSnapshotTo bakes it in right before calling
+  // addTrackedSnapshot, and also writes it back onto the live trackedLegs so
+  // the UI updates immediately — not just applied after the fact). Xue's
+  // reasoning: once a roll/protect/hedge has been recorded into history,
+  // "撤销" would silently rewrite that history out from under an
+  // already-saved snapshot (the snapshot itself is never touched — it's an
+  // immutable past record — but the live "今日组合" would no longer match
+  // what was saved, which defeats the point of having saved it). Only ever
+  // set to true, never cleared — once locked, permanently locked; a fresh
+  // roll/protect/hedge done AFTER this one is a separate leg with its own
+  // unset `locked`, so it's freely undoable until IT gets saved in turn.
+  // LegRow.tsx's deleteConfig checks this before offering "撤销" as an
+  // actionable item — see its comment for the disabled/locked rendering.
+  derivedFrom?: { legId?: string; via: "roll" | "protect" | "hedge"; locked?: boolean };
+  // 2026-09-12: set only on a TRACKED-combo leg ("今日组合") the moment it's
+  // closed (平仓) or rolled away from — the P&L it had realized at that
+  // exact instant, frozen forever after. Distinct from `disabled` (which by
+  // itself just means "temporarily excluded from calculations, no memory
+  // of why"): before this field existed, 平仓/展期 either deleted the leg
+  // outright or merely disabled it, and either way its contribution to the
+  // position's total P&L silently vanished — xue's report that closing a
+  // leg should book its P&L rather than erase it. useComboAnalytics.ts's
+  // realizedTrackedPnl sums this across trackedLegs and TrackedComboSection
+  // adds it to the displayed total; it deliberately does NOT feed into
+  // trackedResult.change/netChange, so it shows up in the P&L summary
+  // numbers only, not in the tracked curve PayoffChart.tsx draws (xue chose
+  // "只更新盈亏汇总数字" over reshaping the chart). Never set on opening
+  // combo ("legs") legs — that combo is a hypothetical construction, not an
+  // actual position, so "realized P&L" has no meaning there; `deleteLeg`
+  // there stays a plain removal. Cleared back to undefined if the leg is
+  // ever reactivated (toggleTrackedLeg un-blocking it, or "撤销展期"
+  // restoring a roll's source) — a live leg's P&L is computed fresh from
+  // trackedResult again, and leaving a stale value here would double-count
+  // it into realizedTrackedPnl on top of the live number.
+  closedPnl?: number;
 }
 
 export interface Shifts {

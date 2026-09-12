@@ -206,6 +206,20 @@ export function useComboAnalytics(params: {
     return m;
   }, [trackedResult]);
 
+  // Sum of `closedPnl` across ALL trackedLegs (not just activeTrackedLegs —
+  // a closed leg is by definition disabled, so it would never show up in
+  // that filtered list) — the P&L already booked from legs the person has
+  // 平仓'd or rolled away from (see types.ts's `closedPnl` and
+  // TrackedComboSection.tsx's realizedPnl prop). Deliberately NOT folded
+  // into `trackedResult.change` above: that field also feeds PayoffChart's
+  // tracked curve (via App.tsx's `netChange` prop) and pnlAttribution's
+  // price/time/IV decomposition, and xue chose to update the P&L summary
+  // numbers only, not reshape the chart — see CLAUDE.md's "四、3.6".
+  const realizedTrackedPnl = useMemo(() => {
+    if (!trackedLegs) return 0;
+    return trackedLegs.reduce((sum, l) => sum + (l.closedPnl ?? 0), 0);
+  }, [trackedLegs]);
+
   // Same per-leg role explanation the analysis-mode leg list gets (see
   // LegListSection.tsx), computed here separately for "today's combo"
   // since that list is still rendered directly in App.tsx rather than
@@ -262,6 +276,7 @@ export function useComboAnalytics(params: {
     attributionMaxAbs,
     effectiveDaysElapsed,
     trackedResult,
+    realizedTrackedPnl,
     trackedLegPnlById,
     trackedLegRolesById,
     trackedStrategy,

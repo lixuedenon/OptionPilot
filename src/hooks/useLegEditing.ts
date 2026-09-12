@@ -57,7 +57,8 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
   // other half of this fix, the "linked to leg #N" badge). Protect/Hedge
   // legs never disable anything to begin with (see handleProtectConfirm/
   // handleHedgeConfirm below), so deleting one of those is still a plain
-  // removal — nothing extra to restore.
+  // removal — nothing extra to restore. (Opening-combo legs never carry
+  // `closedPnl` — see types.ts — so there's nothing to clear here.)
   const deleteLeg = (id: string) => {
     setLegs((prev) => {
       const target = prev.find((l) => l.id === id);
@@ -172,14 +173,22 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
       setRollTargetSource(source);
     }
   };
-  const handleRollConfirm = (newLeg: Leg) => {
+  // `sourcePnl`: only meaningful (and only ever passed) when rolling a
+  // TRACKED leg — App.tsx supplies `trackedLegPnlById.get(rollTarget.id)`,
+  // the source leg's live P&L the instant before it's disabled, so that
+  // P&L is booked as `closedPnl` instead of silently disappearing from the
+  // position's total the moment the leg stops being "active" (see types.ts
+  // and useComboAnalytics.ts's realizedTrackedPnl). The opening combo
+  // ("legs") has no such concept — it's a hypothetical construction, not an
+  // actual position — so its branch below never sets closedPnl.
+  const handleRollConfirm = (newLeg: Leg, sourcePnl?: number) => {
     if (!rollTarget) return;
     // Tags the new leg with where it came from — see types.ts's
     // `derivedFrom` and lib/legLinks.ts — so the UI can badge the pair and
     // deleteLeg/closeTrackedLeg can auto-restore rollTarget on undo.
     const taggedLeg: Leg = { ...newLeg, derivedFrom: { legId: rollTarget.id, via: "roll" } };
     if (rollTargetSource === "tracked") {
-      setTrackedLegs((prev) => (prev ? prev.map((l) => (l.id === rollTarget.id ? { ...l, disabled: true } : l)) : prev));
+      setTrackedLegs((prev) => (prev ? prev.map((l) => (l.id === rollTarget.id ? { ...l, disabled: true, closedPnl: sourcePnl } : l)) : prev));
       // The new rolled-to leg has no opening-combo counterpart of its own
       // (it didn't exist when trackedLegs was derived from legs) — leaving
       // openLegId unset is correct here, not a gap to fill in; see types.ts.
@@ -230,6 +239,61 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
     setHedgeOpen(false);
   };
 
+  // "今日组合"版的 toggleLeg/deleteLeg — added 2026-09-12 as part of giving
+  // TrackedComboSection's three-dot menu real functionality instead of the
+  // `() => {}` no-ops it shipped with (see App.tsx's TrackedComboSection
+  // wiring). Xue reported that after Roll/Protect/Hedge on a tracked leg,
+  // neither the frozen original leg nor the newly-added leg could be
+  // touched again — that was never a freezing bug in handleRoll/
+  // handleProtect/handleHedge above, it was simply that TrackedComboSection
+  // had no real toggle/delete handlers to call.
+  //
+  // Re-enabling a blocked leg always clears any `closedPnl` it's carrying
+  // (whether from a plain 平仓 or from being a roll's source) — once it's
+  // live again, its P&L is computed fresh from trackedResult every render,
+  // and leaving a stale closedPnl behind would double-count it: once via
+  // the live calculation, again via realizedTrackedPnl summing closedPnl
+  // across trackedLegs.
+  const toggleTrackedLeg = (id: string) => {
+    setTrackedLegs((prev) =>
+      prev
+        ? prev.map((l) => (l.id === id ? { ...l, disabled: !l.disabled, closedPnl: l.disabled ? undefined : l.closedPnl } : l))
+        : prev,
+    );
+  };
+  // `pnl`: the leg's live P&L (App.tsx supplies `trackedLegPnlById.get(id)`)
+  // right before it's closed — see types.ts's `closedPnl` for why this is
+  // captured instead of just deleting the leg (xue: closing a leg used to
+  // make its P&L vanish from the position's total instead of booking it).
+  //
+  // A leg with `derivedFrom` set means this click is really "撤销展期/保护/
+  // 对冲" (see LegRow.tsx's deleteConfig, which relabels the same delete
+  // action for such a leg) — that's a full undo, not a close, so it still
+  // deletes the leg outright; Roll's case additionally restores the source
+  // leg to fully live (clearing ITS closedPnl too, for the same
+  // double-counting reason as toggleTrackedLeg above) rather than leaving a
+  // half-reverted, still-closed leg behind.
+  const closeTrackedLeg = (id: string, pnl: number) => {
+    setTrackedLegs((prev) => {
+      if (!prev) return prev;
+      const target = prev.find((l) => l.id === id);
+      if (!target) return prev;
+      if (target.derivedFrom) {
+        const filtered = prev.filter((l) => l.id !== id);
+        if (target.derivedFrom.via === "roll" && target.derivedFrom.legId) {
+          const sourceId = target.derivedFrom.legId;
+          return filtered.map((l) => (l.id === sourceId ? { ...l, disabled: false, closedPnl: undefined } : l));
+        }
+        return filtered;
+      }
+      // Already closed (e.g. a stray second click) — nothing to do; in
+      // particular, must NOT re-freeze at `pnl`, which for an already-
+      // disabled leg is 0 (trackedLegPnlById only covers active legs).
+      if (target.disabled && target.closedPnl !== undefined) return prev;
+      return prev.map((l) => (l.id === id ? { ...l, disabled: true, closedPnl: pnl } : l));
+    });
+  };
+
   const moveLeg = (index: number, direction: -1 | 1) => {
     setLegs((prev) => {
       const target = index + direction;
@@ -239,31 +303,6 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
       return arr;
     });
   };
-  // "今日组合"版的 toggleLeg/deleteLeg — added 2026-09-12 as part of giving
-  // TrackedComboSection's three-dot menu real functionality instead of the
-  // `() => {}` no-ops it shipped with (see App.tsx's TrackedComboSection
-  // wiring). Xue reported that after Roll/Protect/Hedge on a tracked leg,
-  // neither the frozen original leg nor the newly-added leg could be
-  // touched again — that was never a freezing bug in handleRoll/
-  // handleProtect/handleHedge above, it was simply that TrackedComboSection
-  // had no real toggle/delete handlers to call. closeTrackedLeg carries the
-  // same roll-undo restore logic as deleteLeg above.
-  const toggleTrackedLeg = (id: string) => {
-    setTrackedLegs((prev) => (prev ? prev.map((l) => (l.id === id ? { ...l, disabled: !l.disabled } : l)) : prev));
-  };
-  const closeTrackedLeg = (id: string) => {
-    setTrackedLegs((prev) => {
-      if (!prev) return prev;
-      const target = prev.find((l) => l.id === id);
-      const filtered = prev.filter((l) => l.id !== id);
-      if (target?.derivedFrom?.via === "roll" && target.derivedFrom.legId) {
-        const sourceId = target.derivedFrom.legId;
-        return filtered.map((l) => (l.id === sourceId ? { ...l, disabled: false } : l));
-      }
-      return filtered;
-    });
-  };
-
   const moveTrackedLeg = (index: number, direction: -1 | 1) => {
     setTrackedLegs((prev) => {
       if (!prev) return prev;

@@ -278,15 +278,36 @@ export function useStrategyOrchestration(params: {
   // Shared by handleSaveTracked's normal path and its "save the strategy
   // first, then attach the snapshot" fallback below — appends trackedLegs
   // as a new TrackedSnapshot on the given (already-saved) strategy id.
+  //
+  // 2026-09-12: also PERMANENTLY LOCKS every roll/protect/hedge-derived leg
+  // (`derivedFrom` set) that's part of this save — see types.ts's comment on
+  // `derivedFrom.locked`. Locking has to happen HERE, on the exact array
+  // handed to addTrackedSnapshot, not as a separate follow-up setTrackedLegs
+  // call afterward: the snapshot stores whatever leg objects it's given, so
+  // if the lock were only applied to the live trackedLegs post-hoc, a
+  // snapshot saved a moment earlier would still contain unlocked
+  // derivedFrom legs — and reopening THAT snapshot later (handleTrack/
+  // handleSelectSnapshot copy a past snapshot's legs back into trackedLegs
+  // verbatim aside from id/dte) would resurrect an undo option for an
+  // action that was supposedly already locked in. Baking the lock into the
+  // same array that both gets saved AND becomes the new live trackedLegs
+  // keeps the two in sync by construction, not by remembering to update
+  // both. Already-locked legs are left alone (no-op) rather than
+  // re-spread, purely to avoid a pointless new object identity on every
+  // save for legs that didn't change.
   const saveTrackedSnapshotTo = useCallback(async (strategyId: string) => {
     if (!trackedLegs) return;
-    const updated = await addTrackedSnapshot(strategyId, trackedLegs, trackedSpot ?? spot, Date.now());
+    const lockedLegs = trackedLegs.map((l) =>
+      l.derivedFrom && !l.derivedFrom.locked ? { ...l, derivedFrom: { ...l.derivedFrom, locked: true } } : l,
+    );
+    const updated = await addTrackedSnapshot(strategyId, lockedLegs, trackedSpot ?? spot, Date.now());
     setSavedStrategies(updated);
     const updatedStrategy = updated.find((s) => s.id === strategyId);
     const newSnaps = updatedStrategy?.trackedSnapshots ?? [];
     if (newSnaps.length > 0) setActiveSnapshotId(newSnaps[newSnaps.length - 1].id);
+    setTrackedLegs(lockedLegs);
     setTrackedDirty(false);
-  }, [trackedLegs, trackedSpot, spot, setActiveSnapshotId, setSavedStrategies, setTrackedDirty]);
+  }, [trackedLegs, trackedSpot, spot, setActiveSnapshotId, setSavedStrategies, setTrackedDirty, setTrackedLegs]);
 
   const handleSaveStrategy = useCallback(async (filename: string) => {
     const updated = await saveStrategy({ filename, symbol, spot, legs: activeLegs, shifts, openingAt });
