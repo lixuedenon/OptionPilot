@@ -15,6 +15,14 @@ interface UseLegEditingParams {
   setLegs: React.Dispatch<React.SetStateAction<Leg[]>>;
   trackedLegs: Leg[] | null;
   setTrackedLegs: React.Dispatch<React.SetStateAction<Leg[] | null>>;
+  // 2026-09-12 bug fix: every function in this file that mutates `trackedLegs`
+  // must also flip this on — see the long comment above handleRollConfirm's
+  // tracked branch for why. Optional only so this file doesn't force every
+  // existing/future caller to wire it before TypeScript is satisfied; when
+  // omitted, tracked-side edits made here silently fail to unlock "保存追踪
+  // 快照" (App.tsx's `TrackedComboSection` disables that button on
+  // `!trackedDirty`), so the one real caller (App.tsx) always passes it.
+  setTrackedDirty?: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
 // Owns everything about editing/selecting/acting-on the individual legs of
@@ -30,9 +38,19 @@ interface UseLegEditingParams {
 // Deliberately NOT included (stays in App.tsx): addLeg/applyPreset/
 // clearAllLegs/doClearAll (they reset/replace the whole combo and touch
 // legBaseSpot/legBaseSymbol/spotManuallySet/tracking state), updateTrackedLeg
-// (tracked-mode dirty-tracking), handleCorrectSpot, handleAddCustom/
+// (lives in useStrategyOrchestration.ts), handleCorrectSpot, handleAddCustom/
 // handleAddToSimAccount (cross-feature, not leg-editing).
-export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: UseLegEditingParams) {
+//
+// 2026-09-12 bug fix: every tracked-side mutation in THIS file (roll/protect/
+// hedge confirm, toggle, close) must call `setTrackedDirty?.(true)` too, the
+// same as updateTrackedLeg already does — xue reported that after Roll/
+// Protect/Hedge/平仓/取消屏蔽 on a "今日组合" leg, "保存追踪快照" stayed
+// disabled. Root cause: that button's `disabled={!trackedDirty}` and this
+// file's tracked-side handlers changed `trackedLegs` directly via
+// `setTrackedLegs` without ever touching `trackedDirty` — plain field edits
+// (typing a new strike/premium) went through `updateTrackedLeg` instead,
+// which already set it, so only THESE actions were silently exempt.
+export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs, setTrackedDirty }: UseLegEditingParams) {
   const [rollTarget, setRollTarget] = useState<Leg | null>(null);
   const [rollTargetSource, setRollTargetSource] = useState<LegTarget>("legs");
   const [protectTarget, setProtectTarget] = useState<Leg | null>(null);
@@ -193,6 +211,7 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
       // (it didn't exist when trackedLegs was derived from legs) — leaving
       // openLegId unset is correct here, not a gap to fill in; see types.ts.
       setTrackedLegs((prev) => (prev ? [...prev, taggedLeg] : prev));
+      setTrackedDirty?.(true);
     } else {
       setLegs((prev) => prev.map((l) => l.id === rollTarget.id ? { ...l, disabled: true } : l));
       setLegs((prev) => [...prev, taggedLeg]);
@@ -213,6 +232,7 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
     const taggedLeg: Leg = { ...protectLeg, derivedFrom: { legId: protectTarget.id, via: "protect" } };
     if (protectTargetSource === "tracked") {
       setTrackedLegs((prev) => (prev ? [...prev, taggedLeg] : prev));
+      setTrackedDirty?.(true);
     } else {
       setLegs((prev) => [...prev, taggedLeg]);
     }
@@ -233,6 +253,7 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
     const taggedLeg: Leg = { ...hedgeLeg, derivedFrom: { via: "hedge" } };
     if (hedgeTargetSource === "tracked") {
       setTrackedLegs((prev) => (prev ? [...prev, taggedLeg] : prev));
+      setTrackedDirty?.(true);
     } else {
       setLegs((prev) => [...prev, taggedLeg]);
     }
@@ -260,6 +281,7 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
         ? prev.map((l) => (l.id === id ? { ...l, disabled: !l.disabled, closedPnl: l.disabled ? undefined : l.closedPnl } : l))
         : prev,
     );
+    setTrackedDirty?.(true);
   };
   // `pnl`: the leg's live P&L (App.tsx supplies `trackedLegPnlById.get(id)`)
   // right before it's closed — see types.ts's `closedPnl` for why this is
@@ -292,6 +314,7 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
       if (target.disabled && target.closedPnl !== undefined) return prev;
       return prev.map((l) => (l.id === id ? { ...l, disabled: true, closedPnl: pnl } : l));
     });
+    setTrackedDirty?.(true);
   };
 
   const moveLeg = (index: number, direction: -1 | 1) => {
@@ -312,6 +335,7 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
       [arr[index], arr[target]] = [arr[target], arr[index]];
       return arr;
     });
+    setTrackedDirty?.(true);
   };
 
   return {

@@ -20,8 +20,18 @@ import { useI18n } from "@/i18n/I18nContext";
 interface Props {
   isCompareMode: boolean;
   trackedStrategy: SavedStrategy | undefined;
-  activeSnapshotId: string | null;
-  onUpdateSnapshotTime: (snapshotId: string, savedAt: number) => void;
+  // 2026-09-12: corrects the strategy's own fixed `openingAt`, for the
+  // "开仓组合 (对比基准)" date field just below — that field used to also
+  // double as an editor for the currently-selected SNAPSHOT's own saved-at
+  // time (via a since-removed `onUpdateSnapshotTime`/`activeSnapshotId`
+  // pair — see savedStrategies.ts's still-available updateSnapshotTime and
+  // useStrategyOrchestration.ts's handleUpdateSnapshotTime, kept around
+  // unused in case a dedicated per-snapshot edit UI wants them later, e.g.
+  // next to each entry in TrackedComboSection.tsx's snapshot picker), which
+  // was the actual bug xue reported: a header meant to be a FIXED baseline
+  // was silently showing/editing whatever snapshot happened to be
+  // selected instead. This field is now openingAt-only.
+  onUpdateOpeningAt: (newOpeningAt: number) => void;
   legToolbar: ReactNode;
 
   spot: number;
@@ -68,8 +78,7 @@ interface Props {
 export default function LegListSection({
   isCompareMode,
   trackedStrategy,
-  activeSnapshotId,
-  onUpdateSnapshotTime,
+  onUpdateOpeningAt,
   legToolbar,
   spot,
   openingAt,
@@ -127,19 +136,24 @@ export default function LegListSection({
             <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-400">{t("compare.openCombo")}</span>
             <span className="text-[9px] text-slate-500">{t("compare.compareBase")}</span>
             {(() => {
-              const snaps = trackedStrategy?.trackedSnapshots ?? [];
-              const activeSnap = snaps.find((sn) => sn.id === activeSnapshotId) ?? snaps[snaps.length - 1];
-              // Prefer a real snapshot's own save time when one exists (a
-              // snapshot genuinely represents "today's check-in," a
-              // different moment from when the position was first
-              // opened). But with NO snapshot recorded yet, falling back
-              // straight to trackedStrategy.createdAt (whenever "save to
-              // library" happened to get clicked) skipped right past
-              // openingAt (the date the person actually told the app the
-              // position opened) — so editing openingAt and saving looked
-              // like it had no effect here. openingAt is the more correct
-              // fallback; createdAt only as a last resort if neither exists.
-              const ts = activeSnap?.savedAt ?? trackedStrategy?.openingAt ?? trackedStrategy?.createdAt;
+              // 2026-09-12 bug fix: this field is "开仓组合 (对比基准)" — a
+              // FIXED baseline that's supposed to never move — but used to
+              // show `activeSnap?.savedAt` (the currently-selected
+              // snapshot's own save time) in preference to the strategy's
+              // real `openingAt` whenever any snapshot existed. That made
+              // it silently drift forward to "today" (or whichever
+              // snapshot happened to be selected) every time a new
+              // check-in got saved — xue's report that this date kept
+              // showing today instead of when the position was actually
+              // opened. The `openingAt` PROP (kept in sync with
+              // trackedStrategy.openingAt by App.tsx's handleTrack/
+              // handleOpenStrategy) is now the only source, with
+              // trackedStrategy?.createdAt as a last-resort fallback for
+              // the rare case neither exists. The snapshot's own save time
+              // still has its own place — TrackedComboSection.tsx's
+              // snapshot selector — so nothing here loses information,
+              // this field just stops doubling as a display of it.
+              const ts = openingAt || trackedStrategy?.createdAt;
               if (!ts) return null;
               return (
                 <label className="flex items-center gap-1 text-[9px] tabular-nums text-slate-500" title={t("compare.clickModifyDate")}>
@@ -149,7 +163,7 @@ export default function LegListSection({
                     value={formatDateInput(ts)}
                     onChange={(e) => {
                       const newTs = parseDateInput(e.target.value);
-                      if (newTs !== null && activeSnap) onUpdateSnapshotTime(activeSnap.id, newTs);
+                      if (newTs !== null) onUpdateOpeningAt(newTs);
                     }}
                     className="rounded border border-slate-700 bg-slate-900 px-1 py-0.5 text-[9px] tabular-nums text-slate-400 outline-none focus:border-sky-500 focus:text-sky-200 [color-scheme:dark]"
                   />

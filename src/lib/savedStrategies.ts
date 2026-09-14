@@ -218,6 +218,26 @@ export async function updateSnapshotTime(strategyId: string, snapshotId: string,
   return strategies;
 }
 
+// 2026-09-12: corrects the strategy's own FIXED opening date — distinct
+// from updateSnapshotTime just above, which edits one particular
+// snapshot's saved-at time. Xue reported that "开仓组合 (对比基准)"
+// (LegListSection.tsx, the header meant to be a fixed baseline that never
+// moves) was showing today's date instead of when the position was
+// actually opened, once any snapshot existed — see that component's
+// comment on the `ts` computation for the root cause (it used to prefer
+// the currently-selected snapshot's savedAt). This is the persistence
+// half of the fix: lets that field's date input actually correct
+// `openingAt` on the saved record, instead of having nowhere to write to.
+export async function updateStrategyOpeningAt(strategyId: string, openingAt: number): Promise<SavedStrategy[]> {
+  const strategies = loadFromStorage();
+  const idx = strategies.findIndex((s) => s.id === strategyId);
+  if (idx >= 0) {
+    strategies[idx] = { ...strategies[idx], openingAt };
+    saveToStorage(strategies);
+  }
+  return strategies;
+}
+
 export async function deleteTrackedSnapshot(strategyId: string, snapshotId: string): Promise<SavedStrategy[]> {
   const strategies = loadFromStorage();
   const idx = strategies.findIndex((s) => s.id === strategyId);

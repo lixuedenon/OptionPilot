@@ -6,6 +6,7 @@ import {
   overwriteStrategy,
   addTrackedSnapshot,
   updateSnapshotTime,
+  updateStrategyOpeningAt,
   deleteTrackedSnapshot,
   backfillTrackedSnapshots,
   serializeStrategyState,
@@ -547,6 +548,37 @@ export function useStrategyOrchestration(params: {
     }
   }, [trackingStrategyId, trackedLegs, openingAt, setSavedStrategies, setTrackedDaysElapsed, setTrackedLegs]);
 
+  // 2026-09-12: lets "开仓组合 (对比基准)"'s date field (LegListSection.tsx)
+  // actually correct the strategy's real opening date — xue reported that
+  // field was showing TODAY's date instead of when the position was
+  // actually opened. Root cause was in LegListSection.tsx's `ts`
+  // computation, which used to prefer the currently-selected snapshot's
+  // own savedAt over the strategy's real `openingAt` whenever any snapshot
+  // existed — so a header meant to be a FIXED baseline silently drifted
+  // forward every time a new snapshot got saved. That component no longer
+  // reads activeSnap.savedAt for this field at all; this handler is what
+  // its date input calls instead (see savedStrategies.ts's
+  // updateStrategyOpeningAt for the persistence half).
+  //
+  // Deliberately does NOT re-decay `legs`/`trackedLegs` dte the way
+  // handleUpdateSnapshotTime just above does: those legs' current dte is
+  // already expressed "as of today" from whenever they were last loaded,
+  // with no ONGOING dependency on openingAt — openingAt only entered that
+  // decay math once, at load time, as a stand-in for "when the stored dte
+  // was last accurate" (see handleOpenStrategy/handleTrack). Retroactively
+  // re-deriving dte after correcting a mis-recorded opening date is a
+  // deeper problem than what's being fixed here (the complaint was that
+  // the DISPLAYED date drifted, not a request to reconcile historical
+  // dte) — not attempted.
+  const handleUpdateOpeningAt = useCallback(async (newOpeningAt: number) => {
+    setOpeningAt(newOpeningAt);
+    setTrackedDaysElapsed(calendarDaysSince(newOpeningAt));
+    if (trackingStrategyId) {
+      const updated = await updateStrategyOpeningAt(trackingStrategyId, newOpeningAt);
+      setSavedStrategies(updated);
+    }
+  }, [trackingStrategyId, setOpeningAt, setTrackedDaysElapsed, setSavedStrategies]);
+
   const handleOpenStrategy = useCallback((s: SavedStrategy) => {
     // Same dte-decay fix as handleTrack above — without this, "打开策略"
     // re-loads s.legs's dte verbatim, and since LegRow always renders the
@@ -641,17 +673,37 @@ export function useStrategyOrchestration(params: {
     } else {
       // No tracked history yet (brand-new combo, or matched a strategy that
       // was only ever "saved", never tracked). This does NOT mean zero days
-      // have elapsed — `openingAt` can genuinely be in the past (a saved
-      // strategy opened days ago via "打开策略", or a hand-edited 开仓日期),
-      // and switching to compare mode "right now" should reflect that real
-      // gap, same as handleTrack's own no-snapshot fallback does via
-      // `calendarDaysSince(s.openingAt ?? s.createdAt)`. The old code here
-      // hardcoded 0 regardless of `openingAt`, so both stat boxes
-      // (LegListSection's 开仓组合 summary and TrackedComboSection's
-      // 持仓组合 grid — they share this same `effectiveDaysElapsed`) always
-      // showed "已过0天" and left the tracked legs' DTE identical to the
-      // opening legs', even when the opening date was days in the past —
-      // 2026-09-04 bug.
+      // have elapsed for the "已过X天" STAT — `openingAt` can genuinely be
+      // in the past (a saved strategy opened days ago via "打开策略", or a
+      // hand-edited 开仓日期) — so `daysElapsed` below is still needed for
+      // `setTrackedDaysElapsed`.
+      //
+      // 2026-09-13 bug (regression of the 2026-09-04 one described below):
+      // `legs` here is the live analysis-mode array — whatever populated it
+      // (handleOpenStrategy/handleTrack's own `s.legs.dte - daysElapsed`
+      // decay, or a leg freshly typed in analysis mode) already leaves
+      // `l.dte` correct AS OF TODAY, because that's exactly what analysis
+      // mode's date column (dateFromDte = today + dte) is showing on screen
+      // right now. Subtracting `daysElapsed` again here decayed it a SECOND
+      // time — e.g. handleOpenStrategy sets legs.dte = s.legs.dte -
+      // daysElapsed, then this line computed legs.dte - daysElapsed AGAIN,
+      // i.e. s.legs.dte - 2*daysElapsed — silently undercounting the
+      // tracked leg's remaining days (sometimes clamped all the way to 0,
+      // making "持仓组合" show today's date as a bogus 到期日) while the
+      // untouched `legs`/开仓组合 row kept showing the correct expiry. This
+      // is exactly what the top-of-function comment above already promised
+      // ("trackedLegs starts as an exact copy of legs with no DTE
+      // reduction") — the code just didn't match that comment. Fixed by
+      // actually doing what the comment says: copy `l.dte` as-is.
+      //
+      // (Old 2026-09-04 bug, still relevant context: before that fix this
+      // branch hardcoded daysElapsed-independent zero, so both stat boxes —
+      // LegListSection's 开仓组合 summary and TrackedComboSection's 持仓组合
+      // grid, which share this same `effectiveDaysElapsed` — always showed
+      // "已过0天" even when the opening date was days in the past. That part
+      // of the fix (deriving `daysElapsed` from `openingAt` for the STAT)
+      // was correct and is kept; only the dte-math reuse of the same number
+      // was wrong.)
       const daysElapsed = calendarDaysSince(openingAt);
       setTrackedDaysElapsed(daysElapsed);
       setTrackedLegs(
@@ -662,7 +714,7 @@ export function useStrategyOrchestration(params: {
           // handleTrack's no-snapshot branch above, just deriving directly
           // from the in-editor `legs` instead of a persisted SavedStrategy.
           openLegId: l.id,
-          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - daysElapsed),
+          dte: l.dte,
         })),
       );
       setTrackedSpot(spot);
@@ -764,6 +816,7 @@ export function useStrategyOrchestration(params: {
     handleSelectSnapshot,
     handleDeleteSnapshot,
     handleUpdateSnapshotTime,
+    handleUpdateOpeningAt,
     handleOpenStrategy,
     handleSwitchToCompare,
     performSwitchToAnalysis,

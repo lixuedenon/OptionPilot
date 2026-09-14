@@ -524,7 +524,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     handleSaveTracked,
     handleSelectSnapshot,
     handleDeleteSnapshot,
-    handleUpdateSnapshotTime,
+    handleUpdateOpeningAt,
     handleOpenStrategy,
     handleSwitchToCompare,
     performSwitchToAnalysis,
@@ -831,8 +831,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           <LegListSection
             isCompareMode={isCompareMode}
             trackedStrategy={trackedStrategy}
-            activeSnapshotId={activeSnapshotId}
-            onUpdateSnapshotTime={handleUpdateSnapshotTime}
+            onUpdateOpeningAt={handleUpdateOpeningAt}
             legToolbar={legToolbar}
             spot={spot}
             openingAt={openingAt}
