@@ -2,7 +2,7 @@
 
 # OptionPilot 交接文档（整合版）
 
-**版本**：整合版，更新于 2026-09-12。本次更新完整补写了"四、3.6"（此前只在别处留了交叉引用、章节本身是占位文字）：展期/保护/对冲的`source`参数选边、`derivedFrom`撤销与配对徽章、平仓/展期已实现盈亏记账（`closedPnl`/`realizedTrackedPnl`，只影响持仓盈亏汇总数字、不改到期盈亏图）、配对徽章的序号可见化、修复"展期/保护/对冲/平仓/取消屏蔽今日组合的腿之后保存快照按钮保持禁用"的bug（漏调`setTrackedDirty`），以及"保存快照即锁定"设计（保存后展期/保护/对冲永久不可撤销，保存前有确认提示）；同一天还修复了"开仓组合 (对比基准)"的日期显示会随快照保存漂移到"今天"的bug（根因是取值逻辑错误地优先用当前快照的保存时间而不是策略真实的`openingAt`），拆出了独立的`onUpdateOpeningAt`/`handleUpdateOpeningAt`/`updateStrategyOpeningAt`。同时补上了此前一直漏收录的`useStrategyOrchestration.ts`（全项目最大的hook）到"三、文件地图"。此前的更新新增"四、10 持仓处置建议"（position-management-kb检索功能：架构、两个真实bug的完整记录、当前暂停状态和原因，见该节）、"六、backlog"新增第22条（建议呈现格式重新设计，待xue决定）和第23条（移动端适配，评估阶段未开始）、"五、核心设计原则"新增第16/17条（这次两个bug各自留下的通用教训）。此前的更新合并了 2026-09-05（预设风险揭示+到期盈亏小图+9条预设内容修正）、2026-09-06上半（zh.ts/en.ts严重滞后事故的修复与教训）、2026-09-06下半（对比模式健康度/Greeks修正、追踪快照自动回填、一个由此引入又当场修复的布局bug）、2026-09-07上半（竞品调研`FEATURE_PROPOSALS_2026-09.md`第20条里的四项一次性实现：仓位管理提醒、模拟账户交易统计面板、术语悬浮提示、展期前后风险对比图；随后做了一轮完整性/一致性复核，新增开头的"项目现状一览"速览表）、2026-09-07下半（功能精简走查：模块引导弹窗加"不再显示"持久化选项、移除组合级Greeks数字展示面板（保留计算供健康度使用）、修复展期风险对比图在"仅改到期日"场景下曲线失真/看似无变化的bug、备份序列化逻辑去重、评估localStorage容量隐患）、2026-09-07第三轮（UI布局微调：健康度徽章+分析↔对比模式切换按钮从左侧腿位面板搬到`PayoffChart.tsx`标题栏、紧挨着股票代码，`LegListSection.tsx`和`TrackedComboSection.tsx`各自独立的一份"开仓组合"统计网格——股价/时间流逝/隐含波动率——是完全重复的展示，删掉了信息量更少的`LegListSection.tsx`那一份，只保留`TrackedComboSection.tsx`带持仓盈亏列的那份）几轮会话的成果。**这是当前最新、最权威的交接文档版本**，跟仓库其它文件一起push到GitHub main分支后，应视为项目当前状态的唯一事实来源（直到下一次更新）。**这份文档替代了之前"按会话追加"的版本**——旧版本是每轮会话在文末加一个新章节，越滚越长，找一个功能的现状要翻好几个章节、对着时间戳自己判断哪段是最新的。这份文档**按功能/模块组织，只描述"现在是什么样"，不按时间顺序记流水账**。
+**版本**：整合版，更新于 2026-09-14。本次更新新增了"四、1.8 持仓怎么办 / 解释当前情况"完整小节——这个功能此前在文档里只被两处交叉引用提到过名字，从未真正写过内容：`situationExplainer.ts`的建议规则引擎架构（按腿位形状分流：裸卖单腿/垂直价差/双卖出宽跨/其它占位）、每张表的优先级判断顺序、以及本次会话把四张表"正常持有"这个兜底分支的文案从一句空泛套话（"目前没有需要特别处理的信号"）改成引用实际算出数字（delta/亏损占比/利润占比/距到期天数）的过程。同时记录了本次会话发现并修复的两个独立bug：`useComboAnalytics.ts`的`trackedResult`跟踪盈亏计算漏乘`qty`（多张合约的"跟位盈亏"/"持仓盈亏"被系统性算错，见"三、文件地图"该文件条目和"五、19"）、原生`<input type="date">`日期选择器不跟随App语言设置、切到英文界面日历弹窗仍显示中文月份（6处输入框统一修复，见"五、18"）；以及两个本次会话诊断清楚但**明确留给下一个会话去修**的已知问题：对比模式"今日组合"重新保存/覆盖策略时开仓组合的到期日会被二次衰减（见"六、24"）、持仓建议弹窗里pnl取整显示成"0"却又同时标着"占最大盈利的16%"这种看起来自相矛盾的措辞（见"六、25"）。此前的更新完整补写了"四、3.6"（此前只在别处留了交叉引用、章节本身是占位文字）：展期/保护/对冲的`source`参数选边、`derivedFrom`撤销与配对徽章、平仓/展期已实现盈亏记账（`closedPnl`/`realizedTrackedPnl`，只影响持仓盈亏汇总数字、不改到期盈亏图）、配对徽章的序号可见化、修复"展期/保护/对冲/平仓/取消屏蔽今日组合的腿之后保存快照按钮保持禁用"的bug（漏调`setTrackedDirty`），以及"保存快照即锁定"设计（保存后展期/保护/对冲永久不可撤销，保存前有确认提示）。同时补上了此前一直漏收录的`useStrategyOrchestration.ts`（全项目最大的hook）到"三、文件地图"。此前的更新新增"四、10 持仓处置建议"（position-management-kb检索功能：架构、两个真实bug的完整记录、当前暂停状态和原因，见该节）、"六、backlog"新增第22条（建议呈现格式重新设计，待xue决定）和第23条（移动端适配，评估阶段未开始）、"五、核心设计原则"新增第16/17条（这次两个bug各自留下的通用教训）。此前的更新合并了 2026-09-05（预设风险揭示+到期盈亏小图+9条预设内容修正）、2026-09-06上半（zh.ts/en.ts严重滞后事故的修复与教训）、2026-09-06下半（对比模式健康度/Greeks修正、追踪快照自动回填、一个由此引入又当场修复的布局bug）、2026-09-07上半（竞品调研`FEATURE_PROPOSALS_2026-09.md`第20条里的四项一次性实现：仓位管理提醒、模拟账户交易统计面板、术语悬浮提示、展期前后风险对比图；随后做了一轮完整性/一致性复核，新增开头的"项目现状一览"速览表）、2026-09-07下半（功能精简走查：模块引导弹窗加"不再显示"持久化选项、移除组合级Greeks数字展示面板（保留计算供健康度使用）、修复展期风险对比图在"仅改到期日"场景下曲线失真/看似无变化的bug、备份序列化逻辑去重、评估localStorage容量隐患）、2026-09-07第三轮（UI布局微调：健康度徽章+分析↔对比模式切换按钮从左侧腿位面板搬到`PayoffChart.tsx`标题栏、紧挨着股票代码，`LegListSection.tsx`和`TrackedComboSection.tsx`各自独立的一份"开仓组合"统计网格——股价/时间流逝/隐含波动率——是完全重复的展示，删掉了信息量更少的`LegListSection.tsx`那一份，只保留`TrackedComboSection.tsx`带持仓盈亏列的那份）几轮会话的成果。**这是当前最新、最权威的交接文档版本**，跟仓库其它文件一起push到GitHub main分支后，应视为项目当前状态的唯一事实来源（直到下一次更新）。**这份文档替代了之前"按会话追加"的版本**——旧版本是每轮会话在文末加一个新章节，越滚越长，找一个功能的现状要翻好几个章节、对着时间戳自己判断哪段是最新的。这份文档**按功能/模块组织，只描述"现在是什么样"，不按时间顺序记流水账**。
 
 **维护方式（重要，后续会话都要遵守）**：
 - 做完一个功能改动或修复了一个bug，**直接去改对应的章节内容**，让它反映当前状态，不要在文末追加"2026-xx-xx又做了什么"这种新章节。
@@ -159,7 +159,7 @@ isCompareMode = trackedLegs !== null
 
 ## `src/components/dialogs/`（小型确认弹窗集合，`index.ts`统一导出）
 
-`AlertCard.tsx`、`HelpPanel.tsx`、`ImpliedSpotInfoPanel.tsx`、`MarginErrorDialog.tsx`、`ConfirmClearDialog.tsx`、`ConfirmBulkDeleteDialog.tsx`、`ConfirmSaveTrackedDialog.tsx`、`ConfirmSnapshotDialog.tsx`（预设切换和模式切换两处复用同一个组件）、`ConfirmReplacePresetDialog.tsx`、`ConfirmLeaveDialog.tsx`、`ConfirmResetAccountDialog.tsx`、`ConfirmLockRollDialog.tsx`（2026-09-12新增，见"四、3.6"）——全是纯展示型的小确认框，逻辑都在调用方。
+`AlertCard.tsx`、`HelpPanel.tsx`、`ImpliedSpotInfoPanel.tsx`、`MarginErrorDialog.tsx`、`ConfirmClearDialog.tsx`、`ConfirmBulkDeleteDialog.tsx`、`ConfirmSaveTrackedDialog.tsx`、`ConfirmSnapshotDialog.tsx`（预设切换和模式切换两处复用同一个组件）、`ConfirmReplacePresetDialog.tsx`、`ConfirmLeaveDialog.tsx`、`ConfirmResetAccountDialog.tsx`、`ConfirmLockRollDialog.tsx`（2026-09-12新增，见"四、3.6"）、`SituationExplainDialog.tsx`（"解释当前情况"弹窗，纯展示，内容来自`situationExplainer.ts`，见"四、1.8"）——全是纯展示型的小确认框，逻辑都在调用方。
 
 `HelpPanel.tsx`是个例外，2026-09-06重构成了模块感知组件（不再是单一的通用说明文档），详见"四、9"。**2026-09-07下半新增持久化"不再显示"**：`gate`变体的确认按钮旁多了一个复选框，勾选后写入`localStorage`（`optionpilot.guideDismissed.<moduleId>`），该模块的首次引导以后永久不再自动弹出（除非清了浏览器数据）；同时导出了`isGuideDismissed(moduleId)`供`App.tsx`/`SimulatorPage.tsx`的初始state判断，避免"先闪一下再关掉"。`variant="info"`（header常驻的"使用说明"按钮）不受影响，永远可以手动重新打开同样的内容。
 
@@ -169,7 +169,7 @@ isCompareMode = trackedLegs !== null
 - `useCustomPresets.ts`——自定义预设的加载/增删状态封装
 - `useSavedStrategies.ts`——已存策略列表的加载/增删状态封装
 - `useLegEditing.ts`——开仓组合单腿的增删改、批量选择/批量屏蔽/批量删除、展期/保护/对冲/比较四个弹窗的目标状态，以及`moveLeg`/`moveTrackedLeg`两个顺序调整函数。从`App.tsx`拆出，接收`{legs, setLegs, trackedLegs, setTrackedLegs}`。展期/保护/对冲三个handler（`handleRoll`/`handleProtect`/`handleHedge`）额外接受一个`source: "legs" | "tracked"`参数（默认`"legs"`），决定操作目标是开仓组合还是今日组合——2026-09-06修复前这三个handler无论从哪调用都写死操作`legs`，今日组合那边点展期/保护/对冲实际改的是开仓组合，见"四、3.6"
-- `useComboAnalytics.ts`（~271行）——`trackedResult`（今日组合定价+`netPremium`/`shiftedValue`/`change`）、`effectiveDaysElapsed`等对比模式派生计算的封装，"四、10"持仓处置建议功能读取`trackedResult.netPremium`就来自这里
+- `useComboAnalytics.ts`（~301行）——`trackedResult`（今日组合定价+`netPremium`/`shiftedValue`/`change`）、`effectiveDaysElapsed`等对比模式派生计算的封装，"四、10"持仓处置建议功能读取`trackedResult.netPremium`就来自这里。**⚠️已修复的bug：`trackedResult`的`perLeg`漏乘`qty`（2026-09-14，本次会话发现）**——原计算对每条腿的`shifted`/`base`权利金只用了单张合约的premium，没有乘以`leg.qty ?? 1`，qty=1时看不出问题，qty>1的持仓（比如2张的SELL PUT）算出来的"跟位盈亏"/"持仓盈亏"会系统性偏小（本质是少乘了一个整数倍数）。这个bug跟这次会话新写的"四、1.8"建议文案无关，是被`situationExplainer.ts`里另一份独立实现、且正确乘了qty的`legPnlSinceOpen`比对出差异才发现的——之前没有任何地方交叉校验过这两处计算，长期潜伏。修复：`perLeg`的`shifted`/`base`两处都补上`qty`乘数（期权腿；正股腿不乘，跟`pricing.ts`的`legShiftedPrice`对正股腿"不乘shares"的既定约定保持一致）。这类"当前值vs开仓值比较"的计算以后新增时要留意同样的坑，见"五、19"
 - `useStrategyOrchestration.ts`（~750+行，全项目最大的hook，此前文档一直漏收录）——2026-09-08从`App.tsx`整块搬出的"策略管理"handler+计算集群，按`App.tsx`原来的声明顺序原样打包成一个hook（不是重新架构），刻意没有进一步拆分——CLAUDE.md标注为"两个暂不拆分的簇"里风险更高的那个（历史上bug密度最高的代码，handler之间互相调用、共享一堆ref/setter）。包含：组合级操作（`addLeg`/`applyPreset`/`clearAllLegs`/`doClearAll`/`updateTrackedLeg`/`handleCorrectSpot`/`comboDirection`/`handleAddCustom`/`handleAddToSimAccount`）+ 策略持久化/模式切换（`handleSaveStrategy`...`handleSwitchToAnalysis`，含`handleTrack`/`handleSaveTracked`/`saveTrackedSnapshotTo`/`handleSelectSnapshot`/`handleDeleteSnapshot`/`handleUpdateSnapshotTime`，见"四、3.6"的快照保存+锁定逻辑）。`legBaseSpot`/`legBaseSymbol`/`spotManuallySet`/`pendingPreset`等好几个ref由`App.tsx`创建、原样传入，从不在这个hook里返回——`App.tsx`自己的effect和这个hook读写的是同一个mutable对象，不需要额外同步
 
 ## `src/lib/`（核心业务逻辑，无UI）
@@ -183,6 +183,7 @@ isCompareMode = trackedLegs !== null
 - `matchStrategy.ts`（~139行）——从一组腿位反推策略名字（含"窄体铁鹰"/"玉蜥蜴"两种四腿/三腿结构的区分识别，见"四、2.3"）。**⚠️返回的是`item.name.zh`（中文显示名），不是`item.name.en`，不管当前UI语言是什么**——这是这个文件一直以来的行为，"四、10"的第一个bug就是因为`kbStrategyMeta.ts`最初误以为它返回英文名踩的坑，以后任何新代码要用这个函数的返回值去匹配别处按英文命名的数据（比如KB的`strategy`字段），都要先过一遍`kbStrategyMeta.ts`的`ZH_TO_EN_STRATEGY_NAME`表
 - `positionHealth.ts`——组合健康度评分（四维度各25分），**调用方需要按当前模式传入对应的legs/spot/breakdown**，见"四、1.4"
 - `decisionCompare.ts`——决策对比的核心计算（不动/平仓/展期三分支）
+- `situationExplainer.ts`（~657行）——"四、1.8"用，两个入口：`explainAnalysisScenario()`（分析模式，情景滑块驱动的前瞻式说明）、`explainTrackedPositionAdvice()`（对比模式，"该怎么办"建议规则引擎，按腿位形状分流到裸卖单腿/垂直价差/双卖出宽跨三张判断表，2026-09-14起取代原来纯状态描述的`explainTrackedPosition`），详见"四、1.8"
 - `kbStrategyMeta.ts`（~168行，2026-09-10新增）——"四、10"持仓处置建议功能用，KB48个策略名的`direction`/`leg_count`固定表 + 中文策略名→KB英文策略名的翻译表，详见"四、10"
 - `kbQuery.ts`（~266行，2026-09-10新增）——"四、10"持仓处置建议功能用，`computePositionSignals()`（判断止损/止盈/临近到期/pin risk四种situation_tag是否命中）+ `fetchPositionAdvice()`（调用`kb-retrieve` Edge Function），详见"四、10"
 
@@ -289,6 +290,31 @@ isCompareMode = trackedLegs !== null
 
 针对单条腿，用真实期权链数据对比"不动/平仓/展期"三种结果的盈亏。**没有"对冲"这第四个对比分支**，属于backlog（见"六"）。**"决策比较"弹窗里的展期分支是硬编码+30天**，见"六、已知问题"。
 
+### 1.8 持仓怎么办 / 解释当前情况（`situationExplainer.ts` + `SituationExplainDialog.tsx`）
+
+分析模式和对比模式标题栏都有一个"解释当前情况"按钮，点开弹出`SituationExplainDialog.tsx`，内容按当前所在模式分流成两种完全不同性质的东西（`App.tsx`的`situationExplanation`这个`useMemo`，紧跟在`useComboAnalytics`解构之后，避免TDZ问题，见"五、5"）：
+
+- **分析模式**：`explainAnalysisScenario()`——情景滑块驱动的**前瞻式**说明。按当前滑块位置（现价/时间/波动率偏移）描述"如果情景变成这样，会怎么样"：情景描述、盈亏所处区间（`classifyPnl`四态：golden/great/danger/stop，跟`PayoffChart.tsx`的`getZone()`同一套阈值语义）、P/L归因（价格/时间/波动率三项贡献，`attributePnl`）、平均每张合约delta、健康度小节（复用`positionHealth`的四维度评分）、行动提示（`actionHints`）。这一块**本次会话没有改动**，行为跟之前完全一样。
+- **对比模式**：2026-09-14起改用`explainTrackedPositionAdvice()`——这就是xue口中的"该怎么办"，一个**纯本地、同步计算**的规则引擎，跟"跟踪现在离危险/止盈/到期还有多远"这类**回溯式**问题（从开仓到现在实际发生了什么，用`legPnlSinceOpen`直接拿当前权利金减开仓权利金，不复用`priceCombo`的情景推演机制——两者回答的是不同问题，见该函数的头部注释），取代了之前一版更简单、纯状态描述的`explainTrackedPosition`。**跟"四、10"的持仓处置建议（KB检索）是两个独立功能，不叠加**：这个是纯本地规则引擎，服务分析模式+对比模式，同步、零网络请求；那个是异步查`position_management_kb`数据库，服务对比模式+模拟账户，目前前端入口暂停中。
+
+**形状识别（`explainTrackedPositionAdvice`内部）**：按腿位的`type`（call/put）分组，再按组合形态分流到四张表之一，识别不了的腿逐条占位（`placeholderSection`，文案是"这个形状暂不支持"）：
+- 1条卖call + 1条卖put、数量相等 → **双卖出宽跨/跨式**（`shortStrangleAdvice`），按组合整体处理，不拆成两条独立裸卖
+- 同一类型（call或put）里只有1条、且是卖出 → **裸卖单腿**（`nakedShortAdvice`）；只有1条但是买入 → 占位（多头单腿这次没做表）
+- 同一类型里有2条、到期日相同、方向不同、行权价不同 → **垂直价差**（`verticalSpreadAdvice`），靠开仓时两条腿权利金谁高谁低自动分流成信用/借方两条分支
+- 3条及以上、或2条但配不成干净的垂直价差（日历/对角、蝶式的一部分等）→ 逐条占位，这次没有对应的表
+
+**每张表的判断优先级**（数字判断门槛见`situationExplainer.ts`开头的常量定义区）：
+- **裸卖单腿**：危险（当前每张合约delta ≥ 高危阈值）> 临近到期且贴着行权价 > 利润提前达标（盈利占比够高、且领先时间流逝进度一定幅度）> 被测试（delta达到中等阈值，叠加"移动速度是否异常"提示——用开仓时的隐含波动率反推1个标准差预期位移，跟实际位移比较，异常时追加一句提示）> **正常持有**（引用delta/利润进度/距到期天数，本次会话重写的文案）
+- **垂直价差·信用**：危险（亏损占最大亏损比例达标，或两侧行权价都被突破时门槛更低）> 临近到期且贴着卖出腿行权价 > 利润提前达标 > 被测试（现价已越过卖出腿行权价，叠加速度异常提示）> **正常持有**
+- **垂直价差·借方**：止损（亏损占已付权利金比例达标）> 临近到期（细分"已接近满仓盈利"还是"空间还没打开"两种措辞）> 利润达标止盈（终值70%门槛）> 提前止盈（40%门槛+时间只过了20%以内）> **正常持有**
+- **双卖出宽跨/跨式**：跟信用价差同一个骨架，但危险判断沿用裸卖单腿的delta阈值而不是"亏损占比"——两条腿都是裸卖，风险无限，没有真实的`maxLoss`分母。允许两条腿到期日不同（比如后来只展期了其中一条），用较早到期的那条驱动"临近到期"判断，每条腿各自独立解析自己的开仓数据
+
+**"正常持有"文案重写（2026-09-14，本次会话）**：这四张表原来共用一个`posAdvice.holdBody`（"目前没有需要特别处理的信号"），xue反馈太糊弄——用户看不出这句话是不是真的算过、还是模板兜底。改成4个各自专属的key（`holdBodyNaked`/`holdBodyVerticalCredit`/`holdBodyVerticalDebit`/`holdBodyStrangle`），都引用实际算出的数字对照各自的判断门槛（delta距0.7危险线还差多少、亏损占比距危险/止损线还差多少、距到期天数距临近到期线还差多少）。利润进度这一部分单独抽成`profitProgressClause(t, pnl, profitPct)`——因为这是唯一一个"没有浮盈时提都不该提"的分支（`pnl > 0`时引用具体的`profitPct`，否则说"目前还没有浮盈，谈不上提前止盈"），避免像早期设计里出现过的"硬编码浮盈措辞、遇到实际浮亏就读不通"那类bug。i18n key数量770→775（+6新增-1旧的，zh/en两边都跑过key集合一致性检查，0缺口）。
+
+**⚠️ 已知问题：pnl取整显示"0"却同时标着具体百分比，读起来自相矛盾（2026-09-14，xue发现，未修复）**。`descClause`用`fmtSigned(pnl, 0)`（0位小数）显示pnl，但同一句话里紧跟着的"占最大盈利的{pct}%"（`pctLabelFor`）是用**未取整**的pnl算的比例——真实pnl是+0.42这种小额浮盈时，句子会读成"目前盈亏+0（占最大盈利的16%）"，两个数字各自都对（都是同一个0.42在不同精度下的表现），但放在一起读像是自相矛盾（+0怎么会是16%）。这不是计算错误，是`descClause`/`pctLabelFor`两处显示精度不一致导致的措辞问题，详见"六、25"，留给下一个会话设计修法（比如pnl也按至少2位小数显示，或者pnl绝对值很小时干脆不显示百分比标签）。
+
+**⚠️ 已知问题：对比模式重新保存策略时，开仓组合的到期日会被二次衰减（2026-09-14，xue用真实持仓发现，未修复）**。这个bug不在`situationExplainer.ts`本身，而在它读取的上游数据（`legs`/`activeLegs`，即"开仓组合"）——完整根因分析和提议的修复方案见"六、24"。
+
 ## 2. 策略库（保存/加载/管理/预设）
 
 ### 2.1 数据模型（`savedStrategies.ts`）
@@ -339,8 +365,6 @@ isCompareMode = trackedLegs !== null
 - `LegRow.tsx`的`deleteConfig`：`leg.derivedFrom.locked`为true时，"撤销展期/保护/对冲"菜单项变成禁用状态（Lock图标+"展期/保护/对冲已锁定"文案），hover有tooltip解释原因（`leg.lockedHint`）。
 - **保存前的提示**：`App.tsx`新增`confirmLockRollOpen`，但**只挂在`TrackedComboSection.tsx`那个"保存追踪快照"按钮自己的点击上**（`handleSaveTrackedClick`包一层`handleSaveTracked`），不是改`handleSaveTracked`本身——这个函数还被"保存快照后再清空/切模式/切预设/换标的"另外四条已经各自有自己确认弹窗的路径直接调用，如果把锁定确认塞进`handleSaveTracked`内部，会让那几条路径出现"确认了一次又被迫再确认一次"的双重弹窗。点击"保存追踪快照"时，如果当前`trackedLegs`里存在未锁定的`derivedFrom`腿，先弹`ConfirmLockRollDialog.tsx`("保存后将无法撤销"+说明)，确认了才真正调用`handleSaveTracked`；没有待锁定的操作时跟以前一样直接保存，不加任何多余的确认步骤。
 - **已知的更深层限制（这次没有处理，值得记录）**：`derivedFrom.legId`本来就有"跨会话不保证存活"的问题（见`derivedFrom`字段自己的注释——`handleTrack`/`handleSelectSnapshot`重新加载组合时腿的`id`会用`uid()`重新生成，`legId`这个旧引用就对不上了）。这次的"锁定"只解决同一次live会话内"存了快照还能撤销"的问题；如果用户存了快照、关闭再重新打开这个策略、加载出一条历史快照后点"撤销"，因为`legId`早就跟当前腿对不上，撤销会静默地只删掉展期腿本身、恢复不了源腿，留下一条孤儿式的禁用腿——这是比这次修的bug更早就存在的独立缺口，本次没有顺手修，先记录在这里。
-
-**⚠️ 已修复的bug：对比模式"开仓组合 (对比基准)"的日期显示会随快照的保存而漂移到"今天"（2026-09-12，xue真实使用发现）**。这个日期字段（`LegListSection.tsx`）本应是一条固定不变的基准线——这个策略真正的开仓时间，不该因为后续存了几次快照就跟着变。但原实现的`ts`取值是`activeSnap?.savedAt ?? trackedStrategy?.openingAt ?? trackedStrategy?.createdAt`：**只要存在任何快照，就优先显示当前选中快照自己的保存时间**，而不是策略的真实`openingAt`——于是每存一次新快照，这个"固定基准"就跟着漂移到最新快照的日期（通常就是"今天"）。这行代码本身2026-09-06左右就有过一次半吊子修复（注释里记录了"没有快照时兜底该用openingAt而不是createdAt"），但**没意识到"有快照时优先用快照日期"这个更根本的优先级本身就是错的**——`activeSnap.savedAt`根本不该出现在这个字段的取值逻辑里，那是"今日组合"快照选择器自己的信息（`TrackedComboSection.tsx`已经在那边单独展示了）。**修复**：`ts`只从`openingAt`（prop，由`App.tsx`的`handleTrack`/`handleOpenStrategy`保持和`trackedStrategy.openingAt`同步）取值，`trackedStrategy?.createdAt`仅作两者都不存在时的最后兜底，完全不再看`activeSnap`。这个字段原本还兼职"编辑当前选中快照的保存时间"（`onChange`调用的是`onUpdateSnapshotTime`，编辑的其实是快照而不是开仓时间本身，跟字段标签对不上），拆成了两个独立职责：新增`onUpdateOpeningAt`prop+`useStrategyOrchestration.ts`的`handleUpdateOpeningAt`+`savedStrategies.ts`的`updateStrategyOpeningAt`，专门修正策略的`openingAt`；原来的`onUpdateSnapshotTime`/`updateSnapshotTime`/`handleUpdateSnapshotTime`保留在`useStrategyOrchestration.ts`/`savedStrategies.ts`里未删（暂时没有UI入口调用，留给以后如果要给"今日组合"快照选择器加逐条修正日期的功能用）。**`handleUpdateOpeningAt`刻意不重新decay `legs`/`trackedLegs`的`dte`**——那些腿当前的`dte`已经是"以今天为基准"算出来的，跟`openingAt`没有持续的依赖关系（`openingAt`只在`handleOpenStrategy`/`handleTrack`第一次加载时被当作"存档时dte的基准时间"参与过一次性换算），事后修正一个记错的开仓日期不需要、也不应该去反推重新计算已经在用的dte——这次要解决的只是"显示的日期漂移"，不是"重新校准历史dte"，两者是不同量级的问题，故意没有一起做。
 
 ## 4. 模拟账户（`SimulatorPage.tsx` + `simAccount.ts`）
 
@@ -409,6 +433,8 @@ isCompareMode = trackedLegs !== null
 15. **`pnlAtExpiry`的"多到期日"特殊处理只适用于真正设计成多到期日的组合（日历/对角价差）**——任何临时构造的、只是"恰好几条腿到期日不同"的草稿组合如果不打算利用这个特殊处理，要主动把dte对齐，见"四、1.5"
 16. **`pricing.ts`里任何按固定窗口/固定阈值扫描的函数（比如`maxProfitLoss`的±50%现价窗口），在被新用途复用之前要先确认这个固定窗口对新用途是否仍然成立**——"四、10"止损/止盈信号失真的bug就是`maxProfitLoss`原本只用于展示"图表上的理论极值参考"，被直接挪用去做"浮亏占比例判断"这个新用途时，没人意识到固定窗口对45%的策略会失真。跟第15条是同一类教训，但触发点不同
 17. **`matchStrategy()`返回中文策略名**（`item.name.zh`），不是英文——任何要用这个返回值去匹配别处按英文/其它语言命名的数据的新代码，都要先经过一次翻译映射，不能假设它和`presets.ts`里的`name.en`一致，见"四、10"bug之一
+18. **原生`<input type="date">`的日历弹窗跟随浏览器/OS语言，不会自动跟随App自己的`useI18n()`语言状态**——除非显式给这个input加`lang`属性（2026-09-14修复：`App.tsx`/`HedgeDialog.tsx`/`RollDialog.tsx`/`ProtectDialog.tsx`/`LegListSection.tsx`共6处`<input type="date">`都加了`lang={lang === "en" ? "en" : "zh-CN"}`）。以后任何新加的日期输入框，都要记得加这个属性，否则英文界面下日历弹窗会显示中文月份（Chromium/Firefox的已知行为）
+19. **任何"当前值 vs 开仓值"这类比较计算，都要留意`qty`乘数**——`useComboAnalytics.ts`的`trackedResult.perLeg`（"四、3"跟踪对比模式核心数据）曾经漏乘`qty`，qty=1时不会暴露，多张合约的持仓会被系统性算错，直到被`situationExplainer.ts`独立实现且正确乘了qty的`legPnlSinceOpen`比对出差异才发现（2026-09-14），见"三、文件地图"`useComboAnalytics.ts`条目。这类"同一个数量在两处独立实现"的计算，理想情况下应该互相复用或至少有一处交叉校验，不能各自实现之后从不比对
 
 ---
 
@@ -439,7 +465,9 @@ isCompareMode = trackedLegs !== null
     - **20-b. 场景选择器"待定"标签页**——xue确认暂时保留，不算独立待办
 21. **localStorage容量隐患**——见"四、4.4"，建议路径按投入递增：`autoSyncWrite`失败提示 → 迁移到IndexedDB → 更长期视多端同步需求决定要不要上Supabase
 22. **"持仓处置建议"呈现格式重新设计（2026-09-10，待xue决定）**——见"四、10"末尾，需要先定下"5条样本action不一致时怎么归纳成一句结论"这个问题，再恢复`PositionAdviceDialog.tsx`的渲染结构和两处入口按钮
-23. **移动端（手机浏览器）适配（2026-09-10/11评估阶段，未开始）**——xue提出想做一个绝大部分手机能用的竖屏版本，讨论后达成的方向：不做设备识别/不做独立手机代码库，走Tailwind响应式断点（同一份组件按屏幕宽度切换布局），这样能保持"改一次bug两边都好"这个当前架构的优点（逻辑层`src/lib/`+`src/hooks/`完全不用动）。**代价评估**：现在的UI几乎是纯桌面思路，全代码库目前只有3处用了响应式断点类，246处依赖鼠标hover的交互、47处原生hover提示框（手机上都要换成点击展开，`Term.tsx`的点击式popover是现成的可参考先例，见"四、1.6"）、多个写死420-640px宽度的弹窗（手机屏幕通常375-430px宽会溢出）、多处3-5列并排的网格布局需要收窄成1-2列，最关键的`LegRow.tsx`（752行，全项目最高频组件）是一整条横向平铺的输入框，大概率要重新设计成竖向堆叠的卡片，`PayoffChart.tsx`（1025行）的鼠标悬停十字线交互也要改成手指点/拖动。这是一次"重新设计核心组件在窄屏下的布局"的独立工作量，不是简单加几个CSS断点能完成的，还没有决定要不要启动，也还没挑选试点组件。
+24. **"今日组合"重新保存/覆盖策略时，开仓组合的到期日会被二次衰减（2026-09-14，xue用真实持仓发现，已根因诊断、未修复）**。`SavedStrategy.legs[].dte`不是存成固定值，而是存成"以`openingAt`为基准算出的剩余天数"，每次加载都会用`calendarDaysSince(openingAt)`重新衰减一遍（`handleTrack`/`handleOpenStrategy`/`findDuplicate`/`backfillTrackedSnapshots`都依赖这个不变量）。根因在`SaveStrategyDialog.tsx`的`trySave()`→`savedStrategies.ts`的`findDuplicate()`：`findDuplicate`为了让"打开一个策略、切到对比模式、过了几天后再保存"也能正确识别成同一条记录，会先把已存策略的`legs`按`calendarDaysSince(s.openingAt ?? s.createdAt)`衰减一次再跟当前候选比较——这个衰减只是为了比较，但如果用户随后确认"覆盖保存"，`handleOverwriteStrategy`会把这份**已经衰减过**的`legs`原样连同**从未更新过的`openingAt`**一起写回`s.legs`。下次再打开这条策略，衰减逻辑会用完整的原始经过天数在一个已经衰减过的值上再衰减一次，到期日显示得比真实值更早，且每多一轮"打开→保存"就再复合一次。**已用真实数据验证**：一个铁蝶策略（4条腿，没有单独展期过）"开仓组合"显示到期日2026-09-16（剩2天），"持仓组合"（走独立的、不受这个bug影响的快照`savedAt`计算路径）正确显示2026-09-18（剩4天），同一批合约。**提议的修复方案（已设计、未实现）**：给`SavedStrategy`加一个新字段`legsAsOf?: number`，每次真正保存（新建或覆盖）都盖上`Date.now()`，跟用户可编辑的`openingAt`（继续只做"开仓日期"展示/时间流逝百分比用途）彻底解耦；所有对`s.legs`做衰减的调用点，把`calendarDaysSince(s.openingAt ?? s.createdAt)`换成`calendarDaysSince(s.legsAsOf ?? s.openingAt ?? s.createdAt)`，靠`??`兜底链让没有这个新字段的旧策略行为不变
+25. **持仓建议弹窗里pnl取整显示"0"，但同一句话又标着具体的"占最大盈利X%"，读起来自相矛盾（2026-09-14，xue发现，未修复）**——详见"四、1.8"末尾，`descClause`（pnl用0位小数）和`pctLabelFor`（比例用未取整的pnl算）两处显示精度不一致导致，不是计算错误，需要设计一个不自相矛盾的显示方案
+26. **移动端（手机浏览器）适配（2026-09-10/11评估阶段，未开始）**——xue提出想做一个绝大部分手机能用的竖屏版本，讨论后达成的方向：不做设备识别/不做独立手机代码库，走Tailwind响应式断点（同一份组件按屏幕宽度切换布局），这样能保持"改一次bug两边都好"这个当前架构的优点（逻辑层`src/lib/`+`src/hooks/`完全不用动）。**代价评估**：现在的UI几乎是纯桌面思路，全代码库目前只有3处用了响应式断点类，246处依赖鼠标hover的交互、47处原生hover提示框（手机上都要换成点击展开，`Term.tsx`的点击式popover是现成的可参考先例，见"四、1.6"）、多个写死420-640px宽度的弹窗（手机屏幕通常375-430px宽会溢出）、多处3-5列并排的网格布局需要收窄成1-2列，最关键的`LegRow.tsx`（752行，全项目最高频组件）是一整条横向平铺的输入框，大概率要重新设计成竖向堆叠的卡片，`PayoffChart.tsx`（1025行）的鼠标悬停十字线交互也要改成手指点/拖动。这是一次"重新设计核心组件在窄屏下的布局"的独立工作量，不是简单加几个CSS断点能完成的，还没有决定要不要启动，也还没挑选试点组件。
 
 ---
 
@@ -447,7 +475,7 @@ isCompareMode = trackedLegs !== null
 
 1. **第一步永远是跟GitHub真实代码做一次全面比对**，确认这份文档反映的状态和实际代码库一致，再开始改动——**包括文档自己**
 2. **动`zh.ts`/`en.ts`之前，务必读完文档开头的独立警示章节**
-3. "六、已知问题"是最直接能接手的任务列表——22（持仓处置建议格式重新设计）目前有xue明确提出的具体诉求、13（年化收益率）和12（PayoffChart重复实现）性价比较高、23（移动端适配）规模较大需要先决定要不要启动，21（localStorage容量隐患）如果用户反馈过卡顿/同步异常，优先级应该提前
+3. "六、已知问题"是最直接能接手的任务列表——**24（对比模式重新保存策略时开仓组合到期日二次衰减）和25（持仓建议弹窗pnl取整vs百分比措辞矛盾）是本次会话新诊断出来、xue明确要求留到下一个会话处理的两条，24已经有完整根因分析和设计好的修复方案（`legsAsOf`字段），可以直接照着实现**；22（持仓处置建议格式重新设计）目前有xue明确提出的具体诉求、13（年化收益率）和12（PayoffChart重复实现）性价比较高、26（移动端适配）规模较大需要先决定要不要启动，21（localStorage容量隐患）如果用户反馈过卡顿/同步异常，优先级应该提前
 4. 遇到"某个条件不满足就整个隐藏UI"的写法，默认改成"展示框架+解释原因"（"五、8"）
 5. `App.tsx`新增`useMemo`/`useCallback`时注意TDZ风险；新增"组合级"展示指标时按`isCompareMode`分支选数据源（"五、12"）
 6. 财报相关改动注意`note`和`linkedStrategyId`是两个独立字段

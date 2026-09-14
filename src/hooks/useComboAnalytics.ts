@@ -168,11 +168,27 @@ export function useComboAnalytics(params: {
       const openingLeg = resolveOpeningLeg(leg, index, activeLegs, openingById);
       const sign = leg.action === "buy" ? 1 : -1;
       const openingSign = openingLeg?.action === "buy" ? 1 : -1;
-      const shifted = leg.kind === "stock" ? sign * (currentSpot - leg.strike) : sign * leg.premium;
+      // 2026-09-14 bug fix: this used to compare raw per-contract premiums
+      // with no `qty` multiplier at all — correct only for qty=1, and
+      // silently understating (or overstating, for a rolled leg whose size
+      // changed) every multi-contract position's P&L by a factor of qty.
+      // Stayed invisible for a long time because nothing else in the app
+      // cross-checked this number against an independently-computed P&L —
+      // until situationExplainer.ts's legPnlSinceOpen (which does multiply
+      // by qty, same convention as legShiftedPrice/legGreekBreakdown in
+      // pricing.ts for option legs) started disagreeing with it for any
+      // leg with qty > 1. Uses the CURRENT tracked leg's qty for both sides
+      // of the comparison (same convention as legPnlSinceOpen) rather than
+      // openingLeg's — they're normally equal, and there's no well-defined
+      // meaning for "half of this leg's opening cost" if a roll changed the
+      // size. Stock legs stay unscaled (no `shares` multiplier), matching
+      // legShiftedPrice's own stock branch and its comment on why.
+      const qty = leg.kind === "stock" ? 1 : (leg.qty ?? 1);
+      const shifted = leg.kind === "stock" ? sign * (currentSpot - leg.strike) : sign * qty * leg.premium;
       const base = openingLeg
         ? openingLeg.kind === "stock"
           ? openingSign * (spot - openingLeg.strike)
-          : openingSign * openingLeg.premium
+          : openingSign * qty * openingLeg.premium
         : 0;
       const change = shifted - base;
 

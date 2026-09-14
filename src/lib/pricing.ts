@@ -46,6 +46,29 @@ export function impliedVol(spot: number, strike: number, dte: number, premium: n
   return (lo + hi) / 2;
 }
 
+// A same-IV-carried-over placeholder premium, used ONLY when App.tsx's
+// rescaleForNewSymbol swaps the underlying under an existing combo and the
+// option-chain cache has no listed quote yet for the ratio-scaled strike on
+// the new symbol. Leaving that leg's premium at a hard 0 in that gap (the
+// old behavior) back-solves to an artificial near-zero implied vol via
+// impliedVol above — at that vol an OTM leg is worth ~0 no matter how the
+// scenario sliders move, so "情景估值" (leg.scenarioValue, this leg's
+// theoretical value under the current dS/dT/dV shift — see
+// legShiftedPrice/priceCombo) looks frozen/flat until the per-leg
+// auto-fill effect's market fetch corrects the premium moments later — or
+// stays frozen indefinitely if that fetch never resolves (e.g. no listed
+// option at that strike/expiry for the new symbol). This carries the leg's
+// OWN implied vol, backed out at its old spot/strike/premium, over onto
+// the new spot/strike (same dte) instead, so the scenario value has an
+// immediate, reasonable number to work from the instant the strike updates
+// — the auto-fill effect still supersedes it with the real market premium
+// right after; this is only ever a stand-in for that, not meant to be
+// precise itself.
+export function estimateRescaledPremium(oldSpot: number, oldLeg: Leg, newSpot: number, newStrike: number): number {
+  const iv = impliedVol(oldSpot, oldLeg.strike, oldLeg.dte, oldLeg.premium, oldLeg.type);
+  return blackScholes({ spot: newSpot, strike: newStrike, dte: oldLeg.dte, vol: iv, rate: RATE, type: oldLeg.type }).price;
+}
+
 // Full B-S repricing of a single leg under the given shifts.
 // dS: spot change ($), dT: calendar days elapsed, dV: vol change (percentage points).
 // `ivOverride` lets a caller that already backed out this leg's implied vol

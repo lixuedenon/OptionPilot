@@ -804,6 +804,53 @@ const en: Dict = {
   "advice.reasoningLabel": "Why: ",
   "advice.riskLabel": "Remaining risk: ",
   "advice.disclaimer": "This system does not judge the strength of support/resistance levels — combine your own read on those levels with the technical-level suggestions below. Suggestions do not account for earnings, breaking news, or other market events; they're based only on comparing the current position's technical structure to when it was opened.",
+
+  // 2026-09-14: Compare-mode "what to do" advice system
+  // (situationExplainer.ts's explainTrackedPositionAdvice), replacing the
+  // old explainTrackedPosition. Deliberately a separate namespace
+  // (posAdvice.* vs advice.* above, which is the paused KB-retrieval
+  // "position disposal advice" feature) — two independent features, not to
+  // be conflated.
+  "posAdvice.call": "Call",
+  "posAdvice.put": "Put",
+  "posAdvice.legLabelStock": "Stock position",
+  "posAdvice.legLabelShortCall": "Short Call@{strike}",
+  "posAdvice.legLabelShortPut": "Short Put@{strike}",
+  "posAdvice.legLabelLongCall": "Long Call@{strike}",
+  "posAdvice.legLabelLongPut": "Long Put@{strike}",
+  "posAdvice.legLabelVertical": "{type} spread (short {sellStrike} / long {buyStrike})",
+  "posAdvice.descWithPct": "{days} days since opening ({elapsedPct}%) — currently {pnl} ({pctLabel}).",
+  "posAdvice.descNoPct": "{days} days since opening ({elapsedPct}%) — currently {pnl}.",
+  "posAdvice.pctOfMaxProfit": "{pct}% of max profit",
+  "posAdvice.pctOfMaxLoss": "{pct}% of max loss",
+  "posAdvice.notImplementedBody": "This shape (e.g. calendar/diagonal, straddle/strangle, butterfly) doesn't have its own advice rules yet — placeholder for now. Use the chart and health badge to judge for yourself.",
+  "posAdvice.profitProgressClause": "profit is at {pct}% of max profit — short of the early-exit rule (50%+ and 20pp ahead of elapsed time)",
+  "posAdvice.profitProgressClauseNone": "there's no unrealized profit yet, so early profit-taking doesn't apply",
+  "posAdvice.holdBodyNaked": "Suggestion: keep holding as planned. Why: delta is only {delta}, well below the 0.7 danger threshold; {profitClause}; {dte} days to expiry, not yet in the near-expiry window — nothing here needs action right now.",
+  "posAdvice.holdBodyVerticalCredit": "Suggestion: keep holding as planned. Why: the loss is {lossPct}% of max loss, well short of the 70% danger threshold; spot ({spot}) hasn't breached the short strike ({strike}), so the spread hasn't been tested; {profitClause}; {dte} days to expiry, not yet in the near-expiry window — nothing here needs action right now.",
+  "posAdvice.holdBodyVerticalDebit": "Suggestion: keep holding as planned. Why: the loss is {lossPct}% of the premium paid, well short of the 50% stop-loss threshold; profit is {profitPct}% of max profit, short of both the 70% take-profit threshold and the early-profit rule (40%+ with only 20% of time elapsed); {dte} days to expiry, not yet in the near-expiry window — nothing here needs action right now.",
+  "posAdvice.holdBodyStrangle": "Suggestion: keep holding as planned. Why: delta is {callDelta} on the call side and {putDelta} on the put side, both well below the 0.7 danger threshold; spot ({spot}) hasn't breached the call strike ({callStrike}) or fallen below the put strike ({putStrike}), so neither side has been tested; {profitClause}; {dte} days to expiry, not yet in the near-expiry window — nothing here needs action right now.",
+  "posAdvice.dangerBodyCall": "Suggestion: close it soon, or hedge/protect it — don't keep riding it naked. Why: a short call's risk is theoretically unlimited, and delta is already at {delta} — likely to be assigned, and the loss could keep growing the longer you hold.",
+  "posAdvice.dangerBodyPut": "Suggestion: close, roll, or protect it soon — don't keep riding it naked. Why: delta is already at {delta} — likely to be assigned the shares; deal with it now if you don't want that many shares.",
+  "posAdvice.nearExpiryBodyCall": "Suggestion: handle it now (close or roll) — don't leave it to the last moment. Why: only {dte} days left, and spot is already sitting right at your short strike — the closer to expiry, the more a small move swings your P&L, and assignment risk is rising fast.",
+  "posAdvice.nearExpiryBodyPut": "Suggestion: handle it now (close or roll) — don't leave it to the last moment. Why: only {dte} days left, and spot is already sitting right at your short strike — dragging it out raises the risk of being assigned the shares.",
+  "posAdvice.profitAheadBody": "Suggestion: close it now and free up the capital for the next trade. Why: profit has already reached {pct}% of max — it's running well ahead of how much time has passed, so what's left to gain from waiting is small.",
+  "posAdvice.testedBody": "Suggestion: don't rush to act, but watch it closely — if the loss grows meaningfully, consider a stop-loss or a roll. Why: spot has pushed this leg in-the-money (delta {delta}) — risk is rising but it's not yet the worst case, so closing now would lock in a loss you don't have to take yet.",
+  "posAdvice.velocityAbnormal": "This move happened much faster than its opening implied volatility would suggest is normal — judge for yourself: if it keeps running after a news-driven jump, the risk is higher; if it's likely to fade back, you can wait it out; if it just consolidates sideways, the suggestion above still applies.",
+  "posAdvice.verticalCreditDangerBody": "Suggestion: cut the loss, or roll out to a further month/further strikes and collect fresh credit. Why: the loss is already {pct}% of this spread's max loss — the downside left is limited, but the loss that's already locked in is substantial.",
+  "posAdvice.verticalNearExpiryBody": "Suggestion: handle it now (close or roll) — don't leave it to the last moment. Why: only {dte} days left, and spot is already sitting right at your short strike on this side — dragging it out raises assignment risk.",
+  "posAdvice.verticalCreditTestedBody": "Suggestion: don't act yet, but watch closely — stop out once the loss nears 70% of max loss. Why: the short side is now in-the-money — risk is rising but it hasn't hit max loss yet, so closing now would lock in a loss early.",
+  "posAdvice.debitStopLossBody": "Suggestion: cut the loss. Why: the loss is already {pct}% of the premium you paid (your max loss) — the trade isn't playing out as expected, and the odds of recovering aren't great, so cutting it preserves the rest of your capital.",
+  "posAdvice.debitNearExpiryProfitBody": "Suggestion: close now and lock in the profit — don't wait for expiration. Why: only {dte} days left and profit is already close to this trade's cap — there's little more to gain, but a reversal in the last few days could give it back.",
+  "posAdvice.debitNearExpiryOpenBody": "Suggestion: close early and take what P&L is on the table — don't leave it to the last moment. Why: only {dte} days left for this to play out, and time value keeps decaying fast from here — waiting likely just bleeds away what's left.",
+  "posAdvice.debitProfitTakeBody": "Suggestion: close now and lock in the profit. Why: profit has already reached {pct}% of max — this kind of strategy has a capped upside, so there's little left to gain by holding on.",
+  "posAdvice.debitEarlyProfitBody": "Suggestion: consider taking some profit off the table now, and let the rest ride. Why: profit is already at {pct}% of max, but very little time has passed — it moved faster than the clock, and there's still plenty of time left for it to reverse and give the gain back.",
+  "posAdvice.legLabelShortStrangle": "Short Strangle/Straddle (Call {callStrike} / Put {putStrike})",
+  "posAdvice.strangleDangerBodyCall": "Suggestion: deal with the short call side soon (close, roll, or hedge/protect it) — don't keep riding both sides naked. Why: the call side's delta is already at {delta} — likely to be assigned, and its risk is theoretically unlimited.",
+  "posAdvice.strangleDangerBodyPut": "Suggestion: deal with the short put side soon (close, roll, or hedge/protect it) — don't keep riding both sides naked. Why: the put side's delta is already at {delta} — likely to be assigned the shares.",
+  "posAdvice.strangleNearExpiryBody": "Suggestion: handle it now — don't leave it to the last moment. Why: only {dte} days left, and spot is already sitting right at one of your short strikes — dragging it out raises assignment risk.",
+  "posAdvice.strangleTestedBodyCall": "Suggestion: don't rush to act, but watch the call side closely — if the loss grows meaningfully, consider a stop-loss, a roll, or hedging that side. Why: spot has pushed above your short call strike {strike} — that side is now in-the-money and risk is rising.",
+  "posAdvice.strangleTestedBodyPut": "Suggestion: don't rush to act, but watch the put side closely — if the loss grows meaningfully, consider a stop-loss, a roll, or hedging that side. Why: spot has fallen below your short put strike {strike} — that side is now in-the-money and risk is rising.",
 };
 
 export default en;

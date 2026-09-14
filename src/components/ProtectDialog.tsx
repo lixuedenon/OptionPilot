@@ -22,7 +22,7 @@ interface Props {
 }
 
 export default function ProtectDialog({ leg, spot, symbol, onClose, onConfirm }: Props) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const sym = symbol?.trim() ?? "";
   // Protection logic:
   // short call → buy call at higher strike
@@ -170,6 +170,7 @@ export default function ProtectDialog({ leg, spot, symbol, onClose, onConfirm }:
                 <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">{t("protect.expiry")}</span>
                 <input
                   type="date"
+                  lang={lang === "en" ? "en" : "zh-CN"}
                   value={newDate}
                   min={todayISO()}
                   onChange={(e) => {

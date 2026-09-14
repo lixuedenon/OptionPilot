@@ -24,7 +24,7 @@ interface Props {
 }
 
 export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConfirm }: Props) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const oldDte = Math.max(0, Math.round(leg.dte));
   const oldDate = dateFromDte(oldDte);
   const sym = symbol?.trim() ?? "";
@@ -224,6 +224,7 @@ export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConf
               </button>
               <input
                 type="date"
+                lang={lang === "en" ? "en" : "zh-CN"}
                 value={newDate}
                 min={todayISO()}
                 onChange={(e) => {

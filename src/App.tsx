@@ -20,6 +20,7 @@ import { useStrategyOrchestration } from "@/hooks/useStrategyOrchestration";
 import { nearestFridayDte, formatDateInput, parseDateInput } from "@/lib/dateUtils";
 import { uid, PRESET_DTE_SET } from "@/lib/legFactory";
 import { getOptionChain, resolveFromCache } from "@/lib/optionChain";
+import { estimateRescaledPremium } from "@/lib/pricing";
 import { useI18n } from "@/i18n/I18nContext";
 import AppHeader from "@/components/AppHeader";
 import LegPanelTitleRow from "@/components/LegPanelTitleRow";
@@ -28,7 +29,7 @@ import LegActionDialogs from "@/components/LegActionDialogs";
 import StrategyPersistenceDialogs from "@/components/StrategyPersistenceDialogs";
 import { AlertCard, ConfirmLockRollDialog, HelpPanel, isGuideDismissed, SituationExplainDialog } from "@/components/dialogs";
 import ErrorBoundary from "@/components/ErrorBoundary";
-import { explainAnalysisScenario, explainTrackedPosition } from "@/lib/situationExplainer";
+import { explainAnalysisScenario, explainTrackedPositionAdvice } from "@/lib/situationExplainer";
 
 interface AppProps {
   onBackHome?: () => void;
@@ -119,7 +120,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // file handle is a module-level singleton (see lib/autoSync.ts) and the
   // two components are never mounted at the same time (Shell.tsx routing).
   useAutoSync({ savedStrategies, customPresets, recentSymbols });
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
 
   const [helpOpen, setHelpOpen] = useState(false);
   // "解释当前情况" dialog (2026-09-09) — separate open-state from helpOpen,
@@ -234,24 +235,36 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // Re-bases every strike onto a new underlying: ratio-scales each leg's
   // strike off the ratio between the old and new spot, then prefers a real
   // listed strike/premium for the new symbol when the option-chain cache
-  // already has one (falls back to the ratio guess with premium reset to 0,
-  // which the per-leg auto-fill effect corrects shortly after). Applies to
-  // both the opening combo (legs) and, in compare mode, the "今日组合"
-  // (trackedLegs) — a symbol swap makes the old strikes meaningless for
-  // both, not just one side.
+  // already has one. When it doesn't, instead of resetting the premium to a
+  // hard 0 (which used to make "情景估值"/scenarioValue look frozen — a 0
+  // premium back-solves to an artificial near-zero implied vol, so the leg
+  // barely responds to the shift sliders at all until the market premium
+  // arrives — see estimateRescaledPremium's own comment in pricing.ts), this
+  // carries the leg's OWN implied vol (backed out at its old strike/spot/
+  // premium) over onto the new strike/spot as an immediate placeholder — the
+  // per-leg auto-fill effect still supersedes it with the real market
+  // premium shortly after; this just closes the "looks stuck" gap in
+  // between (or if that fetch never resolves at all). Applies to both the
+  // opening combo (legs) and, in compare mode, the "今日组合" (trackedLegs)
+  // — a symbol swap makes the old strikes meaningless for both, not just
+  // one side.
   const rescaleForNewSymbol = useCallback((newSymbol: string, newSpot: number) => {
     const sym = newSymbol.trim();
-    const ratio = legBaseSpot.current > 0 ? newSpot / legBaseSpot.current : 1;
+    const oldSpot = legBaseSpot.current;
+    const ratio = oldSpot > 0 ? newSpot / oldSpot : 1;
     const rescale = (arr: Leg[]) => arr.map((l) => {
       if (l.kind === "stock") {
         return { ...l, strike: Math.round(newSpot * 100) / 100 };
       }
       const targetStrike = Math.round(l.strike * ratio * 2) / 2;
       const resolved = sym ? resolveFromCache(sym, l.type, targetStrike, l.dte) : null;
+      const estimatedPremium = oldSpot > 0 && l.premium > 0
+        ? Math.max(0, estimateRescaledPremium(oldSpot, l, newSpot, targetStrike))
+        : 0;
       return {
         ...l,
         strike: resolved ? resolved.strike : targetStrike,
-        premium: resolved ? resolved.premium : 0,
+        premium: resolved ? resolved.premium : estimatedPremium,
       };
     });
     setLegs((prev) => (prev.length > 0 ? rescale(prev) : prev));
@@ -421,11 +434,14 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // impliedSpot is returned by the hook (other future callers might want it)
   // but nothing in App.tsx itself reads it directly — it only ever fed
   // effectiveTrackedSpot inside the hook — so it's intentionally left out of
-  // this destructure. trackedGreeks used to be in the same situation
-  // ("only used internally", feeding positionHealth) but situationExplainer's
-  // compare-mode explainer needs the REAL Greeks (not trackedResult's
-  // hardcoded-zero breakdown, see that file's own comment), so it's
-  // destructured here now too.
+  // this destructure. trackedGreeks (the real Black-Scholes combo Greeks,
+  // zero shift) is likewise left out here now — it was only ever pulled in
+  // for the old explainTrackedPosition's delta section; the 2026-09-14
+  // "该怎么办" rewrite (explainTrackedPositionAdvice, see situationExplainer.ts)
+  // reads per-leg delta straight off trackedResult.perLeg instead (already
+  // the real per-leg greeks at zero shift, no separate fetch needed), so
+  // nothing in App.tsx needs trackedGreeks directly any more — it's still
+  // computed inside the hook for positionHealth's own internal use.
   const {
     activeLegs,
     activeTrackedLegs,
@@ -433,7 +449,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     result,
     scenarioPriceById,
     effectiveTrackedSpot,
-    trackedGreeks,
     positionHealth,
     pop,
     breakevens,
@@ -449,29 +464,29 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     pnlAttribution,
   } = useComboAnalytics({ legs, trackedLegs, trackedSpot, correctedSpot, trackedDaysElapsed, spot, shifts, trackingStrategyId, savedStrategies, t });
 
-  // "解释当前情况" content (2026-09-09) — rule-based, built from values this
-  // chain already computed (no new pricing math, no AI call, see
-  // situationExplainer.ts's own header comment). Placed right after the
+  // "解释当前情况"内容：分析模式（explainAnalysisScenario，情景滑块下的
+  // 前瞻式说明）保持不变；对比模式2026-09-14起改用explainTrackedPositionAdvice
+  // ——"该怎么办"建议系统，按腿角色（裸卖出/垂直价差/占位）给出优先级排序
+  // 的单一结论，取代原来纯状态描述的explainTrackedPosition（见
+  // situationExplainer.ts头部注释）。组合健康度徽章是独立UI元素
+  // （PayoffChart.tsx标题栏），不受这次替换影响。Placed right after the
   // useComboAnalytics destructure since that's the first point every value
   // it depends on (activeLegs/activeTrackedLegs/result/trackedResult/
-  // trackedGreeks/positionHealth/analysisAttribution/pnlAttribution/
-  // breakevens/effectiveTrackedSpot/effectiveDaysElapsed) is already in
-  // scope — see CLAUDE.md's TDZ-risk note on where new memos in this file
-  // need to go. Returns null when there's nothing to explain yet (no legs),
-  // same "return null" convention positionHealth.computeHealth uses.
+  // positionHealth/analysisAttribution/breakevens/effectiveTrackedSpot/
+  // effectiveDaysElapsed) is already in scope — see CLAUDE.md's TDZ-risk
+  // note on where new memos in this file need to go. Returns null when
+  // there's nothing to explain yet (no legs), same "return null" convention
+  // positionHealth.computeHealth uses.
   const situationExplanation = useMemo(() => {
     if (isCompareMode) {
       if (!activeTrackedLegs || !trackedResult) return null;
-      return explainTrackedPosition({
+      return explainTrackedPositionAdvice({
         legs: activeTrackedLegs,
+        openingLegs: activeLegs,
         openingSpot: spot,
         trackedSpot: effectiveTrackedSpot,
         daysElapsed: effectiveDaysElapsed,
         result: trackedResult,
-        greeks: trackedGreeks,
-        health: positionHealth,
-        attribution: pnlAttribution,
-        breakevens,
         t,
       });
     }
@@ -486,8 +501,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       t,
     });
   }, [
-    isCompareMode, activeTrackedLegs, trackedResult, spot, effectiveTrackedSpot, effectiveDaysElapsed,
-    trackedGreeks, positionHealth, pnlAttribution, breakevens, t, activeLegs, shifts, result, analysisAttribution,
+    isCompareMode, activeTrackedLegs, trackedResult, activeLegs, spot, effectiveTrackedSpot, effectiveDaysElapsed,
+    t, shifts, result, positionHealth, analysisAttribution, breakevens,
   ]);
 
   useEffect(() => {
@@ -524,7 +539,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     handleSaveTracked,
     handleSelectSnapshot,
     handleDeleteSnapshot,
-    handleUpdateOpeningAt,
+    handleUpdateSnapshotTime,
     handleOpenStrategy,
     handleSwitchToCompare,
     performSwitchToAnalysis,
@@ -777,6 +792,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                     <span>{t("stock.openDate")}</span>
                     <input
                       type="date"
+                      lang={lang === "en" ? "en" : "zh-CN"}
                       value={formatDateInput(openingAt)}
                       onChange={(e) => {
                         const next = parseDateInput(e.target.value);
@@ -831,7 +847,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           <LegListSection
             isCompareMode={isCompareMode}
             trackedStrategy={trackedStrategy}
-            onUpdateOpeningAt={handleUpdateOpeningAt}
+            activeSnapshotId={activeSnapshotId}
+            onUpdateSnapshotTime={handleUpdateSnapshotTime}
             legToolbar={legToolbar}
             spot={spot}
             openingAt={openingAt}
