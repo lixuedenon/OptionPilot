@@ -1,4 +1,5 @@
 // src/components/AppHeader.tsx
+// src/components/AppHeader.tsx
 import { RefreshCw, TrendingUp, TrendingDown, ChevronDown, HelpCircle } from "lucide-react";
 import type { RefObject } from "react";
 import type { PresetMeta } from "@/lib/presets";
@@ -6,6 +7,7 @@ import type { CustomPreset } from "@/lib/customPresets";
 import type { StockQuote } from "@/lib/useStockQuote";
 import PresetPicker from "@/components/PresetPicker";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
+import LiveClock from "@/components/LiveClock";
 import { useI18n } from "@/i18n/I18nContext";
 
 // This is the App.tsx split's first (lowest-risk) step — see the App.tsx
@@ -181,6 +183,7 @@ export default function AppHeader({
       </div>
 
       <div className="flex items-center gap-3">
+        <LiveClock />
         <LanguageSwitcher />
         <button
           onClick={onOpenHelp}

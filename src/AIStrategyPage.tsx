@@ -1,7 +1,9 @@
+// src/AIStrategyPage.tsx
 import { useState } from "react";
 import { RefreshCw, AlertTriangle, Sparkles } from "lucide-react";
 import { useI18n } from "@/i18n/I18nContext";
 import { renderMarkdown } from "@/lib/miniMarkdown";
+import LiveClock from "@/components/LiveClock";
 
 interface Props {
   onBack: () => void;
@@ -78,6 +80,7 @@ export default function AIStrategyPage({ onBack }: Props) {
           <img src="/image copy 2.png" alt="OptionPilot" className="h-10 w-auto shrink-0 object-contain" />
         </button>
         <h1 className="text-sm font-bold text-slate-100">{t("home.aiTitle")}</h1>
+        <LiveClock className="ml-auto" />
       </header>
 
       <div className="mx-auto max-w-3xl px-4 py-6">

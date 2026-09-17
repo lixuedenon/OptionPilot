@@ -7,6 +7,21 @@ interface Props {
   onChange: (s: Partial<Shifts>) => void;
   spot: number;
   maxDte: number;
+  // 2026-09-15新增，分析模式"全生命周期模拟"重设计：dT滑块的下界。默认0（旧行为，
+  // 时间只能往前走）；分析模式下由App.tsx算出的openingSimBasis传入一个负值，
+  // 让滑块能往回拖到保存组合的那一天（"第0天"）——pricing.ts的priceCombo早就
+  // 支持负dT（newDte = max(0, leg.dte - dT)反向变大），这里只是把UI下界放开。
+  // 对比模式（disabled=true）不传，滑块本来就冻结，min/max无所谓。
+  minDte?: number;
+  // 2026-09-15新增。有值时在dT滑块轨道上打一个"今天"参考点（复用Slider现成的
+  // markerValue/markerLabel机制，不是重新发明），配合下面的onJumpToday按钮。
+  // 过期策略（isExpiredOpening）不传——过期之后时间轴上已经没有真实的"今天"
+  // 位置可言，见App.tsx的isExpiredOpening注释。
+  todayDte?: number;
+  // 2026-09-15新增，配合todayDte：点击"今天"按钮直接把dT跳到0（"今天"在这个
+  // 设计里永远对应shifts.dT===0，因为legs.dte本身就是从"今天"实时衰减出来的，
+  // 不需要额外换算）。todayDte未定义时不渲染这个按钮。
+  onJumpToday?: () => void;
   onReset: () => void;
   trackedSpot?: number;
   trackedDays?: number;
@@ -36,6 +51,7 @@ function Slider({
   markerValue,
   markerLabel,
   disabled,
+  labelExtra,
   t,
 }: {
   label: string;
@@ -51,6 +67,9 @@ function Slider({
   markerValue?: number;
   markerLabel?: string;
   disabled?: boolean;
+  // 2026-09-15新增，只有dT滑块会用："今天"跳转按钮，渲染在label右边（跟
+  // sublabel共享那一行，button放sublabel左边）。其它滑块不传。
+  labelExtra?: React.ReactNode;
   // Only actually needed for the markerLabel-less fallback below, but every
   // call site today always passes markerLabel alongside markerValue — this
   // is a defensive fallback, not a normally-hit path. Threaded in as a prop
@@ -66,7 +85,10 @@ function Slider({
     <div className="flex-1">
       <div className="mb-0.5 flex items-baseline justify-between">
         <span className="text-[10px] font-semibold text-slate-200">{label}</span>
-        <span className="text-[9px] text-slate-500">{sublabel}</span>
+        <span className="flex items-center gap-1.5">
+          {labelExtra}
+          <span className="text-[9px] text-slate-500">{sublabel}</span>
+        </span>
       </div>
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
@@ -107,7 +129,7 @@ function Slider({
   );
 }
 
-export default function ShiftSliders({ shifts, onChange, spot, maxDte, onReset, trackedSpot, trackedDays, trackedVolShift, disabled, explainButton }: Props) {
+export default function ShiftSliders({ shifts, onChange, spot, maxDte, minDte, todayDte, onJumpToday, onReset, trackedSpot, trackedDays, trackedVolShift, disabled, explainButton }: Props) {
   const { t } = useI18n();
   return (
     <div className={disabled ? "pointer-events-none" : ""}>
@@ -150,20 +172,33 @@ export default function ShiftSliders({ shifts, onChange, spot, maxDte, onReset, 
           label={t("shift.timeDecay")}
           sublabel={t("shift.deltaTSublabel")}
           value={shifts.dT}
-          min={0}
+          min={minDte ?? 0}
           max={maxDte > 0 ? maxDte : 30}
           step={1}
           display={disabled && trackedDays !== undefined
             ? `${trackedDays.toFixed(0)}d`
-            : `${shifts.dT.toFixed(0)}d`}
+            // 2026-09-15：dT现在可以为负（第0天到今天之间的历史回放），跟ΔS
+            // 一样统一用带符号格式，避免"-5d"和"5d"混在一起看不出方向。
+            : `${shifts.dT >= 0 ? "+" : ""}${shifts.dT.toFixed(0)}d`}
           subdisplay={disabled && trackedDays !== undefined
             ? `${t("shift.left")} ${Math.max(0, maxDte - trackedDays).toFixed(0)}d`
             : `${t("shift.left")} ${Math.max(0, maxDte - shifts.dT).toFixed(0)}d`}
           onChange={(v) => onChange({ dT: v })}
           accent="#fbbf24"
-          markerValue={trackedDays !== undefined ? trackedDays : undefined}
-          markerLabel={trackedDays !== undefined ? `${t("shift.elapsed")} ${trackedDays.toFixed(1)}` : undefined}
+          markerValue={trackedDays !== undefined ? trackedDays : todayDte}
+          markerLabel={trackedDays !== undefined
+            ? `${t("shift.elapsed")} ${trackedDays.toFixed(1)}`
+            : todayDte !== undefined ? t("shift.today") : undefined}
           disabled={disabled}
+          labelExtra={!disabled && todayDte !== undefined && onJumpToday ? (
+            <button
+              onClick={onJumpToday}
+              disabled={shifts.dT === todayDte}
+              className="rounded border border-slate-700 px-1 py-px text-[8px] font-semibold text-slate-400 transition hover:border-sky-500 hover:text-sky-300 disabled:cursor-default disabled:opacity-40 disabled:hover:border-slate-700 disabled:hover:text-slate-400"
+            >
+              {t("shift.today")}
+            </button>
+          ) : undefined}
           t={t}
         />
         <Slider

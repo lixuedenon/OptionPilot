@@ -5,7 +5,7 @@ import type { HealthResult } from "@/lib/positionHealth";
 import { blackScholes } from "@/lib/bs";
 import { resolveOpeningLeg, impliedVol } from "@/lib/pricing";
 import { useI18n } from "@/i18n/I18nContext";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, AlertTriangle } from "lucide-react";
 import PositionHealthBadge from "@/components/PositionHealthBadge";
 
 export type AlertZone = "golden" | "danger" | "stop" | null;
@@ -61,6 +61,13 @@ interface Props {
   // used in any pricing calculation itself. Undefined outside compare mode
   // or when no live quote is available.
   liveSpot?: number;
+  // 2026-09-15新增。App.tsx的isExpiredOpening：分析模式下打开一条已保存策略，
+  // 发现"真实经过天数"已经超过它第0天(legsAsOf)当时的完整周期(originalMaxDte)，
+  // 即真实世界已经过了这条策略的到期日。为true时只是视觉上标记"仅供历史模拟
+  // 参考"（顶部提示条+图形整体降低饱和度），不影响任何计算——滑块依然能在
+  // 完整原始周期内自由拖动，见ExpiredStrategyDialog.tsx和savedStrategies.ts的
+  // OpeningSimBasis注释。
+  expired?: boolean;
 }
 
 const POINTS = 200;
@@ -205,7 +212,7 @@ function getZone(pnl: number, netCredit: number, maxProfit: number, maxLoss: num
 
 const FAN_COLORS = ["#fbbf24", "#f59e0b", "#a3a3a3", "#475569"];
 
-export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, onAlert, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot }: Props) {
+export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, onAlert, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot, expired }: Props) {
   const { t } = useI18n();
   const [showFan, setShowFan] = useState(false);
   // Off by default — this is a purely informational overlay (see the
@@ -515,6 +522,12 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
 
   return (
     <div className="flex h-full flex-col">
+      {expired && (
+        <div className="mb-1 flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-950/40 px-2 py-1">
+          <AlertTriangle size={11} className="shrink-0 text-amber-400" />
+          <span className="text-[10px] font-medium text-amber-300">{t("shift.expiredNotice")}</span>
+        </div>
+      )}
       {/* Headline P&L + per-leg values */}
       <div className="mb-1 flex flex-col gap-0.5 rounded-lg border border-slate-800 bg-slate-900/60 px-2.5 py-1">
         <div className="flex items-center justify-between">
@@ -652,7 +665,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
 
         <div
           ref={svgContainerRef}
-          className="h-full w-full"
+          className={`h-full w-full ${expired ? "opacity-60 saturate-[0.4]" : ""}`}
           style={{ cursor: dragRef.current ? "grabbing" : "grab" }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}

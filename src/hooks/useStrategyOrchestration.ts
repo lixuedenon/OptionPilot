@@ -6,16 +6,16 @@ import {
   overwriteStrategy,
   addTrackedSnapshot,
   updateSnapshotTime,
-  updateStrategyOpeningAt,
   deleteTrackedSnapshot,
   backfillTrackedSnapshots,
   serializeStrategyState,
   findDuplicate,
   type SavedStrategy,
   type TrackedSnapshot,
+  type OpeningSimBasis,
 } from "@/lib/savedStrategies";
 import { uid, blankLeg, asOpeningLeg } from "@/lib/legFactory";
-import { calendarDaysSince, nearestFridayDte } from "@/lib/dateUtils";
+import { calendarDaysSince, calendarDaysBetween, nearestFridayDte } from "@/lib/dateUtils";
 import { peekResolvedChain, nearestStrikeToSpot, resolveFromCache } from "@/lib/optionChain";
 import type { StockQuote } from "@/lib/useStockQuote";
 
@@ -41,6 +41,29 @@ import type { StockQuote } from "@/lib/useStockQuote";
 // and passed straight through by reference — since a ref is the same mutable
 // object wherever it's held, App.tsx's own JSX and effects keep reading/
 // writing the identical object this hook mutates, with nothing to sync.
+// 2026-09-15第三轮（最终版）：`OpeningSimBasis`的三个调用点
+// （handleOpenStrategy/handleSaveStrategy/handleOverwriteStrategy）共用同
+// 一套计算。daysSinceOpen/originalMaxDte一律按openingAt算；legs里每条期权
+// 腿的dte要从"legsAsOf基准"修正回"openingAt基准"（补上两者之间的天数差，
+// premium原样不动）——否则"第0天"那个点的dte会偏小（比如今天才补录9/1的
+// 开仓数据时，原始存储的dte是"到期日-今天"而不是"到期日-9/1"）。完整原理
+// 见savedStrategies.ts的OpeningSimBasis字段注释。
+function computeOpeningSimBasis(openTs: number, legsAsOfTs: number, legs: Leg[], spot: number): OpeningSimBasis {
+  const daysSinceOpen = calendarDaysBetween(openTs, Date.now());
+  const openToLegsAsOfGap = calendarDaysBetween(openTs, legsAsOfTs);
+  const dayZeroLegs = openToLegsAsOfGap === 0
+    ? legs
+    : legs.map((l) => (l.kind === "stock" ? l : { ...l, dte: l.dte + openToLegsAsOfGap }));
+  const storedMaxDte = legs.length > 0
+    ? Math.max(...legs.filter((l) => l.kind !== "stock").map((l) => l.dte))
+    : 0;
+  // storedMaxDte是legs这份快照里的dte，本来就只保证准确到legsAsOfTs那一
+  // 刻（"从legsAsOf到到期日"的天数）——加上"从openingAt到legsAsOf"这段间
+  // 隔，才是"从真正开仓到到期日"的完整周期。
+  const originalMaxDte = storedMaxDte + openToLegsAsOfGap;
+  return { legs: dayZeroLegs, spot, daysSinceOpen, originalMaxDte };
+}
+
 export function useStrategyOrchestration(params: {
   // Opening combo
   symbol: string;
@@ -54,6 +77,23 @@ export function useStrategyOrchestration(params: {
   setSpot: React.Dispatch<React.SetStateAction<number>>;
   setShifts: React.Dispatch<React.SetStateAction<Shifts>>;
   setOpeningAt: React.Dispatch<React.SetStateAction<number>>;
+  // Compare mode's "开仓组合" date field lets the user preview a
+  // hypothetical opening date without touching the real, persisted
+  // `openingAt` — see LegListSection.tsx's date field and CLAUDE.md's bug
+  // notes (2026-09-14, xue: "只是临时让用户模拟不同的日期...不要保存这些
+  // 信息"). Reset to null (falls back to the real openingAt) at every mode
+  // switch / (re)load / save below — a stray non-null value surviving past
+  // one of those points would be a bug, not a feature.
+  setOpeningAtSimOverride: React.Dispatch<React.SetStateAction<number | null>>;
+  // 2026-09-15新增：分析模式ΔT滑块"完整周期"探索范围+"精确回到第0天"的
+  // 基准数据，见savedStrategies.ts的OpeningSimBasis注释。null=没有可用的
+  // 存档基准（还没保存过、或已经清空/换了预设），此时滑块退回"只能看剩余
+  // 天数"的旧行为。
+  setOpeningSimBasis: React.Dispatch<React.SetStateAction<OpeningSimBasis | null>>;
+  // 打开一条策略时，如果发现"真实经过天数"已经超过它第0天的完整周期
+  // （说明这条策略现实中已经过了真正的到期日），App.tsx据此弹一个"已过
+  // 期，删除还是保留"的确认框。null=不弹。
+  setExpiredStrategyPrompt: React.Dispatch<React.SetStateAction<SavedStrategy | null>>;
   setCorrectedSpot: React.Dispatch<React.SetStateAction<number | null>>;
   setCorrecting: React.Dispatch<React.SetStateAction<boolean>>;
   // Tracked combo
@@ -101,7 +141,8 @@ export function useStrategyOrchestration(params: {
 }) {
   const {
     symbol, legs, activeLegs, spot, shifts, openingAt,
-    setSymbol, setLegs, setSpot, setShifts, setOpeningAt, setCorrectedSpot, setCorrecting,
+    setSymbol, setLegs, setSpot, setShifts, setOpeningAt, setOpeningAtSimOverride,
+    setOpeningSimBasis, setExpiredStrategyPrompt, setCorrectedSpot, setCorrecting,
     isCompareMode, trackedLegs, trackedSpot, trackedDirty, effectiveTrackedSpot,
     setTrackedLegs, setTrackedSpot, setTrackedDaysElapsed, setTrackedDirty, setActiveSnapshotId, setConfirmSaveTrackedOpen,
     savedStrategies, trackingStrategyId, trackedStrategy,
@@ -221,6 +262,10 @@ export function useStrategyOrchestration(params: {
     setTrackedDirty(false);
     setTrackedDaysElapsed(0);
     setOpeningAt(Date.now());
+    // 新套的预设没有存档，"第0天"这个概念也就无从谈起——退回旧的"只能看
+    // 剩余天数"滑块行为，直到下次真正保存。
+    setOpeningSimBasis(null);
+    setExpiredStrategyPrompt(null);
     setStrategyBaseline(null);
     setCorrectedSpot(null);
     clearLegSelection();
@@ -236,6 +281,8 @@ export function useStrategyOrchestration(params: {
     setCorrectedSpot(null);
     setTrackedDirty(false);
     setOpeningAt(Date.now());
+    setOpeningSimBasis(null);
+    setExpiredStrategyPrompt(null);
     legBaseSpot.current = 0;
     legBaseSymbol.current = "";
     setStrategyBaseline(null);
@@ -298,6 +345,10 @@ export function useStrategyOrchestration(params: {
   // save for legs that didn't change.
   const saveTrackedSnapshotTo = useCallback(async (strategyId: string) => {
     if (!trackedLegs) return;
+    // Any "开仓组合" date simulation in progress gets discarded on save —
+    // it was never meant to persist. See setOpeningAtSimOverride's doc
+    // comment above.
+    setOpeningAtSimOverride(null);
     const lockedLegs = trackedLegs.map((l) =>
       l.derivedFrom && !l.derivedFrom.locked ? { ...l, derivedFrom: { ...l.derivedFrom, locked: true } } : l,
     );
@@ -308,13 +359,23 @@ export function useStrategyOrchestration(params: {
     if (newSnaps.length > 0) setActiveSnapshotId(newSnaps[newSnaps.length - 1].id);
     setTrackedLegs(lockedLegs);
     setTrackedDirty(false);
-  }, [trackedLegs, trackedSpot, spot, setActiveSnapshotId, setSavedStrategies, setTrackedDirty, setTrackedLegs]);
+  }, [trackedLegs, trackedSpot, spot, setActiveSnapshotId, setSavedStrategies, setTrackedDirty, setTrackedLegs, setOpeningAtSimOverride]);
 
   const handleSaveStrategy = useCallback(async (filename: string) => {
+    setOpeningAtSimOverride(null);
     const updated = await saveStrategy({ filename, symbol, spot, legs: activeLegs, shifts, openingAt });
     setSavedStrategies(updated);
     setSaveStrategyOpen(false);
     setStrategyBaseline(serializeStrategyState(symbol, legs, shifts, openingAt));
+    // 刚真正保存过一次，但openingAt可能还是很早以前的真实开仓日期（比如
+    // 这次是覆盖保存一条已经持有多天的策略，或者是今天才补录一条更早开
+    // 仓的策略），daysSinceOpen该按openingAt照实算，不能想当然地清零；
+    // activeLegs的dte是"以此刻(Date.now())为基准"算出来的，computeOpeningSimBasis
+    // 内部会据此修正回openingAt基准。若下面pendingPresetReplace分支紧接
+    // 着套用新预设，这个basis会被那次applyPreset立刻重置成null，属于预
+    // 期行为。
+    setOpeningSimBasis(computeOpeningSimBasis(openingAt, Date.now(), activeLegs, spot));
+    setExpiredStrategyPrompt(null);
     if (pendingPresetReplace.current) {
       const rawLegs = pendingPresetReplace.current;
       pendingPresetReplace.current = null;
@@ -333,13 +394,19 @@ export function useStrategyOrchestration(params: {
         await saveTrackedSnapshotTo(newId);
       }
     }
-  }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset, onBackHome, saveTrackedSnapshotTo, pendingLeaveAfterSave, pendingPresetReplace, pendingSaveTrackedAfterStrategy, setSaveStrategyOpen, setSavedStrategies, setStrategyBaseline, setTrackingStrategyId]);
+  }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset, onBackHome, saveTrackedSnapshotTo, pendingLeaveAfterSave, pendingPresetReplace, pendingSaveTrackedAfterStrategy, setSaveStrategyOpen, setSavedStrategies, setStrategyBaseline, setTrackingStrategyId, setOpeningAtSimOverride, setOpeningSimBasis, setExpiredStrategyPrompt]);
 
   const handleOverwriteStrategy = useCallback(async (id: string, filename: string) => {
+    setOpeningAtSimOverride(null);
     const updated = await overwriteStrategy(id, { filename, symbol, spot, legs: activeLegs, shifts, openingAt });
     setSavedStrategies(updated);
     setSaveStrategyOpen(false);
     setStrategyBaseline(serializeStrategyState(symbol, legs, shifts, openingAt));
+    // 同handleSaveStrategy：daysSinceOpen按openingAt照实算，不清零——覆盖
+    // 保存一条已经持有多天的策略时，openingAt通常还是很早以前的真实开仓
+    // 日期。
+    setOpeningSimBasis(computeOpeningSimBasis(openingAt, Date.now(), activeLegs, spot));
+    setExpiredStrategyPrompt(null);
     if (pendingPresetReplace.current) {
       const rawLegs = pendingPresetReplace.current;
       pendingPresetReplace.current = null;
@@ -354,7 +421,7 @@ export function useStrategyOrchestration(params: {
       setTrackingStrategyId(id);
       await saveTrackedSnapshotTo(id);
     }
-  }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset, onBackHome, saveTrackedSnapshotTo, pendingLeaveAfterSave, pendingPresetReplace, pendingSaveTrackedAfterStrategy, setSaveStrategyOpen, setSavedStrategies, setStrategyBaseline, setTrackingStrategyId]);
+  }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset, onBackHome, saveTrackedSnapshotTo, pendingLeaveAfterSave, pendingPresetReplace, pendingSaveTrackedAfterStrategy, setSaveStrategyOpen, setSavedStrategies, setStrategyBaseline, setTrackingStrategyId, setOpeningAtSimOverride, setOpeningSimBasis, setExpiredStrategyPrompt]);
 
   const handleTrack = useCallback(async (s: SavedStrategy) => {
     // 2026-09-08 bug: dte is stored relative to "today" at whatever moment
@@ -368,12 +435,25 @@ export function useStrategyOrchestration(params: {
     // `legs` (opening combo) assignment was the one place that copied
     // s.legs's dte verbatim with no decay, which is what made "打开策略"/
     // 跟踪's "开仓组合" row show the wrong expiry date days after saving.
+    //
+    // 2026-09-14: decay basis switched from `s.openingAt` to `s.legsAsOf ??
+    // s.openingAt` (legsDecayDays) — see SavedStrategy.legsAsOf's doc
+    // comment and CLAUDE.md"六、24". `s.legs` is only accurate "as of"
+    // legsAsOf (when it was last saved); decaying it by days-since-the-
+    // TRUE-opening (openingAt, which never advances) double-counted
+    // whatever had already been decayed into `s.legs` on a prior save,
+    // compounding worse with every save→reopen cycle. `openDaysElapsed`
+    // (days since the real opening) is kept as its own variable, used only
+    // for `setTrackedDaysElapsed`'s "已过X天" stat below — that one SHOULD
+    // stay tied to the real opening date, not to when legs were last saved.
+    const legsDecayDays = calendarDaysSince(s.legsAsOf ?? s.openingAt ?? s.createdAt);
     const openDaysElapsed = calendarDaysSince(s.openingAt ?? s.createdAt);
+    setOpeningAtSimOverride(null);
     setSymbol(s.symbol);
     setLegs(s.legs.map((l) => ({
       ...l,
       id: uid(),
-      dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - openDaysElapsed),
+      dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - legsDecayDays),
     })));
     setShifts({ dS: 0, dT: 0, dV: 0 });
     setSpot(s.spot);
@@ -438,10 +518,11 @@ export function useStrategyOrchestration(params: {
       setTrackedSpot(latestSnap.spot);
       setActiveSnapshotId(latestSnap.id);
     } else {
-      // Same value as openDaysElapsed above (both are calendarDaysSince(s.openingAt
-      // ?? s.createdAt)) — reusing it here instead of recomputing, since
-      // trackedLegs starting as a fresh copy of legs with no snapshot yet
-      // needs the identical decay applied to legs just above.
+      // "已过X天" still uses openDaysElapsed (real opening date) — see the
+      // comment above legsDecayDays's definition. Only the dte decay below
+      // uses legsDecayDays, same basis as the `legs` assignment above (this
+      // is a fresh copy of legs with no snapshot yet, so it needs the
+      // identical decay).
       setTrackedDaysElapsed(openDaysElapsed);
       setTrackedLegs(
         s.legs.map((l) => ({
@@ -451,7 +532,7 @@ export function useStrategyOrchestration(params: {
           // tracked leg was derived from — see types.ts's comment on
           // openLegId. Must be captured before `id` above overwrites it.
           openLegId: l.id,
-          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - openDaysElapsed),
+          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - legsDecayDays),
         })),
       );
       setTrackedSpot(s.spot);
@@ -463,7 +544,7 @@ export function useStrategyOrchestration(params: {
     setManageStrategyOpen(false);
     setStrategyBaseline(serializeStrategyState(s.symbol, s.legs, { dS: 0, dT: 0, dV: 0 }, s.openingAt ?? s.createdAt));
     clearLegSelection();
-  }, [clearLegSelection, legBaseSpot, legBaseSymbol, setActiveSnapshotId, setCorrectedSpot, setLegs, setManageStrategyOpen, setOpeningAt, setSavedStrategies, setShifts, setSpot, setStrategyBaseline, setSymbol, setTrackedDaysElapsed, setTrackedDirty, setTrackedLegs, setTrackedSpot, setTrackingStrategyId, spotManuallySet]);
+  }, [clearLegSelection, legBaseSpot, legBaseSymbol, setActiveSnapshotId, setCorrectedSpot, setLegs, setManageStrategyOpen, setOpeningAt, setOpeningAtSimOverride, setSavedStrategies, setShifts, setSpot, setStrategyBaseline, setSymbol, setTrackedDaysElapsed, setTrackedDirty, setTrackedLegs, setTrackedSpot, setTrackingStrategyId, spotManuallySet]);
 
   const handleSaveTracked = useCallback(async () => {
     if (!trackedLegs) return;
@@ -548,36 +629,15 @@ export function useStrategyOrchestration(params: {
     }
   }, [trackingStrategyId, trackedLegs, openingAt, setSavedStrategies, setTrackedDaysElapsed, setTrackedLegs]);
 
-  // 2026-09-12: lets "开仓组合 (对比基准)"'s date field (LegListSection.tsx)
-  // actually correct the strategy's real opening date — xue reported that
-  // field was showing TODAY's date instead of when the position was
-  // actually opened. Root cause was in LegListSection.tsx's `ts`
-  // computation, which used to prefer the currently-selected snapshot's
-  // own savedAt over the strategy's real `openingAt` whenever any snapshot
-  // existed — so a header meant to be a FIXED baseline silently drifted
-  // forward every time a new snapshot got saved. That component no longer
-  // reads activeSnap.savedAt for this field at all; this handler is what
-  // its date input calls instead (see savedStrategies.ts's
-  // updateStrategyOpeningAt for the persistence half).
-  //
-  // Deliberately does NOT re-decay `legs`/`trackedLegs` dte the way
-  // handleUpdateSnapshotTime just above does: those legs' current dte is
-  // already expressed "as of today" from whenever they were last loaded,
-  // with no ONGOING dependency on openingAt — openingAt only entered that
-  // decay math once, at load time, as a stand-in for "when the stored dte
-  // was last accurate" (see handleOpenStrategy/handleTrack). Retroactively
-  // re-deriving dte after correcting a mis-recorded opening date is a
-  // deeper problem than what's being fixed here (the complaint was that
-  // the DISPLAYED date drifted, not a request to reconcile historical
-  // dte) — not attempted.
-  const handleUpdateOpeningAt = useCallback(async (newOpeningAt: number) => {
-    setOpeningAt(newOpeningAt);
-    setTrackedDaysElapsed(calendarDaysSince(newOpeningAt));
-    if (trackingStrategyId) {
-      const updated = await updateStrategyOpeningAt(trackingStrategyId, newOpeningAt);
-      setSavedStrategies(updated);
-    }
-  }, [trackingStrategyId, setOpeningAt, setTrackedDaysElapsed, setSavedStrategies]);
+  // 2026-09-12 added a handleUpdateOpeningAt here to let "开仓组合 (对比
+  // 基准)"'s date field (LegListSection.tsx) persist a correction to the
+  // strategy's real openingAt. Removed 2026-09-14: xue clarified that
+  // field should NOT persist any edit at all — it's a temporary "what if
+  // this had opened on a different date" preview, local to the current
+  // session only, discarded on mode switch or save (see
+  // App.tsx/LegListSection.tsx's openingAtSimOverride). The real, persisted
+  // `openingAt` is only ever set at handleSaveStrategy/handleOverwriteStrategy
+  // time now (from analysis mode), same as before this 2026-09-12 detour.
 
   const handleOpenStrategy = useCallback((s: SavedStrategy) => {
     // Same dte-decay fix as handleTrack above — without this, "打开策略"
@@ -585,17 +645,28 @@ export function useStrategyOrchestration(params: {
     // expiry date as "today + dte", the displayed date silently drifts
     // forward by however many days have passed since this strategy was
     // saved (the real contract's expiry doesn't move; only "days left"
-    // should shrink).
-    const daysElapsed = calendarDaysSince(s.openingAt ?? s.createdAt);
+    // should shrink). 2026-09-14: basis is `legsAsOf` (when legs were last
+    // saved), not `openingAt` (when the position truly opened) — see
+    // SavedStrategy.legsAsOf's doc comment and CLAUDE.md"六、24".
+    const daysElapsed = calendarDaysSince(s.legsAsOf ?? s.openingAt ?? s.createdAt);
     setSymbol(s.symbol);
-    setLegs(s.legs.map((l) => ({
+    // 2026-09-17修复：每条腿的新id只生成一次（`freshIds`），`setLegs`和下
+    // 面喂给`computeOpeningSimBasis`的快照必须用同一份id——之前两边各自
+    // 调用`uid()`，`openingSimBasis.legs`（喂给`analyticsLegs`→图表定价基
+    // 准，见"四、1.9"）的id和live `legs`状态的id永远对不上，导致
+    // `scenarioPriceById.get(leg.id)`（`LegListSection.tsx`按id查每条腿的
+    // "情景估值"）查不到任何东西，每条腿的情景估值方块整体消失（xue用真
+    // 实持仓发现）。
+    const freshIds = s.legs.map(() => uid());
+    setLegs(s.legs.map((l, i) => ({
       ...l,
-      id: uid(),
+      id: freshIds[i],
       dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - daysElapsed),
     })));
     setShifts(s.shifts);
     setSpot(s.spot);
     setOpeningAt(s.openingAt ?? s.createdAt);
+    setOpeningAtSimOverride(null);
     legBaseSpot.current = s.spot;
     legBaseSymbol.current = s.symbol;
     spotManuallySet.current = true;
@@ -608,7 +679,22 @@ export function useStrategyOrchestration(params: {
     setManageStrategyOpen(false);
     setStrategyBaseline(serializeStrategyState(s.symbol, s.legs, s.shifts, s.openingAt ?? s.createdAt));
     clearLegSelection();
-  }, [quote, clearLegSelection, legBaseSpot, legBaseSymbol, setActiveSnapshotId, setCorrectedSpot, setLegs, setManageStrategyOpen, setOpeningAt, setShifts, setSpot, setStrategyBaseline, setSymbol, setTrackedDaysElapsed, setTrackedLegs, setTrackedSpot, setTrackingStrategyId, spotManuallySet]);
+
+    // 2026-09-15新增，同一天第三轮定案：分析模式ΔT滑块"完整周期"探索范
+    // 围——下界/"今天"点/"精确复现"数据点全部按真正开仓日期(openingAt)
+    // 算，见computeOpeningSimBasis和savedStrategies.ts的OpeningSimBasis字
+    // 段注释。
+    const legsAsOfTs = s.legsAsOf ?? s.openingAt ?? s.createdAt;
+    // s.legs换成freshIds版本（id跟上面setLegs用的同一份，dte仍是s.legs原
+    // 始存储值——computeOpeningSimBasis内部会自己把dte从legsAsOf基准修正
+    // 到openingAt基准，这里不用、也不能预先衰减）。
+    const basisLegs = s.legs.map((l, i) => ({ ...l, id: freshIds[i] }));
+    const basis = computeOpeningSimBasis(s.openingAt ?? s.createdAt, legsAsOfTs, basisLegs, s.spot);
+    setOpeningSimBasis(basis);
+    // 真实经过天数(按openingAt算)已经超过完整周期——这条策略现实中已经过
+    // 了真正的到期日，交给App.tsx弹"删除还是保留"的确认框。
+    setExpiredStrategyPrompt(basis.daysSinceOpen > basis.originalMaxDte ? s : null);
+  }, [quote, clearLegSelection, legBaseSpot, legBaseSymbol, setActiveSnapshotId, setCorrectedSpot, setExpiredStrategyPrompt, setLegs, setManageStrategyOpen, setOpeningAt, setOpeningAtSimOverride, setOpeningSimBasis, setShifts, setSpot, setStrategyBaseline, setSymbol, setTrackedDaysElapsed, setTrackedLegs, setTrackedSpot, setTrackingStrategyId, spotManuallySet]);
 
   // Direct switch from plain analysis mode into compare mode, carrying the
   // legs/spot/openingAt currently being edited — the "live" equivalent of
@@ -619,6 +705,7 @@ export function useStrategyOrchestration(params: {
   // the same combo until the person edits the tracked side or time passes.
   const handleSwitchToCompare = useCallback(async () => {
     if (isCompareMode || legs.length === 0) return;
+    setOpeningAtSimOverride(null);
     // The opening combo being edited right now might already BE an existing
     // saved strategy — e.g. it was opened via "打开策略" (handleOpenStrategy
     // deliberately leaves trackingStrategyId null, same as this function
@@ -724,7 +811,7 @@ export function useStrategyOrchestration(params: {
     setTrackingStrategyId(existing ? existing.id : null);
     setTrackedDirty(false);
     clearLegSelection();
-  }, [isCompareMode, legs, spot, symbol, shifts, savedStrategies, openingAt, clearLegSelection, setActiveSnapshotId, setCorrectedSpot, setSavedStrategies, setTrackedDaysElapsed, setTrackedDirty, setTrackedLegs, setTrackedSpot, setTrackingStrategyId]);
+  }, [isCompareMode, legs, spot, symbol, shifts, savedStrategies, openingAt, clearLegSelection, setActiveSnapshotId, setCorrectedSpot, setOpeningAtSimOverride, setSavedStrategies, setTrackedDaysElapsed, setTrackedDirty, setTrackedLegs, setTrackedSpot, setTrackingStrategyId]);
 
   // Direct switch from compare mode back into plain analysis mode. Which
   // data becomes the new (single) analysis-mode baseline depends on
@@ -769,6 +856,7 @@ export function useStrategyOrchestration(params: {
     setLegs(newLegs);
     setSpot(newSpot);
     setOpeningAt(newOpeningAt);
+    setOpeningAtSimOverride(null);
     setShifts({ dS: 0, dT: 0, dV: 0 });
     legBaseSpot.current = newSpot;
     legBaseSymbol.current = symbol;
@@ -780,8 +868,14 @@ export function useStrategyOrchestration(params: {
     setTrackedDaysElapsed(0);
     setCorrectedSpot(null);
     setStrategyBaseline(serializeStrategyState(symbol, newLegs, { dS: 0, dT: 0, dV: 0 }, newOpeningAt));
+    // 从对比模式切回来的这份"开仓组合"不对应任何存档记录（哪怕source是
+    // "baseline"，跟原策略之间的存档关联也已经在handleTrack时代断了），
+    // 没有"第0天"基准可用——退回旧的"只能看剩余天数"滑块行为，直到用户
+    // 在分析模式重新保存一次。
+    setOpeningSimBasis(null);
+    setExpiredStrategyPrompt(null);
     clearLegSelection();
-  }, [isCompareMode, legs, spot, openingAt, trackedLegs, effectiveTrackedSpot, trackedStrategy, symbol, clearLegSelection, legBaseSpot, legBaseSymbol, setActiveSnapshotId, setCorrectedSpot, setLegs, setOpeningAt, setShifts, setSpot, setStrategyBaseline, setTrackedDaysElapsed, setTrackedLegs, setTrackedSpot, setTrackingStrategyId, spotManuallySet]);
+  }, [isCompareMode, legs, spot, openingAt, trackedLegs, effectiveTrackedSpot, trackedStrategy, symbol, clearLegSelection, legBaseSpot, legBaseSymbol, setActiveSnapshotId, setCorrectedSpot, setLegs, setOpeningAt, setOpeningAtSimOverride, setOpeningSimBasis, setExpiredStrategyPrompt, setShifts, setSpot, setStrategyBaseline, setTrackedDaysElapsed, setTrackedLegs, setTrackedSpot, setTrackingStrategyId, spotManuallySet]);
 
   // Public entry point used by the UI. Switching to "current" carries the
   // dirty edits themselves into analysis mode, so it never loses anything
@@ -816,7 +910,6 @@ export function useStrategyOrchestration(params: {
     handleSelectSnapshot,
     handleDeleteSnapshot,
     handleUpdateSnapshotTime,
-    handleUpdateOpeningAt,
     handleOpenStrategy,
     handleSwitchToCompare,
     performSwitchToAnalysis,

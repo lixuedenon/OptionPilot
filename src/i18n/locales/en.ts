@@ -189,7 +189,11 @@ const en: Dict = {
   "compare.estimatedHint": "Snapshots marked (est.) are theoretically repriced from historical stock prices (auto-filled for trading days nobody manually refreshed) — not real market fills",
   "compare.keepOne": "Keep at least one snapshot",
   "compare.deleteSnap": "Delete current snapshot",
-  "compare.clickModifyDate": "Click to modify entry date",
+  "compare.simulateOpeningDate": "Preview a different opening date (preview only, not saved)",
+  "compare.simulateOpeningDateWarning": "This only previews the opening date temporarily — it won't be saved. Switching modes or saving reverts it to the real opening date.",
+  "compare.confirmSimulateDate": "Preview",
+  "compare.simulatingBadge": "Simulated",
+  "compare.restoreRealDate": "Restore real opening date",
 
   // ── confirm dialogs ──
   "confirm.saveSnapshot": "Save Position Snapshot?",
@@ -634,6 +638,16 @@ const en: Dict = {
   "shift.positionSpot": "Position Spot",
   "shift.elapsed": "Elapsed",
   "shift.positionIV": "Position IV",
+  "shift.today": "Today",
+  "shift.day0": "Day 0",
+  "shift.expiryLabel": "Expiry",
+  "shift.expiredNotice": "This strategy is past its real expiry — historical simulation only",
+
+  // ── expired strategy prompt ──
+  "expired.title": "Strategy Expired",
+  "expired.desc": "This strategy's real expiry has already passed. Delete it, or keep it for historical simulation?",
+  "expired.keep": "Keep",
+  "expired.delete": "Delete",
 
   // ── situation explainer ("Explain Current Situation", 2026-09-09) ──
   "explain.button": "Explain Current Situation",

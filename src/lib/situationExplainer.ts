@@ -1,4 +1,5 @@
 // src/lib/situationExplainer.ts
+// src/lib/situationExplainer.ts
 import type { Leg, Shifts } from "./types";
 import type { ComboResult, PnlAttribution } from "./pricing";
 import { maxProfitLoss, impliedVol, resolveOpeningLeg } from "./pricing";
@@ -309,7 +310,13 @@ function legDeltaMag(leg: Leg, result: ComboResult): number {
 
 // 盈亏占最大盈利/最大亏损的百分比标签，找不到对应分母（比如裸卖出没有
 // maxLoss——风险无限）时返回null，调用方就只显示金额、不硬凑一个百分比。
+// 2026-09-14修复：descClause显示的pnl是0位小数（fmtSigned(pnl,0)），但这
+// 里算百分比用的是未取整的原始pnl——pnl是+0.42这种小额浮盈时，会读成
+// "目前盈亏+0（占最大盈利的16%）"，两个数字各自没错，放一起却像自相矛
+// 盾。pnl取整后等于0时（Math.round与toFixed(0)取整口径一致），直接不给
+// 百分比标签，只留金额，避免这种读起来矛盾的措辞（见CLAUDE.md"六、25"）。
 function pctLabelFor(t: TFunc, pnl: number, maxProfit: number, maxLoss: number | null): string | null {
+  if (Math.round(pnl) === 0) return null;
   if (pnl > 0 && maxProfit > 0) return t("posAdvice.pctOfMaxProfit", { pct: ((pnl / maxProfit) * 100).toFixed(0) });
   if (pnl < 0 && maxLoss !== null && maxLoss !== 0) return t("posAdvice.pctOfMaxLoss", { pct: ((pnl / maxLoss) * 100).toFixed(0) });
   return null;

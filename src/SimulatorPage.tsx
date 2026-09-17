@@ -1,4 +1,5 @@
 // src/SimulatorPage.tsx
+// src/SimulatorPage.tsx
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, Plus, RefreshCw, X, Trash2, History, Search, Undo2, TrendingUp, TrendingDown, Minus, ChevronDown, MoreVertical, CalendarClock, Shield, Layers, Ban, Wallet, DollarSign, Compass, RotateCcw, Target, LineChart, HelpCircle, AlertTriangle } from "lucide-react";
@@ -36,6 +37,7 @@ import StrategyBadge from "@/components/StrategyBadge";
 import { matchStrategy } from "@/lib/matchStrategy";
 import { ConfirmResetAccountDialog, HelpPanel, isGuideDismissed } from "@/components/dialogs";
 import SimStatsPanel from "@/components/SimStatsPanel";
+import LiveClock from "@/components/LiveClock";
 import { computeSimStats } from "@/lib/simStats";
 
 interface Props {
@@ -1082,6 +1084,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
               {t("sim.resetAccount")}
             </button>
           )}
+          <LiveClock />
         </header>
 
         {!account ? (

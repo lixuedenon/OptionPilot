@@ -35,6 +35,19 @@ type TFunc = (key: string, vars?: Record<string, string | number>) => string;
 // (it touches showCompareGuide/compareGuideShown, App.tsx-local state).
 export function useComboAnalytics(params: {
   legs: Leg[];
+  // 2026-09-16新增：图表/归因的定价基准，跟`legs`分开传——`legs`（连同下
+  // 面的`spot`/`shifts`）驱动的是activeLegs等一系列实时编辑状态（腿位列
+  // 表渲染、保存按钮、预设名称匹配），永远是用户正在编辑的实时数据；这
+  // 三个analytics*才是"ΔT滑块图表"实际用来定价的基准——分析模式下，只要
+  // 调用方（App.tsx）能算出openingSimBasis（策略已加载、非对比模式），
+  // 就统一传"开仓那天"的legs/spot、以及已经从"离今天几天"换算成"离开仓
+  // 几天"的shifts，让整条ΔT轴的反推IV永远只在开仓那天做一次，不会因为
+  // 滑块跨过"今天"这个参考点而突然切换基准出现跳变；没有openingSimBasis
+  // 时（新建组合、对比模式）调用方直接传跟`legs`/`spot`/`shifts`相同的
+  // 值，这几个memo的行为退化回原样。详见App.tsx里对应变量的大段注释。
+  analyticsLegs: Leg[];
+  analyticsSpot: number;
+  analyticsShifts: Shifts;
   trackedLegs: Leg[] | null;
   trackedSpot: number | null;
   correctedSpot: number | null;
@@ -45,13 +58,24 @@ export function useComboAnalytics(params: {
   savedStrategies: SavedStrategy[];
   t: TFunc;
 }) {
-  const { legs, trackedLegs, trackedSpot, correctedSpot, trackedDaysElapsed, spot, shifts, trackingStrategyId, savedStrategies, t } = params;
+  // params.shifts（实时ΔS/ΔT/ΔV，驱动腿位编辑区之外的旧"整体替换"用
+  // 法）2026-09-16起不再被这个hook内部直接使用——图表/归因/健康度全部改
+  // 用analyticsShifts（见上面params类型注释），这里故意不解构它，避免
+  // 引入一个未使用的局部变量。仍然留在参数类型里，是因为App.tsx调用处
+  // 传参对象字面量里两者都要给（historically一起传的一组"当前状态"），
+  // 而不是这个hook还需要它。
+  const { legs, analyticsLegs, analyticsSpot, analyticsShifts, trackedLegs, trackedSpot, correctedSpot, trackedDaysElapsed, spot, trackingStrategyId, savedStrategies, t } = params;
 
   const activeLegs = useMemo(() => legs.filter((l) => !l.disabled), [legs]);
+  // 图表定价基准的过滤版——见上面params类型里analyticsLegs的注释。跟
+  // activeLegs分开是因为两者在strategy已加载、非对比模式时不是同一份
+  // 数据（analyticsLegs此时是openingSimBasis.legs，activeLegs是实时编辑
+  // 腿位）。
+  const activePricingLegs = useMemo(() => analyticsLegs.filter((l) => !l.disabled), [analyticsLegs]);
   const activeTrackedLegs = useMemo(() => trackedLegs?.filter((l) => !l.disabled) ?? null, [trackedLegs]);
   const isCompareMode = trackedLegs !== null;
 
-  const result = useMemo(() => priceCombo(activeLegs, shifts, spot), [activeLegs, shifts, spot]);
+  const result = useMemo(() => priceCombo(activePricingLegs, analyticsShifts, analyticsSpot), [activePricingLegs, analyticsShifts, analyticsSpot]);
 
   const scenarioPriceById = useMemo(() => {
     const m = new Map<string, number>();
@@ -107,9 +131,13 @@ export function useComboAnalytics(params: {
       if (!activeTrackedLegs || activeTrackedLegs.length === 0 || effectiveTrackedSpot <= 0 || !trackedGreeks) return null;
       return computeHealth(activeTrackedLegs, effectiveTrackedSpot, { dS: 0, dT: 0, dV: 0 }, trackedGreeks.breakdown, t);
     }
-    if (activeLegs.length === 0 || spot <= 0) return null;
-    return computeHealth(activeLegs, spot, shifts, result.breakdown, t);
-  }, [isCompareMode, activeTrackedLegs, effectiveTrackedSpot, trackedGreeks, activeLegs, spot, shifts, result, t]);
+    // 2026-09-16改用activePricingLegs/analyticsSpot/analyticsShifts（图表
+    // 定价基准），不再是activeLegs/spot/shifts（实时编辑状态）——见params
+    // 类型里analyticsLegs的注释，跟result保持同一份基准，否则健康度徽章
+    // 会跟图表/归因面板对不上。
+    if (activePricingLegs.length === 0 || analyticsSpot <= 0) return null;
+    return computeHealth(activePricingLegs, analyticsSpot, analyticsShifts, result.breakdown, t);
+  }, [isCompareMode, activeTrackedLegs, effectiveTrackedSpot, trackedGreeks, activePricingLegs, analyticsSpot, analyticsShifts, result, t]);
 
   const { pop, breakevens } = useMemo(() => probabilityOfProfit(activeLegs, spot), [activeLegs, spot]);
 
@@ -120,11 +148,18 @@ export function useComboAnalytics(params: {
   // shifts, so this is a direct reuse, not new pricing logic. Only shown
   // once at least one slider has actually moved — at rest all four numbers
   // are zero and there's nothing useful to attribute.
+  //
+  // 2026-09-16改用activePricingLegs/analyticsSpot/analyticsShifts：这个
+  // "全为0就是静止、不归因"的判断本身不用改（真正原地不动、没有任何位
+  // 移时确实无可归因）——只是它现在收到的analyticsShifts.dT语义已经是
+  // "离开仓过了几天"（不是旧坐标"离今天几天"），所以只有真正落在开仓那
+  // 一刻才会命中，"今天"（此时dT=daysSinceOpen，通常不为0）不会再被误
+  // 判成静止。见App.tsx里analyticsShifts的大段注释。
   const analysisAttribution = useMemo(() => {
-    if (isCompareMode || activeLegs.length === 0 || spot <= 0) return null;
-    if (shifts.dS === 0 && shifts.dT === 0 && shifts.dV === 0) return null;
-    return attributePnl(activeLegs, spot, shifts.dS, shifts.dT, shifts.dV, result.change);
-  }, [isCompareMode, activeLegs, spot, shifts, result]);
+    if (isCompareMode || activePricingLegs.length === 0 || analyticsSpot <= 0) return null;
+    if (analyticsShifts.dS === 0 && analyticsShifts.dT === 0 && analyticsShifts.dV === 0) return null;
+    return attributePnl(activePricingLegs, analyticsSpot, analyticsShifts.dS, analyticsShifts.dT, analyticsShifts.dV, result.change);
+  }, [isCompareMode, activePricingLegs, analyticsSpot, analyticsShifts, result]);
 
   // Fixed reference scale for the attribution bars in both modes — see
   // PnlAttributionPanel's own comments on why this needs to be something

@@ -189,7 +189,11 @@ const zh: Dict = {
   "compare.estimatedHint": "标\"(估)\"的快照是用历史股价理论重定价出来的（没人手动刷新过的交易日自动补上），不是真实市场成交价",
   "compare.keepOne": "至少保留一条快照",
   "compare.deleteSnap": "删除当前快照",
-  "compare.clickModifyDate": "点击修改开仓日期",
+  "compare.simulateOpeningDate": "模拟不同的开仓日期（仅预览，不会保存）",
+  "compare.simulateOpeningDateWarning": "这只是临时预览开仓日期，不会保存；切换模式或保存后会恢复为真实开仓日期。",
+  "compare.confirmSimulateDate": "预览",
+  "compare.simulatingBadge": "模拟中",
+  "compare.restoreRealDate": "恢复真实开仓日期",
 
   // ── confirm dialogs ──
   "confirm.saveSnapshot": "保存持仓快照？",
@@ -634,6 +638,16 @@ const zh: Dict = {
   "shift.positionSpot": "持仓股价",
   "shift.elapsed": "已过",
   "shift.positionIV": "持仓隐含波动率",
+  "shift.today": "今天",
+  "shift.day0": "第0天",
+  "shift.expiryLabel": "到期",
+  "shift.expiredNotice": "此策略已过真实到期日，仅供历史模拟参考",
+
+  // ── expired strategy prompt ──
+  "expired.title": "策略已过期",
+  "expired.desc": "这条策略的真实到期日已经过去。要删除它，还是保留下来继续做历史模拟？",
+  "expired.keep": "保留",
+  "expired.delete": "删除",
 
   // ── situation explainer ("解释当前情况", 2026-09-09) ──
   "explain.button": "解释当前情况",

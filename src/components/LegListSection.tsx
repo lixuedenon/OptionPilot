@@ -1,6 +1,7 @@
 // src/components/LegListSection.tsx
-import { Clock, Ban, Trash2, Plus, Save, Hash, Crosshair, CalendarClock } from "lucide-react";
-import { useMemo, type ReactNode } from "react";
+// src/components/LegListSection.tsx
+import { Clock, Ban, Trash2, Plus, Save, Hash, Crosshair, CalendarClock, Pencil, RotateCcw, AlertTriangle } from "lucide-react";
+import { useMemo, useState, type ReactNode } from "react";
 import type { Leg } from "@/lib/types";
 import type { SavedStrategy } from "@/lib/savedStrategies";
 import { formatDateInput, parseDateInput } from "@/lib/dateUtils";
@@ -19,6 +20,15 @@ import { useI18n } from "@/i18n/I18nContext";
 // call site, not a sign the extraction itself is riskier in kind.
 interface Props {
   isCompareMode: boolean;
+  // ⚠️ 2026-09-14: trackedStrategy/activeSnapshotId/onUpdateSnapshotTime当
+  // 前在这个组件里未被使用了——它们以前驱动的是"开仓组合"标题栏那个日期
+  // 字段，但那个字段实际改的是"当前选中快照的保存时间"，跟"开仓组合"这个
+  // 标题本身是错位的（真正的bug，见CLAUDE.md）。修复后这个字段改回严格显示
+  // /模拟openingAt本身，不再碰快照时间，所以这三个prop在这个组件里空转。
+  // "编辑某条快照自己的保存时间"是一个独立、之前确实在用的能力，只是长错
+  // 了位置——没有删掉这几个prop/App.tsx里的handleUpdateSnapshotTime，是为了
+  // 不在没跟xue确认前就丢掉这个能力；如果还需要，更合适的新家是
+  // TrackedComboSection.tsx的快照选择器那一块。
   trackedStrategy: SavedStrategy | undefined;
   activeSnapshotId: string | null;
   onUpdateSnapshotTime: (snapshotId: string, savedAt: number) => void;
@@ -26,6 +36,12 @@ interface Props {
 
   spot: number;
   openingAt: number;
+  // 对比模式"开仓组合"标题栏日期字段的临时模拟值——见App.tsx里
+  // openingAtSimOverride状态的注释。null=未在模拟，显示真实openingAt；
+  // 非null=用户刚确认要预览的假设日期，只影响这个字段自己的显示，不
+  // 持久化、不重算legs/定价。
+  openingAtSimOverride: number | null;
+  onSetOpeningAtSimOverride: (ts: number | null) => void;
   activeLegs: Leg[];
 
   legs: Leg[];
@@ -67,12 +83,17 @@ interface Props {
 
 export default function LegListSection({
   isCompareMode,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept unused on purpose, see the Props interface comment just above
   trackedStrategy,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept unused on purpose, see the Props interface comment just above
   activeSnapshotId,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept unused on purpose, see the Props interface comment just above
   onUpdateSnapshotTime,
   legToolbar,
   spot,
   openingAt,
+  openingAtSimOverride,
+  onSetOpeningAtSimOverride,
   activeLegs,
   legs,
   selectedCount,
@@ -119,44 +140,82 @@ export default function LegListSection({
   // full opening-combo leg list, same scope as legRolesById above.
   const legLinksById = useMemo(() => computeLegLinks(legs), [legs]);
 
+  // "开仓组合"标题栏日期字段：2026-09-14重做（CLAUDE.md六、24/相关bug）。
+  // 以前这里显示的其实是`activeSnap?.savedAt`（快照保存时间），不是真正
+  // 的开仓日期——跟"开仓组合"这个标题本身就是错位的，而且`onChange`改的
+  // 也是快照时间，不是openingAt。现在固定显示/只涉及openingAt（或它的
+  // 临时模拟值），彻底跟快照时间分开。默认只读；点击铅笔图标后先看到一句
+  // 警告+日期框，需要显式点"预览"确认才会真正生效——生效的也只是本地、
+  // 不持久化的模拟值（openingAtSimOverride），不是真的修改openingAt，见
+  // App.tsx对应状态的注释。
+  const [editingOpeningDate, setEditingOpeningDate] = useState(false);
+  const [openingDateDraft, setOpeningDateDraft] = useState("");
+  const effectiveOpeningAt = openingAtSimOverride ?? openingAt;
+
   return (
     <>
       <div className="p-2 space-y-1">
         {isCompareMode && (
-          <div className="flex items-center gap-2 bg-slate-900/40 py-1 rounded px-2">
+          <div className="flex flex-wrap items-center gap-2 bg-slate-900/40 py-1 rounded px-2">
             <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-400">{t("compare.openCombo")}</span>
             <span className="text-[9px] text-slate-500">{t("compare.compareBase")}</span>
-            {(() => {
-              const snaps = trackedStrategy?.trackedSnapshots ?? [];
-              const activeSnap = snaps.find((sn) => sn.id === activeSnapshotId) ?? snaps[snaps.length - 1];
-              // Prefer a real snapshot's own save time when one exists (a
-              // snapshot genuinely represents "today's check-in," a
-              // different moment from when the position was first
-              // opened). But with NO snapshot recorded yet, falling back
-              // straight to trackedStrategy.createdAt (whenever "save to
-              // library" happened to get clicked) skipped right past
-              // openingAt (the date the person actually told the app the
-              // position opened) — so editing openingAt and saving looked
-              // like it had no effect here. openingAt is the more correct
-              // fallback; createdAt only as a last resort if neither exists.
-              const ts = activeSnap?.savedAt ?? trackedStrategy?.openingAt ?? trackedStrategy?.createdAt;
-              if (!ts) return null;
-              return (
-                <label className="flex items-center gap-1 text-[9px] tabular-nums text-slate-500" title={t("compare.clickModifyDate")}>
-                  <Clock size={9} className="text-slate-500" />
-                  <input
-                    type="date"
-                    lang={lang === "en" ? "en" : "zh-CN"}
-                    value={formatDateInput(ts)}
-                    onChange={(e) => {
-                      const newTs = parseDateInput(e.target.value);
-                      if (newTs !== null && activeSnap) onUpdateSnapshotTime(activeSnap.id, newTs);
-                    }}
-                    className="rounded border border-slate-700 bg-slate-900 px-1 py-0.5 text-[9px] tabular-nums text-slate-400 outline-none focus:border-sky-500 focus:text-sky-200 [color-scheme:dark]"
-                  />
-                </label>
-              );
-            })()}
+            <span className="flex items-center gap-1 text-[9px] tabular-nums text-slate-500">
+              <Clock size={9} className="text-slate-500" />
+              {formatDateInput(effectiveOpeningAt)}
+            </span>
+            {openingAtSimOverride !== null && (
+              <button
+                type="button"
+                onClick={() => onSetOpeningAtSimOverride(null)}
+                title={t("compare.restoreRealDate")}
+                className="flex items-center gap-0.5 rounded border border-amber-700/60 bg-amber-950/40 px-1 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-amber-300 transition hover:border-amber-600 hover:text-amber-200"
+              >
+                <RotateCcw size={8} /> {t("compare.simulatingBadge")}
+              </button>
+            )}
+            {!editingOpeningDate ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setOpeningDateDraft(formatDateInput(effectiveOpeningAt));
+                  setEditingOpeningDate(true);
+                }}
+                title={t("compare.simulateOpeningDate")}
+                className="text-slate-600 transition hover:text-slate-300"
+              >
+                <Pencil size={10} />
+              </button>
+            ) : (
+              <div className="flex items-center gap-1.5 rounded border border-amber-700/50 bg-amber-950/20 px-1.5 py-1">
+                <AlertTriangle size={10} className="shrink-0 text-amber-400" />
+                <span className="max-w-[220px] text-[8px] leading-tight text-amber-200">{t("compare.simulateOpeningDateWarning")}</span>
+                <input
+                  type="date"
+                  lang={lang === "en" ? "en" : "zh-CN"}
+                  value={openingDateDraft}
+                  onChange={(e) => setOpeningDateDraft(e.target.value)}
+                  className="rounded border border-slate-700 bg-slate-900 px-1 py-0.5 text-[9px] tabular-nums text-slate-300 outline-none focus:border-sky-500 focus:text-sky-200 [color-scheme:dark]"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const newTs = parseDateInput(openingDateDraft);
+                    if (newTs !== null) onSetOpeningAtSimOverride(newTs);
+                    setEditingOpeningDate(false);
+                  }}
+                  className="rounded bg-amber-600 px-1.5 py-0.5 text-[8px] font-semibold text-white transition hover:bg-amber-500"
+                >
+                  {t("compare.confirmSimulateDate")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingOpeningDate(false)}
+                  className="rounded border border-slate-600 px-1.5 py-0.5 text-[8px] font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white"
+                >
+                  {t("common.cancel")}
+                </button>
+              </div>
+            )}
             <div className="ml-auto flex items-center gap-2">
               {legToolbar}
             </div>

@@ -12,3 +12,4 @@ export { default as MarginErrorDialog } from "./MarginErrorDialog";
 export { default as ConfirmResetAccountDialog } from "./ConfirmResetAccountDialog";
 export { default as ConfirmLeaveDialog } from "./ConfirmLeaveDialog";
 export { default as SituationExplainDialog } from "./SituationExplainDialog";
+export { default as ExpiredStrategyDialog } from "./ExpiredStrategyDialog";
