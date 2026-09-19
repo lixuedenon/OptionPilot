@@ -29,7 +29,6 @@ const en: Dict = {
   // ── leg section ──
   "leg.legs": "Option Legs",
   "leg.roleMenuItem": "What this leg does",
-  "leg.compareMode": "Compare Mode",
   "leg.switchToCompare": "Switch to Compare Mode",
   "leg.switchToCompareHint": "Carries the current legs, spot, and entry date straight into Compare Mode so you can keep tracking",
   "leg.switchToAnalysis": "Switch to Analysis Mode",
@@ -132,7 +131,6 @@ const en: Dict = {
   "leg.left": "",
   "leg.buy": "B",
   "leg.sell": "S",
-  "leg.stock": "Stock",
   "leg.scenarioValue": "Scenario Value",
   "leg.scenarioValueHint": "Theoretical value of this leg (sign-adjusted for buy/sell) computed from the \"Scenario Shift\" sliders below (price / days / volatility change)",
   "leg.legPnl": "Leg P&L",
@@ -146,12 +144,11 @@ const en: Dict = {
   "leg.lockedHint": "This action has been saved into a historical snapshot — to keep that record accurate, it can no longer be undone",
   "leg.restorePrice": "Refresh market price",
   "leg.showOpeningPrice": "Showing today's market price (green) — click to revert to the opening price",
-  "leg.restoreOriginal": "Restore Analysis Mode's original data (strike/expiry/premium)",
-  "leg.restoreOriginalNoChange": "Already matches Analysis Mode's original data — nothing to restore",
   "leg.fetchingPrice": "Fetching quote...",
   "leg.fetchPriceFailed": "Fetch failed",
   "leg.priceSnapNote": "Auto-matched: strike {strike}, expiry {date}",
   "leg.noSymbolForPrice": "Enter a stock symbol first",
+  "leg.contractExpiredNoPrice": "Past its real expiry — market price unavailable",
   "leg.pickStrike": "Pick strike",
   "leg.noStrikeOptions": "No strikes available",
   "leg.pickExpiry": "Pick expiry",
@@ -162,7 +159,6 @@ const en: Dict = {
   "compare.compareBase": "(compare baseline)",
   "compare.todayCombo": "Current Position",
   "compare.fixed": "(fixed)",
-  "compare.spot": "Spot",
   "compare.spotChange": "Spot Change",
   "compare.openLabel": "Open",
   "compare.currentLabel": "Current",
@@ -179,7 +175,6 @@ const en: Dict = {
   "attribution.iv": "IV",
   "attribution.residual": "Interaction",
   "attribution.total": "Total Change",
-  "attribution.residualHint": "Price/time/IV effects aren't simply additive in option pricing (e.g. the price effect itself changes as time decays), so the three rarely add up exactly to the real total change. The gap shown here is that interaction effect, not a calculation error.",
   "attribution.panelTitle": "What is P/L Attribution?",
   "attribution.panelExplain": "Breaks this position's total P/L change into three separate contributions — price, time (time-value decay), and IV (implied volatility) — so you can see where the money actually came from. The three rarely sum to exactly the total change; that gap is the \"interaction\" term, explained separately via the question mark next to it.",
   "attribution.residualTitle": "What is the \"interaction\" term?",
@@ -356,7 +351,6 @@ const en: Dict = {
   "sim.openPositions": "Open Positions",
   "sim.newPosition": "New Position",
   "sim.noOpenPositions": "No open positions — click \"New Position\" to build one",
-  "sim.refresh": "Refresh",
   "sim.refreshAll": "Refresh All Positions",
   "sim.refreshing": "Refreshing...",
   "sim.refreshFirst": "Refresh the mark-to-market value before closing",
@@ -386,9 +380,6 @@ const en: Dict = {
   "sim.regretResult": "Had you kept holding, unrealized P&L would be {pnl} — {verdict} by {diff} vs. what you actually closed for",
   "sim.regretWorse": "worse",
   "sim.regretBetter": "better",
-  "sim.viewTimeline": "View timeline",
-  "sim.addToCompare": "Add to Compare Mode",
-  "sim.addSnapshotToCompare": "Add snapshot to Compare",
   "sim.loadingTimeline": "Loading timeline...",
   "sim.noSnapshots": "No snapshots yet — click \"Refresh All Positions\" to start recording, then check back for a timeline",
   "sim.currentLabel": "now",
@@ -396,7 +387,6 @@ const en: Dict = {
   "sim.bestPointWorse": "Best point to have closed was {date}, with unrealized P&L of {pnl} — {diff} more than {label}",
   "sim.bestPointBetter": "{label} is already the best point on record",
   "sim.bestPointSame": "Currently near the best point on record — no clearly better exit so far",
-  "sim.bestPointNeedsRefresh": "There's history to compare against, but this position hasn't been refreshed with a live price yet. Click \"Refresh All\" above, then come back to see the comparison.",
   "sim.reasonNearPeak": "This point sits near the best this trade's payoff curve can reach",
   "sim.reasonBeyondBreakeven": "This point is past breakeven, in loss territory",
   "sim.reviewLabel": "Review",
@@ -537,7 +527,6 @@ const en: Dict = {
   "roll.cancel": "Cancel",
   "roll.confirm": "Confirm Roll",
   "roll.days": "d",
-  "roll.expiry": "Expiry",
   "roll.expiryLabel": "Expiry",
   "roll.left": "left",
   "roll.compareTitle": "Before vs After Roll (P/L at expiry)",
@@ -582,7 +571,6 @@ const en: Dict = {
   "hedge.refPremium": "Est. premium:",
   "hedge.clickToUse": "(click to use)",
   "hedge.shares": "sh",
-  "hedge.delta": "Delta",
   "hedge.stock": "stock",
   "hedge.cancel": "Cancel",
   "hedge.confirm": "Confirm Hedge",
@@ -627,9 +615,10 @@ const en: Dict = {
   "chart.impliedFetching": "Fetching...",
 
   // ── shift sliders ──
-  "shift.scenarioFrozen": "Scenario (frozen in compare mode)",
-  "shift.scenario": "Scenario Shift",
+  "shift.scenarioFrozen": "Scenario Comparison",
+  "shift.scenario": "Future Scenario Simulation",
   "shift.reset": "Reset",
+  "leg.lockedInputHint": "To change parameters, click Reset in {section} first.",
   "shift.spotChange": "Spot Change",
   "shift.timeDecay": "Time Decay",
   "shift.deltaTSublabel": "ΔT (days)",
@@ -639,8 +628,6 @@ const en: Dict = {
   "shift.elapsed": "Elapsed",
   "shift.positionIV": "Position IV",
   "shift.today": "Today",
-  "shift.day0": "Day 0",
-  "shift.expiryLabel": "Expiry",
   "shift.expiredNotice": "This strategy is past its real expiry — historical simulation only",
 
   // ── expired strategy prompt ──
@@ -648,6 +635,27 @@ const en: Dict = {
   "expired.desc": "This strategy's real expiry has already passed. Delete it, or keep it for historical simulation?",
   "expired.keep": "Keep",
   "expired.delete": "Delete",
+  "expired.trackDesc": "This strategy's real expiry has already passed, so there's no real market data to compare against — it can no longer be tracked. Click Confirm to delete it.",
+  "expired.confirm": "Confirm",
+
+  // ── Forward valuation range (2026-09-18, the rough-estimate badge next
+  // to the ticker in AppHeader.tsx): analyst EPS estimate low/high for the
+  // next 1/2 years × current P/E. A rough estimate, not a real valuation
+  // model — methodNote has to say so plainly.
+  "valuation.tooltip": "Forward valuation range (rough estimate, click to view)",
+  "valuation.title": "Forward Valuation Range (rough estimate)",
+  "valuation.label1y": "Next 1yr",
+  "valuation.label2y": "Next 2yr",
+  "valuation.peForward": "forward",
+  "valuation.peTrailing": "trailing",
+  "valuation.methodNote": "Method: analyst EPS estimate range (low/high) × current {peLabel} P/E of {pe}x. For reference only — not investment advice.",
+  // 2026-09-18 addition (found while xue tested CRWD live): the current P/E
+  // itself is backed out from the next-year consensus EPS, and the "1yr"
+  // bucket often draws on that same estimate window — multiplying the two
+  // tends to land close to today's price, which can read as "not actually
+  // expensive" when it's really just reconstructing today's own pricing,
+  // not an independent forward call. Needs to be said plainly.
+  "valuation.caveat1y": "Note: the EPS estimate behind \"Next 1yr\" likely overlaps the same window used to compute the current P/E, so this figure is closer to what the market already prices in today than an independent forecast. \"Next 2yr\" (when available) is a more genuinely forward-looking number.",
 
   // ── situation explainer ("Explain Current Situation", 2026-09-09) ──
   "explain.button": "Explain Current Situation",
@@ -657,8 +665,6 @@ const en: Dict = {
   "explain.headlineCompare": "{days} days since opening — here's the overall picture of today's combo:",
   "explain.scenarioTitle": "Current Scenario",
   "explain.scenarioBody": "With spot shifted to {spot} ({spotChange}, {spotPct}), time advanced {days} days, and IV changed {vol}, the combo looks like this:",
-  "explain.stateTitle": "Current State",
-  "explain.stateBody": "{days} days have passed since opening — spot has moved from {openSpot} at opening to {spot} ({spotChange}, {spotPct}).",
   "explain.pnlTitle": "P&L",
   "explain.pnlBodyNearMaxProfit": "Current P&L is {change}, about {pct}% of this combo's theoretical max profit — near the top of its profit range.",
   "explain.pnlBodyProfit": "Current P&L is {change}, in profit with some room left before the theoretical max profit (about {pct}%).",
@@ -802,23 +808,6 @@ const en: Dict = {
   "scenario.maxLoss": "Max loss",
   "scenario.blockedNote": "This combination contradicts itself (e.g. wanting both extreme tails to pay off AND flat to pay off) — no standard structure can satisfy both. Try a different combination.",
 
-  "advice.button": "Position advice",
-  "advice.dialogTitle": "Similar position-management cases",
-  "advice.loading": "Searching for similar cases…",
-  "advice.error": "Search failed, please try again later.",
-  "advice.emptyNoSignal": "No signal worth flagging right now (not near expiry, not pinned near a strike, and P&L hasn't hit a threshold) — fine to keep holding as planned.",
-  "advice.emptyNoMatch": "No matching historical cases found.",
-  "advice.matchLevelLegDirection": "No exact match on strategy structure — matched by direction and leg count instead.",
-  "advice.matchLevelTagOnly": "No match on direction and leg count either — matched by signal type only.",
-  "advice.tagNearExpiry": "Near expiry",
-  "advice.tagPinRisk": "Pinned near strike",
-  "advice.tagTakeProfitTarget": "Profit target reached",
-  "advice.tagStopLossTrigger": "Stop-loss triggered",
-  "advice.answerLabel": "Suggestion: ",
-  "advice.reasoningLabel": "Why: ",
-  "advice.riskLabel": "Remaining risk: ",
-  "advice.disclaimer": "This system does not judge the strength of support/resistance levels — combine your own read on those levels with the technical-level suggestions below. Suggestions do not account for earnings, breaking news, or other market events; they're based only on comparing the current position's technical structure to when it was opened.",
-
   // 2026-09-14: Compare-mode "what to do" advice system
   // (situationExplainer.ts's explainTrackedPositionAdvice), replacing the
   // old explainTrackedPosition. Deliberately a separate namespace
@@ -854,6 +843,10 @@ const en: Dict = {
   "posAdvice.verticalCreditDangerBody": "Suggestion: cut the loss, or roll out to a further month/further strikes and collect fresh credit. Why: the loss is already {pct}% of this spread's max loss — the downside left is limited, but the loss that's already locked in is substantial.",
   "posAdvice.verticalNearExpiryBody": "Suggestion: handle it now (close or roll) — don't leave it to the last moment. Why: only {dte} days left, and spot is already sitting right at your short strike on this side — dragging it out raises assignment risk.",
   "posAdvice.verticalCreditTestedBody": "Suggestion: don't act yet, but watch closely — stop out once the loss nears 70% of max loss. Why: the short side is now in-the-money — risk is rising but it hasn't hit max loss yet, so closing now would lock in a loss early.",
+  "posAdvice.verticalCreditSafeHoldDeep": "Suggestion: keep holding, stay the course. Why: both legs are still out-of-the-money and the structure is safe — the current loss is only {pct}% of max loss, well below the 70% danger line. This drawdown is most likely short-term noise or an IV move; no need to close in a hurry.",
+  "posAdvice.verticalCreditSafeHoldNearMoney": "Suggestion: keep holding, but watch spot closely. Why: the short leg is sitting right at the strike but hasn't truly been tested yet — the current loss is only {pct}% of max loss, well below the 70% danger line. Worth watching, not yet worth closing.",
+  "posAdvice.caveatTitle": "What this advice doesn't account for",
+  "posAdvice.caveatBody": "This advice only looks at price, elapsed time, and P&L ratios — it doesn't factor in known events like earnings, unexpected major news, or support/resistance levels. If this position is near an earnings date or a known major event, weigh that yourself; don't rely on this advice alone.",
   "posAdvice.debitStopLossBody": "Suggestion: cut the loss. Why: the loss is already {pct}% of the premium you paid (your max loss) — the trade isn't playing out as expected, and the odds of recovering aren't great, so cutting it preserves the rest of your capital.",
   "posAdvice.debitNearExpiryProfitBody": "Suggestion: close now and lock in the profit — don't wait for expiration. Why: only {dte} days left and profit is already close to this trade's cap — there's little more to gain, but a reversal in the last few days could give it back.",
   "posAdvice.debitNearExpiryOpenBody": "Suggestion: close early and take what P&L is on the table — don't leave it to the last moment. Why: only {dte} days left for this to play out, and time value keeps decaying fast from here — waiting likely just bleeds away what's left.",

@@ -1,6 +1,6 @@
 // src/App.tsx
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Layers, Settings2, RefreshCw, TrendingUp, TrendingDown, ChevronDown, Trash2, Clock, Download, Upload, FileSymlink, Unlink, X, Database, HelpCircle, DollarSign, Ban, Wallet, GitCompare, History, Lightbulb } from "lucide-react";
+import { Plus, Layers, Settings2, RefreshCw, Trash2, Clock, DollarSign, Wallet, GitCompare, History, Lightbulb } from "lucide-react";
 import type { Leg, Shifts } from "@/lib/types";
 import PnlAttributionPanel from "@/components/PnlAttributionPanel";
 import { matchStrategy } from "@/lib/matchStrategy";
@@ -8,8 +8,9 @@ import LegListSection from "@/components/LegListSection";
 import ShiftSliders from "@/components/ShiftSliders";
 import PayoffChart, { type AlertInfo } from "@/components/PayoffChart";
 import { useStockQuote } from "@/lib/useStockQuote";
+import { useEpsEstimate } from "@/hooks/useEpsEstimate";
 import { loadRecentSymbols, addRecentSymbol } from "@/lib/recentSymbols";
-import { serializeStrategyState, type SavedStrategy, type OpeningSimBasis } from "@/lib/savedStrategies";
+import { serializeStrategyState, computeOpeningSimBasis, type SavedStrategy, type OpeningSimBasis } from "@/lib/savedStrategies";
 import DropdownMenu from "@/components/DropdownMenu";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
@@ -27,7 +28,7 @@ import LegPanelTitleRow from "@/components/LegPanelTitleRow";
 import TrackedComboSection from "@/components/TrackedComboSection";
 import LegActionDialogs from "@/components/LegActionDialogs";
 import StrategyPersistenceDialogs from "@/components/StrategyPersistenceDialogs";
-import { AlertCard, ConfirmLockRollDialog, HelpPanel, isGuideDismissed, SituationExplainDialog, ExpiredStrategyDialog } from "@/components/dialogs";
+import { AlertCard, ConfirmLockRollDialog, HelpPanel, isGuideDismissed, SituationExplainDialog, ExpiredStrategyDialog, ExpiredTrackPromptDialog } from "@/components/dialogs";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { explainAnalysisScenario, explainTrackedPositionAdvice } from "@/lib/situationExplainer";
 
@@ -59,7 +60,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const [shifts, setShifts] = useState<Shifts>({ dS: 0, dT: 0, dV: 0 });
   const {
     customPresets,
-    setCustomPresets,
     saveDialogOpen,
     setSaveDialogOpen,
     reload: reloadCustomPresets,
@@ -117,16 +117,43 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // useStrategyOrchestration.ts里各处的重置调用：切换模式/重新打开策略/
   // 跟踪/任何保存动作都会把它清回null，回到真实日期。
   const [openingAtSimOverride, setOpeningAtSimOverride] = useState<number | null>(null);
-  // 2026-09-15新增：分析模式ΔT滑块"从第0天(保存那一刻)到最后一天(到期)"
-  // 的完整周期探索范围 + "精确回到第0天"的基准数据。null=没有可用的存档
-  // 基准（还没保存过/已清空/套了新预设），此时滑块退回旧的"只能看剩余
-  // 天数"行为。见savedStrategies.ts的OpeningSimBasis注释和
-  // useStrategyOrchestration.ts各处的维护点（打开策略/保存/切回分析模式/
-  // 清空/套预设）。
-  const [openingSimBasis, setOpeningSimBasis] = useState<OpeningSimBasis | null>(null);
   // 打开一条"真实经过天数已经超过它第0天完整周期"的策略时弹出的"已过期，
   // 删除还是保留"确认框——非null即弹出，值是那条过期的策略本身。
   const [expiredStrategyPrompt, setExpiredStrategyPrompt] = useState<SavedStrategy | null>(null);
+  // 2026-09-17新增，修复一个刚发现的bug：下面isExpiredReal本来想直接从
+  // openingSimBasis（每次渲染都用实时legs重算）派生，但handleOpenStrategy
+  // /handleTrack往live legs状态里写dte时会经过Math.max(0, 原始dte-已衰减
+  // 天数)——一旦真的已经过期（原始dte-衰减天数<0），这个0下限会把"到底
+  // 提前过期了多少天"这个信息永久抹掉。live legs一旦落到dte=0，
+  // computeOpeningSimBasis每次重算都会（错误地）把originalMaxDte反推得
+  // 很大，导致"已过期"这件事只在handleOpenStrategy/handleTrack那次一次性
+  // 检查时（用的是没被钳过的原始s.legs）判断对了、弹了确认框，用户点"保
+  // 留"之后这个判断在后续每次渲染里立刻失真变回false——图表变暗提示条、
+  // 以及下面LegRow那个"已过期禁止刷新市场价"的保护，实际上都不会生效（用
+  // Playwright测过，"保留"之后提示条不出现）。用一个显式state而不是每次
+  // 重算，把"这条策略在加载那一刻已经过了真实到期日"这个结论固定下来，
+  // 不会随后续渲染丢失——只在真正重新加载/清空时才重置。
+  const [expiredConfirmed, setExpiredConfirmed] = useState(false);
+  // 2026-09-17新增：对比模式"跟踪"一条已经过了真实到期日的策略时弹出的
+  // 提示——非null即弹出，值是那条过期的策略本身。跟上面的
+  // expiredStrategyPrompt（分析模式"打开策略"用，删除/保留二选一）是两
+  // 个独立的state：对比模式没有"保留"这个选项——没有真实行情可比对，跟
+  // 踪这件事本身就没有意义，所以这里只提示信息+一个"确定"按钮，点击后
+  // 直接删除这条策略（handleTrack发现过期时会直接return，不做任何状态
+  // 变更，所以这个"确定"不需要额外清场，直接调handleDeleteStrategy即
+  // 可）。跟xue讨论后确定：分析模式保留"保留"选项（纯本地模拟，不依赖
+  // 真实数据，历史复盘仍有意义），对比模式不保留。
+  const [expiredTrackPrompt, setExpiredTrackPrompt] = useState<SavedStrategy | null>(null);
+  // 2026-09-17新增，最终确认的锁定设计："滑块开始滑动，所有可编辑输入全
+  // 部锁定，直到点击重置"（xue原话）——不是为了处理某种语义歧义，是一个
+  // 独立、standing的产品要求：只要三个滑块不在静止点(0,0,0)，就不允许再
+  // 改任何参数，逼用户要么继续探索、要么点"重置"回到day0再编辑。对比模
+  // 式的滑块本来就冻结（disabled），不需要这层锁。声明放在这么靠前，是
+  // 因为下面"实时报价"那个effect（rescaleForNewSymbol等）也要用它来拦住
+  // 后台路径改写spot/legs——那个effect定义的位置比isCompareModeNow早，
+  // 这里直接用trackedLegs!==null代替，避免提前引用后面才声明的
+  // isCompareModeNow。
+  const isExploring = trackedLegs === null && (shifts.dS !== 0 || shifts.dT !== 0 || shifts.dV !== 0);
   // The "数据" button/dropdown (export/import/link/unlink) moved to
   // HomePage.tsx, next to the language switcher (2026-09-06, xue's request).
   // This call is kept here on purpose, with its return value unused: it's
@@ -299,6 +326,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
 
   const { quote, loading: quoteLoading, error: quoteError, refetch } = useStockQuote(symbol);
+  const { estimate: epsEstimate, loading: epsLoading } = useEpsEstimate(symbol);
 
   const reloadData = useCallback(async () => {
     const [, , r] = await Promise.all([
@@ -363,6 +391,11 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
   useEffect(() => {
     if (!quote || quote.price <= 0) return;
+    // 2026-09-17：滑块锁定期间，这个effect本来会在symbol切换/实时报价到
+    // 来时静默改写spot/legs（rescaleForNewSymbol等）——光禁用UI输入框挡
+    // 不住这些后台路径，得在这里也拦一道，否则"所有输入全部锁定"就不是
+    // 真的锁住了。isExploring==false时（静止点/对比模式）行为完全不变。
+    if (isExploring) return;
     if (spot <= 0) { setSpot(quote.price); spotManuallySet.current = false; }
 
     // A genuine symbol swap under an existing combo — as opposed to the
@@ -427,7 +460,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     legBaseSpot.current = quote.price;
     legBaseSymbol.current = symbol;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quote, spot]);
+  }, [quote, spot, isExploring]);
 
   const priceChange = quote && quote.previousClose > 0
     ? quote.price - quote.previousClose : null;
@@ -469,50 +502,39 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // — has genuine per-leg Greeks and was already being computed anyway (it
   // feeds positionHealth's Gamma/Delta factors just below), so this reuses
   // that instead of duplicating the Black-Scholes work.
-  // 2026-09-15新增：分析模式ΔT滑块"从第0天到最后一天"的完整周期探索范围
-  // + "精确回到第0天"。isCompareMode本身是useComboAnalytics的输出，这里
-  // 用trackedLegs!==null直接算一份等价布尔值，避免循环依赖（这个判断要在
-  // 调用useComboAnalytics之前就绪）。见savedStrategies.ts的OpeningSimBasis
-  // 注释、CLAUDE.md（若已写入）和ShiftSliders.tsx的min/max/今天按钮。
+  // isCompareModeNow本身是useComboAnalytics的输出，这里用trackedLegs!==null
+  // 直接算一份等价布尔值，避免循环依赖（这个判断要在调用useComboAnalytics
+  // 之前就绪）。
   const isCompareModeNow = trackedLegs !== null;
-  // 滑块"今天剩余天数"上界，必须来自legs这份真实随今天衰减的state——这
-  // 条策略当前实际还剩多少天到期，不受下面"图表定价基准"重算的影响。
-  const sliderMaxDte = legs.length > 0
-    ? Math.max(...legs.filter((l) => l.kind !== "stock").map((l) => l.dte))
-    : 30;
-  // 下界往左延伸到第0天：跟"真实经过天数"和"第0天完整周期"取小，避免这
-  // 条策略已经过期（经过天数超过完整周期）时把下界拉到比第0天更早、不
-  // 存在的负天数去。
-  const sliderMinDte = !isCompareModeNow && openingSimBasis
-    ? -Math.min(openingSimBasis.daysSinceOpen, openingSimBasis.originalMaxDte)
-    : 0;
-  // 2026-09-16重新设计（同一天第四轮）：ΔT滑块模拟的是"未来股价/时间/IV
-  // 变化对组合价值的影响"——xue原话："以开仓时最初始的数据为基准，不考
-  // 虑今天这个因素的影响；只有时间流逝、股价和IV不变时，图形应该从开仓
-  // 一路平滑变化到到期，经过'今天'时今天这个日期并不起作用，只是在数轴
-  // 上打个点而已"；要对照今天的真实行情就去用对比模式——分析模式是纯模
-  // 拟，不对照今天的真实数据（xue原话）。
+  // 2026-09-17：day0永远锚定在真实开仓日期(openingAt)，从live的legs/spot/
+  // openingAt实时重算——不再是只在保存/加载那几个动作里刷新一次的state
+  // （旧bug：useState只在handleSaveStrategy/handleOverwriteStrategy/
+  // handleOpenStrategy/handleTrack里被set过，用户之后在分析模式对legs做
+  // 的任何实时编辑都不会让它重新计算，导致"情景估值"跟不上刚编辑的权利
+  // 金/行权价/数量——见xue用真实持仓截图发现的bug）。legsAsOfTs直接传
+  // Date.now()：用户编辑leg.dte时，"到期日-今天"里的"今天"就是这一刻，
+  // 对实时数据来说legsAsOf永远等于"现在"。legs为空时没有可算的东西，退
+  // 化成null（analyticsLegs下面会回退用原始的legs/spot）。
+  const openingSimBasis = useMemo<OpeningSimBasis | null>(() => {
+    if (legs.length === 0) return null;
+    return computeOpeningSimBasis(openingAt, Date.now(), legs, spot);
+  }, [openingAt, legs, spot]);
+  // 2026-09-16重新设计：ΔT滑块模拟的是"未来股价/时间/IV变化对组合价值的
+  // 影响"——xue原话："以开仓时最初始的数据为基准，不考虑今天这个因素的
+  // 影响；只有时间流逝、股价和IV不变时，图形应该从开仓一路平滑变化到到
+  // 期，经过'今天'时今天这个日期并不起作用，只是在数轴上打个点而已"；要
+  // 对照今天的真实行情就去用对比模式——分析模式是纯模拟，不对照今天的真
+  // 实数据（xue原话）。
   //
-  // 上一版只在滑块精确落在最左边（day0）时才临时换成openingSimBasis这份
-  // 开仓快照，其它任何位置（包括"今天"这个参考点）仍然用`legs`（今天衰
-  // 减后的dte）+ 开仓时录入的premium反推IV——这个反推基准（今天的spot+
-  // dte）跟day0用的反推基准（开仓那天的spot+dte）是两套不同的值，所以从
-  // day0跨到day1，反推出来的IV会突然切换，出现xue发现的"股价没变、时间
-  // 轴刚过开仓第一天却跳变"的不连续；"今天"这个点还因为ΔT旧坐标刚好等于
-  // 0，命中了useComboAnalytics.ts里更早的"dS/dT/dV全为0就是静止、不显示
-  // 归因"判断，被强制清零、归因面板消失。
-  //
-  // 这一版：只要openingSimBasis存在（非对比模式、策略已加载），整条ΔT轴
-  // 永远只用openingSimBasis这份"开仓那天"的legs/spot作图表定价基准，不
-  // 再跟滑块位置绑定切换；ΔT从"离今天几天"统一换算成"离开仓过了几天"
-  // （=滑块当前值-sliderMinDte，sliderMinDte本身就是"开仓到今天"天数取
-  // 负，所以最左边换算后正好是0天、今天换算后是daysSinceOpen天、未来点
-  // 依此类推）喂给定价函数——全部在同一条基准线上连续滚动，反推IV只在开
-  // 仓那天做一次，不会再有基准切换导致的跳变，"今天"自然退化成轴上一个
-  // 普通点，不再触发任何特殊判断（useComboAnalytics.ts里"dS/dT/dV全为0就
-  // 是静止"的判断不用改——这里喂给它的dT已经是"离开仓的天数"，等于0就真
-  // 的是开仓那一刻，不再是"今天"，语义自动对齐）。ΔS/ΔV同理是相对开仓那
-  // 天spot/IV的位移，不贴今天的真实报价。
+  // 2026-09-17进一步简化：day0(openingAt)永远是ΔT轴的地板(=0)，不再有
+  // "倒回去看真实历史"的负dT功能（原来靠sliderMinDte把滑块下界拉到负
+  // 数、analyticsShifts再把它换算回"离开仓天数"——这个功能已经放弃，见
+  // ShiftSliders.tsx的注释）。取而代之的是"只要滑块离开(0,0,0)就锁定所
+  // 有可编辑输入，点重置才能改参数"（见isExploring），从根上避免了编辑
+  // 跟滑块探索的语义冲突，不需要再靠弹窗/回退坐标去处理。所以这里
+  // analyticsShifts直接等于shifts（不用再减sliderMinDte），
+  // analyticsLegs/analyticsSpot只在openingSimBasis存在时换成开仓那天的
+  // 快照（dte已经从"今天"基准修正回openingAt基准）。
   //
   // 这份"图表定价基准"（analyticsLegs/analyticsSpot/analyticsShifts）只
   // 喂给useComboAnalytics.ts里专算图表/归因的那几个memo（result/
@@ -524,14 +546,31 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // 冻结快照，而不是用户正在编辑的实时数据。
   const analyticsLegs = !isCompareModeNow && openingSimBasis ? openingSimBasis.legs : legs;
   const analyticsSpot = !isCompareModeNow && openingSimBasis ? openingSimBasis.spot : spot;
-  const analyticsShifts: Shifts = !isCompareModeNow && openingSimBasis
-    ? { dS: shifts.dS, dT: shifts.dT - sliderMinDte, dV: shifts.dV }
-    : shifts;
+  const analyticsShifts: Shifts = shifts;
+  // 滑块上界：非对比模式下用openingSimBasis的完整周期（开仓到到期），跟
+  // 上面的dte修正基准保持一致；没有basis（legs为空）或对比模式下退回旧
+  // 的"当前剩余天数"算法。
+  const sliderMaxDte = !isCompareModeNow && openingSimBasis
+    ? openingSimBasis.originalMaxDte
+    : legs.length > 0
+      ? Math.max(...legs.filter((l) => l.kind !== "stock").map((l) => l.dte))
+      : 30;
   // 这条策略"真实经过天数"已经超过它第0天的完整周期——已过期，但xue的要
-  // 求是过期后仍保留时滑块继续能用（只是没有"今天"这个点可打）。跟
-  // sliderMinDte的取小逻辑保持一致判断。
-  const isExpiredOpening = !isCompareModeNow && openingSimBasis !== null
-    && openingSimBasis.daysSinceOpen > openingSimBasis.originalMaxDte;
+  // 求是过期后仍保留时滑块继续能用（只是没有"今天"这个点可打）。
+  // 2026-09-17修复：这个判断故意不再从openingSimBasis实时反推（见上面
+  // expiredConfirmed state的大段注释——handleOpenStrategy/handleTrack往
+  // live legs里写dte时会经过Math.max(0,...)钳到0，一旦真的已经过期，"提
+  // 前过期了多少天"这个信息就被永久抹掉，导致实时反推出的originalMaxDte
+  // 严重偏大，"已过期"这个结论在第一次弹窗判断对了之后，后续每次渲染都
+  // 会立刻变回false）。改成直接读expiredConfirmed这个在加载那一刻用未被
+  // 钳过的原始s.legs一次性算好、之后不会丢失的显式state。
+  // isExpiredReal对两种模式都成立（供下面LegListSection/
+  // TrackedComboSection的expired prop使用：不管在哪个模式，只要真实合约
+  // 已经过了到期日，就不该再去发市场价请求——会静默snap到别的合约，见
+  // LegRow.tsx的expired prop注释）；isExpiredOpening保留原名/原语义（只
+  // 在分析模式为true，驱动图表变暗+提示条）。
+  const isExpiredReal = expiredConfirmed;
+  const isExpiredOpening = !isCompareModeNow && isExpiredReal;
 
   const {
     activeLegs,
@@ -589,6 +628,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         trackedSpot: effectiveTrackedSpot,
         daysElapsed: effectiveDaysElapsed,
         result: trackedGreeks,
+        lang,
         t,
       });
     }
@@ -604,11 +644,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       health: positionHealth,
       attribution: analysisAttribution,
       breakevens,
+      lang,
       t,
     });
   }, [
     isCompareMode, activeTrackedLegs, trackedGreeks, activeLegs, activeAnalyticsLegs, spot, analyticsSpot, effectiveTrackedSpot, effectiveDaysElapsed,
-    t, analyticsShifts, result, positionHealth, analysisAttribution, breakevens,
+    t, lang, analyticsShifts, result, positionHealth, analysisAttribution, breakevens,
   ]);
 
   useEffect(() => {
@@ -653,7 +694,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   } = useStrategyOrchestration({
     symbol, legs, activeLegs, spot, shifts, openingAt,
     setSymbol, setLegs, setSpot, setShifts, setOpeningAt, setOpeningAtSimOverride,
-    setOpeningSimBasis, setExpiredStrategyPrompt, setCorrectedSpot, setCorrecting,
+    setExpiredStrategyPrompt, setExpiredConfirmed, setExpiredTrackPrompt, setCorrectedSpot, setCorrecting,
     isCompareMode, trackedLegs, trackedSpot, trackedDirty, effectiveTrackedSpot,
     setTrackedLegs, setTrackedSpot, setTrackedDaysElapsed, setTrackedDirty, setActiveSnapshotId, setConfirmSaveTrackedOpen,
     savedStrategies, trackingStrategyId, trackedStrategy,
@@ -693,15 +734,16 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       {!simOrigin && !isCompareMode && legs.length > 0 && (
         <button
           onClick={handleSwitchToCompare}
+          disabled={isExploring}
           title={t("leg.switchToCompareHint")}
-          className="flex shrink-0 items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50"
+          className="flex shrink-0 items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <GitCompare size={11} />
           {t("leg.switchToCompare")}
         </button>
       )}
       {!simOrigin && isCompareMode && (
-        <DropdownMenu label={t("leg.switchToAnalysis")} icon={<GitCompare size={11} />} menuClassName="w-64">
+        <DropdownMenu label={t("leg.switchToAnalysis")} icon={<GitCompare size={11} />} menuClassName="w-64" disabled={isExploring}>
           {(close) => (
             <>
               <button
@@ -765,7 +807,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     <>
       <button
         onClick={addLeg}
-        disabled={legs.length >= 10}
+        disabled={legs.length >= 10 || isExploring}
         title={t("leg.addLeg")}
         className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
       >
@@ -773,13 +815,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       </button>
       <button
         onClick={() => legs.length > 0 && setConfirmClearOpen(true)}
-        disabled={legs.length === 0}
+        disabled={legs.length === 0 || isExploring}
         title={t("leg.clearAll")}
         className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-slate-400 transition hover:border-rose-500 hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-40"
       >
         <Trash2 size={12} />
       </button>
-      <DropdownMenu label={t("toolbar.presetLabel")} icon={<Layers size={11} />}>
+      <DropdownMenu label={t("toolbar.presetLabel")} icon={<Layers size={11} />} disabled={isExploring}>
         {(close) => (
           <button
             onClick={() => { close(); setManageMode("open"); setManageStrategyOpen(true); }}
@@ -792,7 +834,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       {!isCompareMode && !simOrigin && onAddToSimAccount && (
         <button
           onClick={handleAddToSimAccount}
-          disabled={activeLegs.length === 0 || spot <= 0 || addingToSim}
+          disabled={activeLegs.length === 0 || spot <= 0 || addingToSim || isExploring}
           title={t("toolbar.addToSim")}
           className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-slate-400 transition hover:border-emerald-500/50 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
         >
@@ -842,7 +884,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         onRefetchQuote={refetch}
         priceChange={priceChange}
         changePct={changePct}
+        epsEstimate={epsEstimate}
+        epsLoading={epsLoading}
         onOpenHelp={() => setHelpOpen(true)}
+        locked={isExploring}
       />
 
       {showAnalysisGuide && !isCompareMode && (
@@ -886,7 +931,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                         }
                       }}
                       onWheel={(e) => e.currentTarget.blur()}
-                      className="w-20 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] tabular-nums text-emerald-400 outline-none transition focus:border-emerald-500 focus:text-emerald-300"
+                      disabled={isExploring}
+                      className="w-20 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] tabular-nums text-emerald-400 outline-none transition focus:border-emerald-500 focus:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
                     />
                     {quote && quote.price > 0 && Math.abs(quote.price - spot) > 0.005 && (
                       <span className="text-[9px] tabular-nums text-slate-600" title={t("stock.live")}>
@@ -905,7 +951,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                         const next = parseDateInput(e.target.value);
                         if (next !== null) setOpeningAt(next);
                       }}
-                      className="rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] tabular-nums text-slate-300 outline-none transition focus:border-sky-500 focus:text-sky-200 [color-scheme:dark]"
+                      disabled={isExploring}
+                      className="rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] tabular-nums text-slate-300 outline-none transition focus:border-sky-500 focus:text-sky-200 [color-scheme:dark] disabled:cursor-not-allowed disabled:opacity-40"
                     />
                   </label>
                   <div className="ml-auto flex items-center gap-2">
@@ -990,10 +1037,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             onToggleLegSelection={toggleLegSelection}
             simOrigin={simOrigin}
             onConfirmSimOpen={onConfirmSimOpen}
+            locked={isExploring}
+            contractsExpired={isExpiredReal}
           />
           {/* ── Today's combo section (compare mode only) ── */}
           {isCompareMode && trackedLegs && (
             <TrackedComboSection
+              contractsExpired={isExpiredReal}
               trackedLegs={trackedLegs}
               trackedStrategy={trackedStrategy}
               activeSnapshotId={activeSnapshotId}
@@ -1034,7 +1084,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               onHedge={() => handleHedge("tracked")}
               onProtect={(legId: string) => handleProtect(legId, "tracked")}
               onMoveTrackedLeg={moveTrackedLeg}
-              breakevens={breakevens}
             />
           )}
 
@@ -1067,7 +1116,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 symbol={symbol}
                 positionHealth={positionHealth}
                 modeSwitchButton={modeSwitchButton}
-                pop={pop}
                 breakevens={breakevens}
                 trackedLegs={activeTrackedLegs ?? undefined}
                 openingLegs={isCompareMode ? activeLegs : undefined}
@@ -1083,6 +1131,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 onCorrectSpot={handleCorrectSpot}
                 symbolForCorrect={symbol}
                 expired={isExpiredOpening}
+                openingAt={openingAt}
               />
             </ErrorBoundary>
           </div>
@@ -1092,23 +1141,25 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             <ShiftSliders
               shifts={shifts}
               spot={spot}
-              minDte={sliderMinDte}
               maxDte={sliderMaxDte}
-              todayDte={!isCompareMode && openingSimBasis && !isExpiredOpening ? 0 : undefined}
+              // "今天"参考点现在是"离day0(开仓)过了几天"，不再是0——day0
+              // 本身才是0（滑块地板）。
+              todayDte={!isCompareMode && openingSimBasis && !isExpiredOpening ? openingSimBasis.daysSinceOpen : undefined}
               onChange={(patch) => setShifts((s) => ({ ...s, ...patch }))}
-              // 2026-09-17修复：重置按钮原来无条件回到dT=0（旧坐标"今天"）
-              // ——策略已加载、sliderMinDte<0时，"今天"早就不是"没有任何
-              // 位移"的原点了（见"四、1.9"），回到"今天"还是会有真实经过
-              // 天数带来的位移，情景估值不等于用户输入的权利金，跟xue的
-              // 预期（"重置应该回到开仓的原始数据"）不符。改成回到
-              // sliderMinDte（没有openingSimBasis时sliderMinDte本来就是
-              // 0，行为不变；有的话就是滑块最左边=真正开仓那一刻）。
-              onReset={() => setShifts({ dS: 0, dT: sliderMinDte, dV: 0 })}
-              onJumpToday={() => setShifts((s) => ({ ...s, dT: 0 }))}
+              // 重置永远回到静止点(0,0,0)——day0本身就在dT=0，不再需要换算。
+              onReset={() => setShifts({ dS: 0, dT: 0, dV: 0 })}
+              onJumpToday={() => setShifts((s) => ({ ...s, dT: openingSimBasis?.daysSinceOpen ?? 0 }))}
               trackedSpot={isCompareMode ? effectiveTrackedSpot : undefined}
               trackedDays={isCompareMode ? effectiveDaysElapsed : undefined}
               trackedVolShift={trackedVolShift}
-              disabled={isCompareMode}
+              // 2026-09-17新增：分析模式下，加载策略组合之前（手动添加或从预
+              // 设选都一样）只要腿位列表是空的，滑块也要锁住——没有腿位就没
+              // 什么好模拟的。用activeLegs（跟上面第797行"添加到模拟账户"按
+              // 钮禁用条件同一个变量）而不是legs，保持"空组合"判断口径统一。
+              // frozen单独传isCompareMode——避免没有腿位时标题被误显示成对
+              // 比模式的"情景偏移对比"。
+              disabled={isCompareMode || activeLegs.length === 0}
+              frozen={isCompareMode}
               explainButton={explainButton}
             />
           </div>
@@ -1146,6 +1197,21 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             setExpiredStrategyPrompt(null);
             await handleDeleteStrategy(id);
             doClearAll();
+          }}
+        />
+      )}
+
+      {expiredTrackPrompt && (
+        <ExpiredTrackPromptDialog
+          filename={expiredTrackPrompt.filename}
+          onConfirm={async () => {
+            // handleTrack发现过期时直接return，没有改动任何界面状态（没
+            // 有进对比模式、当前分析模式的编辑区原样保留），所以这里不需
+            // 要像上面ExpiredStrategyDialog的onDelete那样再调doClearAll
+            // 清场——只删这条库里的记录，关掉提示框即可。
+            const id = expiredTrackPrompt.id;
+            setExpiredTrackPrompt(null);
+            await handleDeleteStrategy(id);
           }}
         />
       )}

@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import type { Leg } from "@/lib/types";
 import { dateFromDte, dteFromDate } from "@/lib/dateUtils";
-import { fetchLegPremium, getOptionChain, premiumFromQuote, type OptionChainResponse } from "@/lib/optionChain";
+import { fetchLegPremium, getOptionChain, premiumFromQuote, type LegPremiumResult, type OptionChainResponse } from "@/lib/optionChain";
 import { useI18n } from "@/i18n/I18nContext";
 
 interface Props {
@@ -51,6 +51,21 @@ interface Props {
   // a market-fetch behavior that doesn't apply. Undefined/false elsewhere
   // keeps the normal live-fetch behavior below.
   hidePriceRefresh?: boolean;
+  // 2026-09-17新增：这条腿所属的策略"真实到期日"已经过去（真实经过天数超
+  // 过了当初完整周期——App.tsx里的openingSimBasis.daysSinceOpen >
+  // originalMaxDte，跟isExpiredOpening/ExpiredStrategyDialog同一个判断）。
+  // 已经真实到期的合约在Yahoo链上已经找不到了——但此时leg.dte早被
+  // handleOpenStrategy/handleTrack的Math.max(0,...)钳到了0（"今天到
+  // 期"），如果照样去发起fetchLegPremium/getOptionChain(sym,
+  // 0)，请求会静默snap到"今天"附近某个完全不同的、当前真实挂牌的合约上
+  // ——不会报错，只在priceNote里露一行不起眼的"已调整为XX/XX"，很容易被
+  // 忽略，等于给这条已经不存在的腿悄悄换了张完全不同的合约再定价。所以
+  // 这个已过期不能靠"leg.dte===0"本身判断（正常今天到期的合约dte也是
+  // 0），必须由调用方（App.tsx）算好了传进来。设为true时连同
+  // hidePriceRefresh一起挡住三条路径：策略/行权价下拉菜单背后那次链加
+  // 载、premium===0时的自动填充、以及"恢复市场价"手动刷新——统一显示
+  // leg.contractExpiredNoPrice提示，而不是静默换合约。
+  expired?: boolean;
   // Which leg(s), if any, this one was created from or gave rise to via
   // Roll/Protect/Hedge — see lib/legLinks.ts and types.ts's
   // `Leg.derivedFrom`. Drives the small pairing badge next to the leg
@@ -97,6 +112,12 @@ interface Props {
   selected?: boolean;
   onToggleSelect?: () => void;
   selectable?: boolean;
+  // 2026-09-17新增：分析模式情景滑块（ΔS/ΔT/ΔV）离开静止点(0,0,0)时由
+  // App.tsx算出的isExploring，向下传到每个LegRow，锁定所有可编辑字段/菜单
+  // 操作——直到用户点击"重置"把滑块归位。跟`disabled`(=leg.disabled，用户
+  // 主动屏蔽某条腿)是两个独立概念，两者都要锁的字段用`fieldsDisabled`合并
+  // 判断；只影响某条腿显示/隐藏(如"已屏蔽"灰色样式)的地方仍只看`disabled`。
+  locked?: boolean;
 }
 
 const inp =
@@ -173,8 +194,22 @@ function NumField({
   onChange: (v: number) => void;
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
+  // 2026-09-17新增：分析模式滑块动过之后所有输入被锁定（见App.tsx的
+  // isExploring/LegRow的locked/fieldsDisabled），此时点这些锁住的输入框
+  // 原生<input disabled>本身不会响应任何点击/事件——所以在外面叠一层
+  // pointer-events:auto的透明div来接住点击，弹一个2.5秒后自动消失的
+  // 小提示条，告诉用户要去点"未来情景模拟"的重置按钮。只在disabled时
+  // 渲染这层遮罩，不影响正常可编辑状态下的任何行为。
+  const [showHint, setShowHint] = useState(false);
+  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashHint = () => {
+    setShowHint(true);
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+    hintTimer.current = setTimeout(() => setShowHint(false), 2500);
+  };
   return (
-    <label className="flex flex-col gap-0" style={{ width }}>
+    <label className="relative flex flex-col gap-0" style={{ width }}>
       <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
       <input
         className={disabled ? inpDisabled : inp}
@@ -184,6 +219,17 @@ function NumField({
         disabled={disabled}
         onChange={(e) => onChange(num(e.target.value))}
       />
+      {disabled && (
+        <div
+          className="absolute inset-x-0 bottom-0 top-3 cursor-not-allowed"
+          onClick={flashHint}
+        />
+      )}
+      {showHint && (
+        <div className="absolute left-0 top-full z-20 mt-1 w-max max-w-[180px] rounded border border-amber-600/50 bg-slate-900 px-1.5 py-1 text-[9px] font-medium text-amber-300 shadow-lg">
+          {t("leg.lockedInputHint", { section: t("shift.scenario") })}
+        </div>
+      )}
     </label>
   );
 }
@@ -237,6 +283,7 @@ function MenuItem({
 
 function LegMenu({
   disabled,
+  locked,
   onToggleDisable,
   onDelete,
   deleteConfig,
@@ -252,6 +299,10 @@ function LegMenu({
   roleInfo,
 }: {
   disabled: boolean;
+  // See Props.locked on LegRow above — disables the "..." trigger itself
+  // so none of the menu's actions (block/delete/roll/hedge/…) are reachable
+  // while a scenario slider is off its rest position.
+  locked?: boolean;
   onToggleDisable: () => void;
   onDelete?: () => void;
   deleteConfig: {
@@ -308,8 +359,9 @@ function LegMenu({
     <div ref={ref} className="relative ml-1 shrink-0">
       <button
         onClick={() => setOpen((v) => !v)}
-        title={t("leg.more")}
-        className="rounded p-1 text-slate-500 transition hover:bg-slate-700/40 hover:text-slate-300"
+        disabled={locked}
+        title={locked ? t("leg.blocked") : t("leg.more")}
+        className="rounded p-1 text-slate-500 transition hover:bg-slate-700/40 hover:text-slate-300 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-500"
       >
         <MoreVertical size={14} />
       </button>
@@ -364,6 +416,7 @@ export default function LegRow({
   spot,
   roleInfo,
   hidePriceRefresh,
+  expired,
   linkInfo,
   onChange,
   onToggleDisable,
@@ -381,9 +434,14 @@ export default function LegRow({
   selected = false,
   onToggleSelect,
   selectable = true,
+  locked = false,
 }: Props) {
   const { t, lang } = useI18n();
   const disabled = leg.disabled === true;
+  // Combined gate for anything that would actually change this leg's data —
+  // see Props.locked's comment. `disabled` alone still drives the "已屏蔽"
+  // visual/hide-affordance branches below, unchanged.
+  const fieldsDisabled = disabled || locked;
   const [priceFetching, setPriceFetching] = useState(false);
   const [priceError, setPriceError] = useState<string | null>(null);
   const [priceNote, setPriceNote] = useState<string | null>(null);
@@ -406,7 +464,11 @@ export default function LegRow({
   const openingPremiumRef = useRef<number | null>(null);
 
   const sym = symbol?.trim() ?? "";
-  const canAutoPrice = leg.kind !== "stock" && !disabled && sym.length > 0;
+  // `!locked` here suspends BOTH the auto-fill debounce effect below and the
+  // manual refresh-price toggle while a scenario slider is off rest — a
+  // queued market-price fetch must not land on a leg the user can't see
+  // being edited right now. (2026-09-17, part of the slider input-lock.)
+  const canAutoPrice = leg.kind !== "stock" && !disabled && !locked && !expired && sym.length > 0;
 
   const strikeMenuRef = useClickOutside(strikeMenuOpen, () => setStrikeMenuOpen(false));
   const expiryMenuRef = useClickOutside(expiryMenuOpen, () => setExpiryMenuOpen(false));
@@ -485,6 +547,24 @@ export default function LegRow({
       .map((epoch) => ({ epoch, iso: new Date(epoch * 1000).toISOString().slice(0, 10) }));
   }, [chain]);
 
+  // Shared by the auto-fill effect and handleTogglePrice below — both fetch
+  // a premium via fetchLegPremium and need to do the exact same thing with
+  // the result: patch premium (+ strike/dte if the request snapped to the
+  // nearest real chain entry) back onto the leg, and surface a note when a
+  // snap happened. Pulled out after this logic was found copy-pasted
+  // identically in both places (2026-09-17 dead-code audit).
+  const applyFetchedPremium = (result: LegPremiumResult) => {
+    const patch: Partial<Leg> = { premium: result.premium };
+    if (result.strikeSnapped) patch.strike = result.actualStrike;
+    if (result.expirySnapped) patch.dte = result.actualDte;
+    onChange(patch);
+    setPriceNote(
+      result.strikeSnapped || result.expirySnapped
+        ? t("leg.priceSnapNote", { strike: result.actualStrike, date: result.actualExpiryDate })
+        : null,
+    );
+  };
+
   // Auto-fill premium once strike + expiry are both set, but only for a fresh
   // leg (premium still 0) — never silently overwrites a value the user (or a
   // preset) already set. Debounced so typing a strike doesn't fire a request
@@ -502,15 +582,7 @@ export default function LegRow({
       try {
         const result = await fetchLegPremium(sym, leg.type, leg.strike, leg.dte);
         if (cancelled) return;
-        const patch: Partial<Leg> = { premium: result.premium };
-        if (result.strikeSnapped) patch.strike = result.actualStrike;
-        if (result.expirySnapped) patch.dte = result.actualDte;
-        onChange(patch);
-        setPriceNote(
-          result.strikeSnapped || result.expirySnapped
-            ? t("leg.priceSnapNote", { strike: result.actualStrike, date: result.actualExpiryDate })
-            : null,
-        );
+        applyFetchedPremium(result);
       } catch (e) {
         if (!cancelled) setPriceError(e instanceof Error ? e.message : t("leg.fetchPriceFailed"));
       } finally {
@@ -547,15 +619,7 @@ export default function LegRow({
     setPriceError(null);
     try {
       const result = await fetchLegPremium(sym, leg.type, leg.strike, leg.dte, true);
-      const patch: Partial<Leg> = { premium: result.premium };
-      if (result.strikeSnapped) patch.strike = result.actualStrike;
-      if (result.expirySnapped) patch.dte = result.actualDte;
-      onChange(patch);
-      setPriceNote(
-        result.strikeSnapped || result.expirySnapped
-          ? t("leg.priceSnapNote", { strike: result.actualStrike, date: result.actualExpiryDate })
-          : null,
-      );
+      applyFetchedPremium(result);
       setPriceView("market");
     } catch (e) {
       setPriceError(e instanceof Error ? e.message : t("leg.fetchPriceFailed"));
@@ -607,8 +671,9 @@ export default function LegRow({
         type="checkbox"
         checked={selected}
         onChange={() => onToggleSelect?.()}
+        disabled={locked}
         title={t("leg.selectLeg")}
-        className="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500"
+        className="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
       />
     </span>
   ) : (
@@ -697,6 +762,7 @@ export default function LegRow({
   const menu = (
     <LegMenu
       disabled={disabled}
+      locked={locked}
       onToggleDisable={onToggleDisable}
       onDelete={onDelete}
       deleteConfig={deleteConfig}
@@ -737,11 +803,11 @@ export default function LegRow({
             next={leg.action === "buy" ? "sell" : "buy"}
             color={leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"}
             onClick={() => onChange({ action: leg.action === "buy" ? "sell" : "buy" })}
-            disabled={disabled}
+            disabled={fieldsDisabled}
           />
         </div>
-        <NumField label={t("leg.buyPrice")} value={leg.strike} step={0.5} width="72px" onChange={(v) => onChange({ strike: v })} disabled={disabled} />
-        <NumField label={t("leg.sharesLabel")} value={leg.shares ?? 100} step={1} width="56px" onChange={(v) => onChange({ shares: v })} disabled={disabled} />
+        <NumField label={t("leg.buyPrice")} value={leg.strike} step={0.5} width="72px" onChange={(v) => onChange({ strike: v })} disabled={fieldsDisabled} />
+        <NumField label={t("leg.sharesLabel")} value={leg.shares ?? 100} step={1} width="56px" onChange={(v) => onChange({ shares: v })} disabled={fieldsDisabled} />
         <div className="flex flex-col gap-0.5">
           <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">Delta</span>
           <span className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-semibold text-emerald-400">
@@ -775,7 +841,7 @@ export default function LegRow({
           next={leg.action === "buy" ? "sell" : "buy"}
           color={leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"}
           onClick={() => onChange({ action: leg.action === "buy" ? "sell" : "buy" })}
-          disabled={disabled}
+          disabled={fieldsDisabled}
         />
       </div>
 
@@ -789,7 +855,7 @@ export default function LegRow({
             const next = leg.type === "call" ? "put" : "call";
             onChange({ type: next });
           }}
-          disabled={disabled}
+          disabled={fieldsDisabled}
         />
       </div>
 
@@ -799,15 +865,15 @@ export default function LegRow({
         step={1}
         width="52px"
         onChange={(v) => onChange({ qty: Math.max(1, Math.round(v)) })}
-        disabled={disabled}
+        disabled={fieldsDisabled}
       />
 
       <div ref={strikeMenuRef} className="relative flex shrink-0 items-end gap-0.5">
-        <NumField label={t("leg.strike")} value={leg.strike} step={0.5} width="52px" onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ strike: v }); }} disabled={disabled} />
+        <NumField label={t("leg.strike")} value={leg.strike} step={0.5} width="52px" onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ strike: v }); }} disabled={fieldsDisabled} />
         {!disabled && (
           <button
             onClick={() => setStrikeMenuOpen((v) => !v)}
-            disabled={strikeOptions.length === 0}
+            disabled={strikeOptions.length === 0 || locked}
             title={strikeOptions.length > 0 ? t("leg.pickStrike") : chainError ?? t("leg.noStrikeOptions")}
             className="mb-[1px] flex items-center rounded border border-slate-700 bg-slate-900 px-1 py-1 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -839,9 +905,9 @@ export default function LegRow({
           </span>
           <button
             type="button"
-            onClick={() => !disabled && setExpiryMenuOpen((v) => !v)}
-            disabled={disabled}
-            className={`${disabled ? inpDisabled : inp} text-left`}
+            onClick={() => !fieldsDisabled && setExpiryMenuOpen((v) => !v)}
+            disabled={fieldsDisabled}
+            className={`${fieldsDisabled ? inpDisabled : inp} text-left`}
           >
             {dateFromDte(leg.dte)}
           </button>
@@ -849,7 +915,7 @@ export default function LegRow({
         {!disabled && (
           <button
             onClick={() => setExpiryMenuOpen((v) => !v)}
-            disabled={expiryOptions.length === 0}
+            disabled={expiryOptions.length === 0 || locked}
             title={expiryOptions.length > 0 ? t("leg.pickExpiry") : chainError ?? t("leg.noExpiryOptions")}
             className="mb-[1px] flex items-center rounded border border-slate-700 bg-slate-900 px-1 py-1 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -874,7 +940,7 @@ export default function LegRow({
         )}
       </div>
       <div className="flex shrink-0 items-end gap-0.5">
-        <NumField label={t("leg.premium")} value={leg.premium} step={0.01}  width="76px" onChange={(v) => { setPriceError(null); setPriceNote(null); setPriceView("opening"); onChange({ premium: v }); }} disabled={disabled} />
+        <NumField label={t("leg.premium")} value={leg.premium} step={0.01}  width="76px" onChange={(v) => { setPriceError(null); setPriceNote(null); setPriceView("opening"); onChange({ premium: v }); }} disabled={fieldsDisabled} />
         {!disabled && !hidePriceRefresh && (
           <button
             onClick={handleTogglePrice}
@@ -882,7 +948,9 @@ export default function LegRow({
             title={
               priceFetching
                 ? t("leg.fetchingPrice")
-                : priceError ?? priceNote ?? (canAutoPrice ? (priceView === "market" ? t("leg.showOpeningPrice") : t("leg.restorePrice")) : t("leg.noSymbolForPrice"))
+                : priceError ?? priceNote ?? (canAutoPrice
+                  ? (priceView === "market" ? t("leg.showOpeningPrice") : t("leg.restorePrice"))
+                  : expired ? t("leg.contractExpiredNoPrice") : t("leg.noSymbolForPrice"))
             }
             className={`mb-[1px] flex items-center rounded border px-1 py-1 transition disabled:cursor-not-allowed disabled:opacity-40 ${
               priceError

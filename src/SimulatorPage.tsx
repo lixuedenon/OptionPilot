@@ -408,7 +408,7 @@ function ComparePanel({
   t: (key: string, vars?: Record<string, string | number>) => string;
 }) {
   const openingLegs = useMemo(() => position.legs.filter((l) => !l.disabled), [position.legs]);
-  const { pop, breakevens } = useMemo(() => probabilityOfProfit(openingLegs, position.spot), [openingLegs, position.spot]);
+  const { breakevens } = useMemo(() => probabilityOfProfit(openingLegs, position.spot), [openingLegs, position.spot]);
 
   if (!trackedLegs || trackedSpot === null) {
     return (
@@ -431,7 +431,6 @@ function ComparePanel({
             spot={position.spot}
             shifts={{ dS: 0, dT: 0, dV: 0 }}
             symbol={position.symbol}
-            pop={pop}
             breakevens={breakevens}
             trackedLegs={activeTracked}
             trackedSpot={trackedSpot}
@@ -743,6 +742,34 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
   const toggleCompare = (id: string) => {
     setExpandedCompare((prev) => ({ ...prev, [id]: !prev[id] }));
   };
+
+  // Renders the "查看历史走势"/"添加到对比模式" button pair — identical
+  // markup was found copy-pasted between the open-position row and the
+  // closed-position row (2026-09-17 dead-code audit); factored out here. A
+  // plain render function rather than its own component so it doesn't get
+  // a distinct component identity/remount on every render.
+  const renderTimelineCompareButtons = (pos: SimPosition) => (
+    <>
+      <button
+        onClick={() => toggleTimeline(pos)}
+        title={t("sim.reviewHint")}
+        className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-amber-400 transition hover:border-amber-500/50"
+      >
+        <Target size={10} />
+        <span>{t("sim.reviewLabel")}</span>
+        <ChevronDown size={9} className={`transition-transform ${expandedTimeline[pos.id] ? "rotate-180" : ""}`} />
+      </button>
+      <button
+        onClick={() => toggleCompare(pos.id)}
+        title={t("sim.compareHint")}
+        className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-sky-400 transition hover:border-sky-500/50"
+      >
+        <LineChart size={10} />
+        <span>{t("sim.compareLabel")}</span>
+        <ChevronDown size={9} className={`transition-transform ${expandedCompare[pos.id] ? "rotate-180" : ""}`} />
+      </button>
+    </>
+  );
 
   // Fetch a live price for one leg before opening Roll/Protect (they need a
   // realistic current premium to base their suggestions on).
@@ -1411,24 +1438,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                                 )}
                               </div>
                               <div className="flex items-center gap-1">
-                                <button
-                                  onClick={() => toggleTimeline(p)}
-                                  title={t("sim.reviewHint")}
-                                  className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-amber-400 transition hover:border-amber-500/50"
-                                >
-                                  <Target size={10} />
-                                  <span>{t("sim.reviewLabel")}</span>
-                                  <ChevronDown size={9} className={`transition-transform ${expandedTimeline[p.id] ? "rotate-180" : ""}`} />
-                                </button>
-                                <button
-                                  onClick={() => toggleCompare(p.id)}
-                                  title={t("sim.compareHint")}
-                                  className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-sky-400 transition hover:border-sky-500/50"
-                                >
-                                  <LineChart size={10} />
-                                  <span>{t("sim.compareLabel")}</span>
-                                  <ChevronDown size={9} className={`transition-transform ${expandedCompare[p.id] ? "rotate-180" : ""}`} />
-                                </button>
+                                {renderTimelineCompareButtons(p)}
                                 <button
                                   onClick={() => handleClose(p)}
                                   disabled={!mark?.legs || mark.spot === null}
@@ -1508,24 +1518,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                             <span className={`text-[11px] font-bold ${pnlColorClass(p.realizedPnl ?? 0)}`}>
                               {fmt(p.realizedPnl ?? 0)}
                             </span>
-                            <button
-                              onClick={() => toggleTimeline(p)}
-                              title={t("sim.reviewHint")}
-                              className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-amber-400 transition hover:border-amber-500/50"
-                            >
-                              <Target size={10} />
-                              <span>{t("sim.reviewLabel")}</span>
-                              <ChevronDown size={9} className={`transition-transform ${expandedTimeline[p.id] ? "rotate-180" : ""}`} />
-                            </button>
-                            <button
-                              onClick={() => toggleCompare(p.id)}
-                              title={t("sim.compareHint")}
-                              className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-sky-400 transition hover:border-sky-500/50"
-                            >
-                              <LineChart size={10} />
-                              <span>{t("sim.compareLabel")}</span>
-                              <ChevronDown size={9} className={`transition-transform ${expandedCompare[p.id] ? "rotate-180" : ""}`} />
-                            </button>
+                            {renderTimelineCompareButtons(p)}
                             <button
                               onClick={() => refreshRegret(p)}
                               disabled={regret?.loading}

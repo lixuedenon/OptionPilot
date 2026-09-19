@@ -13,3 +13,4 @@ export { default as ConfirmResetAccountDialog } from "./ConfirmResetAccountDialo
 export { default as ConfirmLeaveDialog } from "./ConfirmLeaveDialog";
 export { default as SituationExplainDialog } from "./SituationExplainDialog";
 export { default as ExpiredStrategyDialog } from "./ExpiredStrategyDialog";
+export { default as ExpiredTrackPromptDialog } from "./ExpiredTrackPromptDialog";

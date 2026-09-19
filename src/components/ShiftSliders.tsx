@@ -1,4 +1,5 @@
 // src/components/ShiftSliders.tsx
+import { RotateCcw } from "lucide-react";
 import type { Shifts } from "@/lib/types";
 import { useI18n } from "@/i18n/I18nContext";
 
@@ -7,12 +8,9 @@ interface Props {
   onChange: (s: Partial<Shifts>) => void;
   spot: number;
   maxDte: number;
-  // 2026-09-15新增，分析模式"全生命周期模拟"重设计：dT滑块的下界。默认0（旧行为，
-  // 时间只能往前走）；分析模式下由App.tsx算出的openingSimBasis传入一个负值，
-  // 让滑块能往回拖到保存组合的那一天（"第0天"）——pricing.ts的priceCombo早就
-  // 支持负dT（newDte = max(0, leg.dte - dT)反向变大），这里只是把UI下界放开。
-  // 对比模式（disabled=true）不传，滑块本来就冻结，min/max无所谓。
-  minDte?: number;
+  // 2026-09-17：day0永远锚定在openingAt（真实开仓日），不再有"倒回去看真实
+  // 历史"的负dT功能（曾经的设计，已放弃）——dT滑块下界固定为0，openingAt
+  // 本身就是这条轴的地板。
   // 2026-09-15新增。有值时在dT滑块轨道上打一个"今天"参考点（复用Slider现成的
   // markerValue/markerLabel机制，不是重新发明），配合下面的onJumpToday按钮。
   // 过期策略（isExpiredOpening）不传——过期之后时间轴上已经没有真实的"今天"
@@ -26,14 +24,23 @@ interface Props {
   trackedSpot?: number;
   trackedDays?: number;
   trackedVolShift?: number;
+  // `disabled`：滑块本身不可交互（发灰+锁住），两种情况都会传true——对比
+  // 模式（这时trackedSpot/trackedDays/trackedVolShift会有值，显示会自动切
+  // 到跟踪快照那一套）、以及2026-09-17新增的"分析模式下一条腿位都没有"（这
+  // 时trackedSpot等仍是undefined，显示走正常那套，只是滑块拖不动）。
   disabled?: boolean;
+  // `frozen`：专指"对比模式冻结"这一种情况——只控制标题文案（"情景偏移对
+  // 比" vs "未来情景模拟"）和重置按钮是否显示。没有legs时disabled=true但
+  // frozen=false：标题仍显示"未来情景模拟"（不会被误当成对比模式），重置
+  // 按钮也照常显示（虽然此时shifts本来就该是0,0,0，点了也无副作用）。
+  frozen?: boolean;
   // "解释当前情况" button (2026-09-09) — rendered in the header row next to
   // the title, same slot for both modes (this row renders whether or not
-  // `disabled` is set, unlike `onReset` which only shows when enabled). A
-  // plain ReactNode so this component doesn't need to know anything about
-  // situationExplainer.ts/SituationExplainDialog — App.tsx builds the button
-  // and owns the dialog's open state, same pattern as PayoffChart.tsx's
-  // modeSwitchButton prop.
+  // `disabled` is set, unlike `onReset` which only shows when frozen isn't
+  // set). A plain ReactNode so this component doesn't need to know anything
+  // about situationExplainer.ts/SituationExplainDialog — App.tsx builds the
+  // button and owns the dialog's open state, same pattern as
+  // PayoffChart.tsx's modeSwitchButton prop.
   explainButton?: React.ReactNode;
 }
 
@@ -129,7 +136,7 @@ function Slider({
   );
 }
 
-export default function ShiftSliders({ shifts, onChange, spot, maxDte, minDte, todayDte, onJumpToday, onReset, trackedSpot, trackedDays, trackedVolShift, disabled, explainButton }: Props) {
+export default function ShiftSliders({ shifts, onChange, spot, maxDte, todayDte, onJumpToday, onReset, trackedSpot, trackedDays, trackedVolShift, disabled, frozen, explainButton }: Props) {
   const { t } = useI18n();
   return (
     <div className={disabled ? "pointer-events-none" : ""}>
@@ -140,11 +147,20 @@ export default function ShiftSliders({ shifts, onChange, spot, maxDte, minDte, t
             the title by the whole width of this row; right next to the
             title it's much more likely to actually get noticed. */}
         <div className="pointer-events-auto flex items-center gap-2">
-          <span className="text-[13px] font-bold text-sky-400">{disabled ? t("shift.scenarioFrozen") : t("shift.scenario")}</span>
+          <span className="text-[13px] font-bold text-sky-400">{frozen ? t("shift.scenarioFrozen") : t("shift.scenario")}</span>
           {explainButton}
         </div>
-        {!disabled && (
-          <button onClick={onReset} className="pointer-events-auto text-[9px] font-semibold text-slate-500 transition hover:text-slate-300">{t("shift.reset")}</button>
+        {!frozen && (
+          // 2026-09-17：改大改醒目——一旦滑块动过，这是唯一能解锁所有输入
+          // 的地方（见LegRow.tsx里locked输入框点击后弹出的提示），原来
+          // 9px灰字太容易被忽略，改成实心橙色按钮+图标。
+          <button
+            onClick={onReset}
+            className="pointer-events-auto flex items-center gap-1 rounded-md bg-amber-500 px-2.5 py-1 text-[11px] font-bold text-slate-950 shadow-sm shadow-amber-500/30 transition hover:bg-amber-400 active:bg-amber-600"
+          >
+            <RotateCcw size={12} />
+            {t("shift.reset")}
+          </button>
         )}
       </div>
       <div className="flex flex-col gap-1">
@@ -172,14 +188,15 @@ export default function ShiftSliders({ shifts, onChange, spot, maxDte, minDte, t
           label={t("shift.timeDecay")}
           sublabel={t("shift.deltaTSublabel")}
           value={shifts.dT}
-          min={minDte ?? 0}
+          min={0}
           max={maxDte > 0 ? maxDte : 30}
           step={1}
           display={disabled && trackedDays !== undefined
             ? `${trackedDays.toFixed(0)}d`
-            // 2026-09-15：dT现在可以为负（第0天到今天之间的历史回放），跟ΔS
-            // 一样统一用带符号格式，避免"-5d"和"5d"混在一起看不出方向。
-            : `${shifts.dT >= 0 ? "+" : ""}${shifts.dT.toFixed(0)}d`}
+            // day0(openingAt)永远是这条轴的地板，dT不会是负数，正常显示
+            // 非负天数即可，不需要带符号——"今天"只是轴上的一个打点参考
+            // (todayDte)，不参与这里的计算或显示格式。
+            : `${shifts.dT.toFixed(0)}d`}
           subdisplay={disabled && trackedDays !== undefined
             ? `${t("shift.left")} ${Math.max(0, maxDte - trackedDays).toFixed(0)}d`
             : `${t("shift.left")} ${Math.max(0, maxDte - shifts.dT).toFixed(0)}d`}

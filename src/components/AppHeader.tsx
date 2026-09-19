@@ -1,14 +1,93 @@
 // src/components/AppHeader.tsx
 // src/components/AppHeader.tsx
-import { RefreshCw, TrendingUp, TrendingDown, ChevronDown, HelpCircle } from "lucide-react";
-import type { RefObject } from "react";
+import { RefreshCw, TrendingUp, TrendingDown, ChevronDown, HelpCircle, Target } from "lucide-react";
+import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import type { PresetMeta } from "@/lib/presets";
 import type { CustomPreset } from "@/lib/customPresets";
 import type { StockQuote } from "@/lib/useStockQuote";
+import type { EpsEstimate } from "@/hooks/useEpsEstimate";
 import PresetPicker from "@/components/PresetPicker";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import LiveClock from "@/components/LiveClock";
 import { useI18n } from "@/i18n/I18nContext";
+
+// 2026-09-18新增：远期估值区间小徽章，点击展开popover——跟Term.tsx/
+// PositionHealthBadge.tsx同一套"portal到body、按trigger位置算popover坐标、
+// 点击外部关闭"机制，这里没有直接复用Term.tsx，是因为Term的两种视觉样式
+// （下划线文字 / 纯图标圆按钮）都跟AppHeader其它徽章"方框+边框"的视觉不一
+// 致，内容也是算出来的数字而不是一句静态文案，用Term的descVars插值不如
+// 直接传结构化数据划算。就地实现，不额外建文件——这也是选择放在
+// AppHeader.tsx而不是PayoffChart.tsx的原因之一：改动量留在这一个已经很小
+// 的文件里。
+function EpsValuationBadge({ estimate }: { estimate: EpsEstimate }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (!open || !btnRef.current) return;
+    const rect = btnRef.current.getBoundingClientRect();
+    const popoverWidth = 220;
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - popoverWidth - 8));
+    setPos({ top: rect.bottom + 4, left });
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        btnRef.current && !btnRef.current.contains(target) &&
+        popRef.current && !popRef.current.contains(target)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={() => setOpen((v) => !v)}
+        title={t("valuation.tooltip")}
+        className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-amber-300/80 transition hover:border-amber-500/50 hover:text-amber-300"
+      >
+        <Target size={11} />
+      </button>
+
+      {open && createPortal(
+        <div
+          ref={popRef}
+          className="fixed z-[100] w-[220px] rounded-lg border border-slate-700 bg-slate-900 p-3 shadow-2xl"
+          style={{ top: pos.top, left: pos.left }}
+        >
+          <div className="mb-2 text-[11px] font-bold text-slate-200">{t("valuation.title")}</div>
+          <div className="space-y-1">
+            {estimate.ranges.map((r) => (
+              <div key={r.period} className="flex items-center justify-between text-[11px] tabular-nums">
+                <span className="text-slate-400">{t(r.period === "1y" ? "valuation.label1y" : "valuation.label2y")}</span>
+                <span className="font-semibold text-slate-200">${r.low.toFixed(2)} - ${r.high.toFixed(2)}</span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 border-t border-slate-800 pt-2 text-[10px] leading-relaxed text-slate-500">
+            {t("valuation.methodNote", {
+              peLabel: t(estimate.peSource === "forward" ? "valuation.peForward" : "valuation.peTrailing"),
+              pe: estimate.peMultiple,
+            })}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
 
 // This is the App.tsx split's first (lowest-risk) step — see the App.tsx
 // split discussion. Pure JSX extraction: every value below is still owned
@@ -56,8 +135,20 @@ interface Props {
   priceChange: number | null;
   changePct: number | null;
 
+  // 2026-09-18新增：远期估值区间（分析师EPS预估区间 × 当前市盈率粗算），
+  // 换标的代码后App.tsx里的useEpsEstimate会自动防抖拉取。estimate为null
+  // 时（还没拉到/该标的没有分析师预估数据，比如大部分ETF）整个徽章不渲
+  // 染，不占位置——这是个锦上添花的辅助信息，不是quote那类核心数据，没
+  // 必要为了"缺失也要展示框架"占用header本就紧张的空间。
+  epsEstimate: EpsEstimate | null;
+  epsLoading: boolean;
+
   // help
   onOpenHelp: () => void;
+
+  // 2026-09-17新增：分析模式情景滑块离开(0,0,0)时由App.tsx算出的
+  // isExploring，锁定策略库选择器、标的代码输入框及其下拉——直到点击"重置"。
+  locked?: boolean;
 }
 
 export default function AppHeader({
@@ -83,7 +174,10 @@ export default function AppHeader({
   onRefetchQuote,
   priceChange,
   changePct,
+  epsEstimate,
+  epsLoading,
   onOpenHelp,
+  locked = false,
 }: Props) {
   const { t } = useI18n();
 
@@ -111,7 +205,7 @@ export default function AppHeader({
           customPresets={customPresets}
           onDeleteCustom={onDeleteCustomPreset}
           onSelect={onSelectPreset}
-          disabled={isCompareMode}
+          disabled={isCompareMode || locked}
         />
 
         <div ref={symbolWrapRef} className="relative flex items-center gap-1.5">
@@ -121,11 +215,13 @@ export default function AppHeader({
               placeholder="SPY"
               value={symbol}
               onChange={(e) => onSymbolChange(e.target.value.toUpperCase())}
-              className="w-16 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs font-semibold text-slate-100 placeholder:text-slate-600 focus:border-emerald-500 focus:outline-none"
+              disabled={locked}
+              className="w-16 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs font-semibold text-slate-100 placeholder:text-slate-600 focus:border-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
             />
             <button
               onClick={onToggleSymbolDropdown}
-              className="-ml-px rounded-r border border-l-0 border-slate-700 bg-slate-900 px-1 py-1 text-slate-500 transition hover:text-slate-300"
+              disabled={locked}
+              className="-ml-px rounded-r border border-l-0 border-slate-700 bg-slate-900 px-1 py-1 text-slate-500 transition hover:text-slate-300 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <ChevronDown size={12} />
             </button>
@@ -180,6 +276,12 @@ export default function AppHeader({
           ) : (
             <div className="w-[88px]" />
           )}
+
+          {epsLoading ? (
+            <RefreshCw size={11} className="animate-spin text-slate-600" />
+          ) : epsEstimate ? (
+            <EpsValuationBadge estimate={epsEstimate} />
+          ) : null}
       </div>
 
       <div className="flex items-center gap-3">

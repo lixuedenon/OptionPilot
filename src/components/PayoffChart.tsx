@@ -4,6 +4,7 @@ import type { Leg, Shifts } from "@/lib/types";
 import type { HealthResult } from "@/lib/positionHealth";
 import { blackScholes } from "@/lib/bs";
 import { resolveOpeningLeg, impliedVol } from "@/lib/pricing";
+import { addCalendarDays, formatDateInput } from "@/lib/dateUtils";
 import { useI18n } from "@/i18n/I18nContext";
 import { RefreshCw, AlertTriangle } from "lucide-react";
 import PositionHealthBadge from "@/components/PositionHealthBadge";
@@ -40,8 +41,13 @@ interface Props {
   // be omitted/null (e.g. before any legs exist) with nothing rendered.
   positionHealth?: HealthResult | null;
   modeSwitchButton?: ReactNode;
-  pop: number;
   breakevens: number[];
+  // 2026-09-17新增：情景滑块ΔT对应的实际日期(=day0/openingAt + shifts.dT
+  // 天)，显示在盈亏数字左边——只有分析模式（!compareMode）会传/会显示，
+  // 对比模式的shifts永远冻结在(0,0,0)，算出来的日期没意义（对比模式本来
+  // 就在别处显示真实日期）。可选：SimulatorPage.tsx等纯对比模式调用方不
+  // 需要传。
+  openingAt?: number;
   trackedLegs?: Leg[];   // 持仓组合 — drawn as a fixed curve, not affected by shifts
   trackedSpot?: number;  // 持仓组合's current spot price
   openingLegs?: Leg[];   // 开仓组合 — original legs used as cost basis for tracked P&L curve
@@ -212,8 +218,21 @@ function getZone(pnl: number, netCredit: number, maxProfit: number, maxLoss: num
 
 const FAN_COLORS = ["#fbbf24", "#f59e0b", "#a3a3a3", "#475569"];
 
-export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, onAlert, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot, expired }: Props) {
+export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, onAlert, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot, expired, openingAt }: Props) {
   const { t } = useI18n();
+  // 情景滑块ΔT对应的实际日期——day0(openingAt)+shifts.dT天。只在分析模式
+  // 显示（见Props.openingAt注释）。固定用mm/dd/yyyy（xue指定的格式），不
+  // 用toLocaleDateString——那样zh-CN locale会给出yyyy/mm/dd的顺序，年份
+  // 位置就不对了。
+  const scenarioDateTs = !compareMode && openingAt !== undefined
+    ? addCalendarDays(openingAt, shifts.dT)
+    : null;
+  const scenarioDateLabel = scenarioDateTs !== null
+    ? (() => {
+        const d = new Date(scenarioDateTs);
+        return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
+      })()
+    : null;
   const [showFan, setShowFan] = useState(false);
   // Off by default — this is a purely informational overlay (see the
   // `liveSpot` prop comment), not something everyone needs to see, and
@@ -538,6 +557,14 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
             <span className="text-[9px] text-slate-500">{t("chart.currentPnl")}</span>
           </div>
           <div className="flex items-baseline gap-3">
+            {scenarioDateLabel && scenarioDateTs !== null && (
+              <span
+                className="text-sm font-bold tabular-nums text-sky-300"
+                title={formatDateInput(scenarioDateTs)}
+              >
+                {scenarioDateLabel}
+              </span>
+            )}
             <div className="flex items-center gap-2">
               {(() => {
                 const isFlat = Math.abs(currentPnL) < 0.005; // rounds to $0.00 either way — treat as break-even, not a signed P&L

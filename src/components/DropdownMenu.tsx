@@ -1,3 +1,4 @@
+// src/components/DropdownMenu.tsx
 import { useState, useEffect, useRef, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 
@@ -6,9 +7,12 @@ interface Props {
   icon?: ReactNode;
   menuClassName?: string;
   children: (close: () => void) => ReactNode;
+  // 2026-09-17新增：外部（分析模式滑块锁定等）禁用整个下拉，连触发按钮都
+  // 点不开——不只是隐藏菜单项。
+  disabled?: boolean;
 }
 
-export default function DropdownMenu({ label, icon, menuClassName, children }: Props) {
+export default function DropdownMenu({ label, icon, menuClassName, children, disabled }: Props) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -25,7 +29,8 @@ export default function DropdownMenu({ label, icon, menuClassName, children }: P
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className={`flex items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition ${
+        disabled={disabled}
+        className={`flex items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
           open
             ? "border-slate-500 bg-slate-700/60 text-slate-100"
             : "border-slate-700 bg-slate-800/60 text-slate-300 hover:border-slate-600 hover:text-white"

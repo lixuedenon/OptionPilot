@@ -8,6 +8,7 @@ import type { Leg } from "@/lib/types";
 import { useI18n } from "@/i18n/I18nContext";
 import type { Lang } from "@/i18n/translations";
 import type { LocalStr } from "@/lib/presets";
+import { dirKeyMap } from "@/components/StrategyBadge";
 import { PayoffSparkline } from "@/components/PayoffSparkline";
 
 function ls(val: LocalStr | string, lang: Lang): string {
@@ -150,35 +151,12 @@ function TooltipContent({ item }: { item: PresetMeta }) {
   );
 }
 
-const dirKeyMap: Record<string, string> = {
-  "看涨": "bullish", "看跌": "bearish", "看跌/中性": "bearishNeutral",
-  "温和看涨": "mildBullish", "温和看跌": "mildBearish", "中性": "neutral",
-  "中性/震荡": "neutralRange", "中性/温和看涨": "neutralMildBullish",
-  "双向波动": "volatile", "看涨/对冲": "bullishHedge",
-};
-
 export default function PresetPicker({ onSelect, customPresets, onDeleteCustom, disabled = false }: Props) {
   const { t, lang } = useI18n();
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-
-  const allItems: PresetMeta[] = [
-    ...PRESET_GROUPS.flatMap((g) => g.items),
-    ...customPresets.map((cp) => ({
-      name: { zh: cp.name, en: cp.name },
-      desc: { zh: cp.desc, en: cp.desc },
-      market: { zh: cp.market || "—", en: cp.market || "—" },
-      stocks: { zh: cp.stocks || "—", en: cp.stocks || "—" },
-      direction: cp.direction,
-      legs: () => cp.legs,
-    })),
-  ];
-
-  const hoveredItem = hovered
-    ? allItems.find((i) => ls(i.name, "zh") === hovered) ?? null
-    : null;
 
   const tooltipStyle = useCallback((): React.CSSProperties => {
     const panel = panelRef.current;

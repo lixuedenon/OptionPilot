@@ -1,6 +1,6 @@
 // src/lib/savedStrategies.ts
 import type { Leg, Shifts } from "./types";
-import { formatDateInput, parseDateInput, daysBetweenLocalDates, todayISO, calendarDaysSince } from "./dateUtils";
+import { formatDateInput, parseDateInput, daysBetweenLocalDates, todayISO, calendarDaysSince, calendarDaysBetween } from "./dateUtils";
 import { fetchHistoricalBars, repriceLegsAtDate } from "./historicalBackfill";
 
 export interface TrackedSnapshot {
@@ -80,8 +80,38 @@ export interface OpeningSimBasis {
                // 正回openingAt基准（见上面注释），不是`s.legs`的逐字节原样
   spot: number; // 开仓那一刻(openingAt)的现价
   daysSinceOpen: number; // 从真正开仓日期(openingAt)到"真实今天"，自然日经过
-                          // 了几天——决定ΔT滑块下界和"今天"点在时间轴上的位置
+                          // 了几天——决定"今天"点在时间轴上的位置
   originalMaxDte: number; // 从真正开仓日期(openingAt)到到期日的完整周期天数
+}
+
+// 2026-09-17修复"情景估值≠权利金"的bug：这个函数以前只在
+// handleOpenStrategy/handleSaveStrategy/handleOverwriteStrategy三个保存/加
+// 载动作里被调用一次，结果存进useState，此后用户在分析模式里对legs做的任
+// 何实时编辑（改权利金/行权价/数量/…）都不会再触发重算——App.tsx喂给图表
+// 的analyticsLegs用的还是那份存档时的旧快照，导致"情景估值"跟用户刚编辑
+// 的权利金对不上。
+//
+// 现在改成纯函数，由App.tsx在每次渲染时用useMemo基于当前实时的
+// legs/spot/openingAt重新算一遍（legsAsOfTs直接传Date.now()——用户编辑
+// leg.dte时，"到期日-今天"里的"今天"本来就是刚才这一刻，所以对实时数据来
+// 说legsAsOf永远等于"现在"），而不是只在显式保存/加载那几个时间点才刷新。
+// useStrategyOrchestration.ts里仍然直接调用这个函数，但只是为了在
+// handleOpenStrategy等动作里检查"这条策略是否已过期"（expiredStrategyPrompt），
+// 不再把结果存进App.tsx的state。
+export function computeOpeningSimBasis(openTs: number, legsAsOfTs: number, legs: Leg[], spot: number): OpeningSimBasis {
+  const daysSinceOpen = calendarDaysBetween(openTs, Date.now());
+  const openToLegsAsOfGap = calendarDaysBetween(openTs, legsAsOfTs);
+  const dayZeroLegs = openToLegsAsOfGap === 0
+    ? legs
+    : legs.map((l) => (l.kind === "stock" ? l : { ...l, dte: l.dte + openToLegsAsOfGap }));
+  const storedMaxDte = legs.length > 0
+    ? Math.max(...legs.filter((l) => l.kind !== "stock").map((l) => l.dte))
+    : 0;
+  // storedMaxDte是legs这份快照里的dte，本来就只保证准确到legsAsOfTs那一
+  // 刻（"从legsAsOf到到期日"的天数）——加上"从openingAt到legsAsOf"这段间
+  // 隔，才是"从真正开仓到到期日"的完整周期。
+  const originalMaxDte = storedMaxDte + openToLegsAsOfGap;
+  return { legs: dayZeroLegs, spot, daysSinceOpen, originalMaxDte };
 }
 
 const STORAGE_KEY = "optionpilot_saved_strategies";
@@ -170,16 +200,6 @@ export async function toggleStarStrategy(id: string): Promise<SavedStrategy[]> {
   const idx = strategies.findIndex((s) => s.id === id);
   if (idx >= 0) {
     strategies[idx] = { ...strategies[idx], starred: !strategies[idx].starred };
-    saveToStorage(strategies);
-  }
-  return strategies;
-}
-
-export async function toggleTrackStrategy(id: string): Promise<SavedStrategy[]> {
-  const strategies = loadFromStorage();
-  const idx = strategies.findIndex((s) => s.id === id);
-  if (idx >= 0) {
-    strategies[idx] = { ...strategies[idx], tracking: !strategies[idx].tracking };
     saveToStorage(strategies);
   }
   return strategies;

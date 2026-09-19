@@ -104,3 +104,17 @@ export function calendarDaysBetween(fromTs: number, toTs: number): number {
 export function calendarDaysSince(ts: number): number {
   return calendarDaysBetween(ts, Date.now());
 }
+
+// 2026-09-17新增：calendarDaysBetween的反向操作——从某个本地日期往前推N个
+// 自然日，返回结果那一天本地零点的时间戳。给PayoffChart.tsx算"情景滑块当
+// 前对应哪一天"用：day0(openingAt) + shifts.dT天。用本地日期字符串
+// (formatDateInput)往返而不是直接对时间戳做+days*86400000的毫秒运算，是
+// 为了跟文件里其它日期换算方式保持同一套"按日历天数走，不管具体几点"的
+// 口径（否则夏令时切换那天会因为不是整24小时而错位一天）。
+export function addCalendarDays(ts: number, days: number): number {
+  const base = parseDateInput(formatDateInput(ts));
+  if (base === null) return ts;
+  const d = new Date(base);
+  d.setDate(d.getDate() + Math.round(days));
+  return d.getTime();
+}

@@ -29,7 +29,6 @@ const zh: Dict = {
   // ── leg section ──
   "leg.legs": "期权腿位",
   "leg.roleMenuItem": "这条腿的作用",
-  "leg.compareMode": "对比模式",
   "leg.switchToCompare": "切换到对比模式",
   "leg.switchToCompareHint": "把当前腿位、现价和开仓日期直接带入对比模式，继续跟踪",
   "leg.switchToAnalysis": "切换到分析模式",
@@ -132,7 +131,6 @@ const zh: Dict = {
   "leg.left": "剩",
   "leg.buy": "买",
   "leg.sell": "卖",
-  "leg.stock": "正股",
   "leg.scenarioValue": "情景估值",
   "leg.scenarioValueHint": "由下方「情景偏移」滑块（价格/天数/波动率变化）计算出的该腿理论价值，已按买卖方向计正负号",
   "leg.legPnl": "腿位盈亏",
@@ -146,12 +144,13 @@ const zh: Dict = {
   "leg.lockedHint": "该操作已保存进历史快照，为保持记录准确，不可再撤销",
   "leg.restorePrice": "恢复市场价",
   "leg.showOpeningPrice": "当前显示市场价（绿色），点击恢复为开仓价",
-  "leg.restoreOriginal": "恢复为分析模式的原始数据（行权价/到期日/权利金）",
-  "leg.restoreOriginalNoChange": "跟分析模式的原始数据一致，无需恢复",
   "leg.fetchingPrice": "获取报价中...",
   "leg.fetchPriceFailed": "获取失败",
   "leg.priceSnapNote": "已自动匹配：行权价 {strike}，到期日 {date}",
   "leg.noSymbolForPrice": "请先输入股票代码",
+  // 2026-09-17新增：合约真实到期日已过，此时禁止刷新市场价（避免静默
+  // snap到别的合约，见LegRow.tsx的expired prop注释）。
+  "leg.contractExpiredNoPrice": "合约已过真实到期日，无法获取市场价",
   "leg.pickStrike": "选择行权价",
   "leg.noStrikeOptions": "暂无可选行权价",
   "leg.pickExpiry": "选择到期日",
@@ -162,7 +161,6 @@ const zh: Dict = {
   "compare.compareBase": "（对比基准）",
   "compare.todayCombo": "持仓组合",
   "compare.fixed": "（固定不变）",
-  "compare.spot": "股价",
   "compare.spotChange": "股价变化",
   "compare.openLabel": "开仓",
   "compare.currentLabel": "当前",
@@ -179,7 +177,6 @@ const zh: Dict = {
   "attribution.iv": "IV",
   "attribution.residual": "交叉项",
   "attribution.total": "合计变化",
-  "attribution.residualHint": "价格/时间/IV 三个因素在期权定价里不是简单相加的关系（比如价格变化的影响本身会随时间衰减而改变），三项加起来通常对不上实际总变化，差出来的这部分就是交叉项，不是计算错误。",
   "attribution.panelTitle": "什么是「盈亏归因」？",
   "attribution.panelExplain": "把这次持仓的总盈亏变化，拆分成价格、时间（时间价值衰减）、IV（隐含波动率）三个因素各自的贡献，帮你看清这笔钱主要是怎么来的。三项相加通常对不上实际总变化，差出来的部分叫「交叉项」，点它旁边的问号有单独说明。",
   "attribution.residualTitle": "什么是「交叉项」？",
@@ -356,7 +353,6 @@ const zh: Dict = {
   "sim.openPositions": "持仓中",
   "sim.newPosition": "新开仓",
   "sim.noOpenPositions": "暂无持仓，点击「新开仓」搭建一个组合",
-  "sim.refresh": "刷新市值",
   "sim.refreshAll": "刷新全部持仓",
   "sim.refreshing": "刷新中...",
   "sim.refreshFirst": "请先刷新市值再平仓",
@@ -386,9 +382,6 @@ const zh: Dict = {
   "sim.regretResult": "如果继续持有到现在，浮动盈亏会是 {pnl}，比实际平仓结果{verdict} {diff}",
   "sim.regretWorse": "更差",
   "sim.regretBetter": "更好",
-  "sim.viewTimeline": "查看历史走势",
-  "sim.addToCompare": "添加到对比模式",
-  "sim.addSnapshotToCompare": "追加快照到对比",
   "sim.loadingTimeline": "加载走势中...",
   "sim.noSnapshots": "还没有历史快照——点「刷新全部持仓」会开始记录，之后才能看走势",
   "sim.currentLabel": "现在",
@@ -396,7 +389,6 @@ const zh: Dict = {
   "sim.bestPointWorse": "历史最佳平仓点是 {date}，当时浮动盈亏为 {pnl}，比{label}多 {diff}",
   "sim.bestPointBetter": "{label}已经是目前记录里最好的时点",
   "sim.bestPointSame": "目前处于历史最佳附近，暂无明显更优的平仓时点",
-  "sim.bestPointNeedsRefresh": "已经有历史快照了，但这个仓位还没刷新过实时价格，没法跟当前对比——点一下上面的\"刷新全部持仓\"，回来就能看到对比结果。",
   "sim.reasonNearPeak": "这个位置在到期盈亏曲线上接近这笔交易能达到的最佳位置",
   "sim.reasonBeyondBreakeven": "这个位置已经越过了盈亏平衡点，处于亏损区间",
   "sim.reviewLabel": "复盘",
@@ -537,7 +529,6 @@ const zh: Dict = {
   "roll.cancel": "取消",
   "roll.confirm": "确认展期",
   "roll.days": "天",
-  "roll.expiry": "到期",
   "roll.expiryLabel": "到期",
   "roll.left": "剩",
   "roll.compareTitle": "展期前 vs 展期后（到期盈亏）",
@@ -582,7 +573,6 @@ const zh: Dict = {
   "hedge.refPremium": "参考权利金:",
   "hedge.clickToUse": "（点击采用）",
   "hedge.shares": "股",
-  "hedge.delta": "Delta",
   "hedge.stock": "正股",
   "hedge.cancel": "取消",
   "hedge.confirm": "确认对冲",
@@ -627,9 +617,14 @@ const zh: Dict = {
   "chart.impliedFetching": "获取中...",
 
   // ── shift sliders ──
-  "shift.scenarioFrozen": "情景偏移（对比模式已冻结）",
-  "shift.scenario": "情景偏移",
+  "shift.scenarioFrozen": "情景偏移对比",
+  "shift.scenario": "未来情景模拟",
   "shift.reset": "重置",
+  // 2026-09-17新增：分析模式所有输入被"未来情景模拟"锁定后，点击任意一个
+  // 被锁定的输入框弹出的提示——{section}插入当时那个区块的实际标题（即
+  // shift.scenario本身的值），不写死"未来情景模拟"四个字，避免以后改了
+  // 标题这里忘了同步（跟这次审计发现的zh.ts/en.ts维护教训是同一类问题）。
+  "leg.lockedInputHint": "需要修改参数，请点击{section}中的重置按钮",
   "shift.spotChange": "股价变化",
   "shift.timeDecay": "时间流逝",
   "shift.deltaTSublabel": "ΔT (天)",
@@ -639,8 +634,6 @@ const zh: Dict = {
   "shift.elapsed": "已过",
   "shift.positionIV": "持仓隐含波动率",
   "shift.today": "今天",
-  "shift.day0": "第0天",
-  "shift.expiryLabel": "到期",
   "shift.expiredNotice": "此策略已过真实到期日，仅供历史模拟参考",
 
   // ── expired strategy prompt ──
@@ -648,6 +641,27 @@ const zh: Dict = {
   "expired.desc": "这条策略的真实到期日已经过去。要删除它，还是保留下来继续做历史模拟？",
   "expired.keep": "保留",
   "expired.delete": "删除",
+  // 2026-09-17新增：对比模式"跟踪"一条已过期策略时的提示文案，跟上面的
+  // expired.desc分开——没有"保留"分支，只说明为什么无法跟踪、点确定后
+  // 会删除。
+  "expired.trackDesc": "这条策略的真实到期日已经过去，没有真实行情可以比对，无法继续跟踪对比。点击确定将删除这条策略。",
+  "expired.confirm": "确定",
+
+  // ── 远期估值区间（2026-09-18新增，AppHeader.tsx标的代码旁边的粗算徽
+  // 章）：分析师未来1/2年EPS预估的低/高区间 × 当前市盈率，纯粗算，不是
+  // 真正的估值模型，methodNote里必须讲清楚这一点。
+  "valuation.tooltip": "远期估值区间（粗算，点击查看）",
+  "valuation.title": "远期估值区间（粗算）",
+  "valuation.label1y": "未来1年",
+  "valuation.label2y": "未来2年",
+  "valuation.peForward": "远期",
+  "valuation.peTrailing": "静态",
+  "valuation.methodNote": "算法：分析师EPS预估区间（低/高）× 当前{peLabel}市盈率{pe}倍，仅供参考，不构成投资建议。",
+  // 2026-09-18新增（xue实测CRWD后发现的问题）：当前市盈率本身就是用"下一年
+  // 预估EPS"倒推出来的，"未来1年"这一档又刚好也是用同一段预估区间，两者
+  // 相乘容易算出一个跟现价很接近的数字，看着像"其实没那么贵"，但这本质
+  // 上只是在还原市场现在已经怎么定价，不是真正往前看的推算——必须讲清楚。
+  "valuation.caveat1y": "提醒：「未来1年」用的EPS预估，跟当前市盈率本身用的很可能是同一段区间，算出来的数字更接近「市场现在已经怎么定价」，不是独立的预测——「未来2年」（如果有）相对更能体现往前看的推算。",
 
   // ── situation explainer ("解释当前情况", 2026-09-09) ──
   "explain.button": "解释当前情况",
@@ -657,8 +671,6 @@ const zh: Dict = {
   "explain.headlineCompare": "开仓至今已过 {days} 天，「今日组合」目前的整体情况：",
   "explain.scenarioTitle": "当前情景",
   "explain.scenarioBody": "把现价滑到 {spot}（{spotChange}，{spotPct}），时间前进 {days} 天，波动率变化 {vol} 时，组合会呈现下面这些情况。",
-  "explain.stateTitle": "当前状态",
-  "explain.stateBody": "距开仓已经过去 {days} 天，现价从开仓时的 {openSpot} 变为 {spot}（{spotChange}，{spotPct}）。",
   "explain.pnlTitle": "盈亏情况",
   "explain.pnlBodyNearMaxProfit": "当前盈亏 {change}，已经达到这个组合理论最大盈利的约 {pct}%，处于盈利的高位区间。",
   "explain.pnlBodyProfit": "当前盈亏 {change}，处于盈利状态，距离理论最大盈利还有一定空间（约 {pct}%）。",
@@ -802,23 +814,6 @@ const zh: Dict = {
   "scenario.maxLoss": "最大亏损",
   "scenario.blockedNote": "这个组合互相矛盾（比如同时要求两端大涨大跌都赚钱、又要求横盘也赚钱），没有标准结构能同时满足，暂不支持，换一个组合试试。",
 
-  "advice.button": "持仓处置建议",
-  "advice.dialogTitle": "相似持仓的处置案例",
-  "advice.loading": "正在检索相似案例…",
-  "advice.error": "检索失败，请稍后重试。",
-  "advice.emptyNoSignal": "当前持仓暂无需要特别关注的信号（未临近到期、未贴近行权价、盈亏也未达到明显阈值），可以按原计划继续持有。",
-  "advice.emptyNoMatch": "没有找到匹配的历史案例。",
-  "advice.matchLevelLegDirection": "未精确匹配到相同策略结构，以下按方向和期权腿数匹配。",
-  "advice.matchLevelTagOnly": "未找到方向和腿数都匹配的案例，以下按信号类型匹配。",
-  "advice.tagNearExpiry": "临近到期",
-  "advice.tagPinRisk": "贴近行权价",
-  "advice.tagTakeProfitTarget": "浮盈达标",
-  "advice.tagStopLossTrigger": "浮亏止损",
-  "advice.answerLabel": "建议：",
-  "advice.reasoningLabel": "为什么：",
-  "advice.riskLabel": "仍存在的风险：",
-  "advice.disclaimer": "本系统不判断支撑/压力位的强弱，建议结合你自己对这些价位强弱的判断，参考以下技术层面的建议；建议不考虑财报、突发利好利空等市场事件，仅根据当前持仓与开仓时的技术结构对比给出。",
-
   // 2026-09-14新增：对比模式"该怎么办"建议系统（situationExplainer.ts的
   // explainTrackedPositionAdvice），取代原来的explainTrackedPosition。
   // 跟上面的advice.*（持仓处置建议/KB检索功能，目前暂停）是两个独立功能，
@@ -852,6 +847,10 @@ const zh: Dict = {
   "posAdvice.verticalCreditDangerBody": "建议：止损离场，或展期到更远的月份/更远的行权价重新收租金。原因：亏损已经占到这笔价差最大亏损的{pct}%，继续扛下去下跌空间有限但确定性的亏损已经很大。",
   "posAdvice.verticalNearExpiryBody": "建议：现在就处理（平仓或展期），不要留到最后一刻。原因：只剩{dte}天到期，现价已经贴近你卖出的这一侧行权价，继续拖下去被指派的风险会明显上升。",
   "posAdvice.verticalCreditTestedBody": "建议：先别动，但盯紧，一旦亏损接近最大亏损的七成就止损。原因：卖出的这一侧已经进入价内，风险在上升，但还没到最大亏损，此时平仓等于提前锁死亏损。",
+  "posAdvice.verticalCreditSafeHoldDeep": "建议：继续持有，按计划推进。原因：两腿仍虚值，结构安全，当前浮亏占最大亏损的比例只有{pct}%，离70%的危险线还远，这点浮动多半是短期波动或隐含波动率变化，不用仓促平仓。",
+  "posAdvice.verticalCreditSafeHoldNearMoney": "建议：继续持有，按计划推进，但留意现价。原因：短腿贴着行权价但还没被真正测试，当前浮亏占最大亏损的比例只有{pct}%，离70%的危险线还远，可以再观察，不用现在平仓。",
+  "posAdvice.caveatTitle": "这套建议没考虑什么",
+  "posAdvice.caveatBody": "以上建议只看价格、时间流逝、盈亏比例这几个数字，不判断财报等已知事件的择时、突发重大消息、也不看支撑/压力位——如果这笔仓位临近财报或有已知的重大事件在即，请自行把这些算进去，不要只看这里的建议。",
   "posAdvice.debitStopLossBody": "建议：止损离场。原因：亏损已经占到已付权利金（最大亏损）的{pct}%，说明行情没有按判断的方向走，翻本概率不高，不如止损保留剩余本金。",
   "posAdvice.debitNearExpiryProfitBody": "建议：现在平仓锁定利润，不要等到到期日。原因：只剩{dte}天，利润已经很接近这笔交易能赚到的上限，继续留仓不会多赚太多，但最后几天价格反向波动可能把利润吐回去。",
   "posAdvice.debitNearExpiryOpenBody": "建议：提前平仓，落袋现有盈亏，不要留到最后。原因：只剩{dte}天，留给行情发展的时间不多了，继续等下去大概率只是白白损耗剩余的权利金。",

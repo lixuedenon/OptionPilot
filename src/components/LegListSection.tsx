@@ -79,6 +79,19 @@ interface Props {
 
   simOrigin?: boolean;
   onConfirmSimOpen?: (payload: { symbol: string; legs: Leg[]; spot: number; openingAt: number }) => void;
+
+  // 2026-09-17新增：分析模式情景滑块离开(0,0,0)时由App.tsx算出的
+  // isExploring，锁定全选/批量操作/保存策略组合/确认开仓，并透传给每个
+  // LegRow锁定单腿字段——直到用户点击"重置"。
+  locked?: boolean;
+  // 2026-09-17新增：这条策略的真实到期日已经过去（App.tsx的
+  // isExpiredReal，两种模式通用）。对比模式下这个列表本来就靠
+  // hidePriceRefresh整体挡住市场价刷新（历史快照，见下面那行注释），真
+  // 正需要这个新prop生效的是分析模式（isCompareMode=false）——之前分析
+  // 模式下"打开策略"遇到过期策略只弹了ExpiredStrategyDialog，选"保留"之
+  // 后这个列表本身的"恢复市场价"按钮完全没被挡住，点了会静默把这条腿换
+  // 成今天附近别的合约再定价，见LegRow.tsx的expired prop注释。
+  contractsExpired?: boolean;
 }
 
 export default function LegListSection({
@@ -123,6 +136,8 @@ export default function LegListSection({
   onToggleLegSelection,
   simOrigin,
   onConfirmSimOpen,
+  locked = false,
+  contractsExpired = false,
 }: Props) {
   const { t, lang } = useI18n();
   // Computed once per render off the whole active leg list (roles like
@@ -237,7 +252,8 @@ export default function LegListSection({
                   if (el) el.indeterminate = selectedCount > 0 && selectedCount < legs.length;
                 }}
                 onChange={() => (selectedCount === legs.length ? onClearLegSelection() : onSelectAllLegs())}
-                className="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500"
+                disabled={locked}
+                className="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
               />
               {selectedCount > 0 ? t("leg.selectedCount", { count: selectedCount }) : t("leg.selectAll")}
             </label>
@@ -246,21 +262,23 @@ export default function LegListSection({
                 <>
                   <button
                     onClick={onBulkToggleDisable}
-                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-amber-400 transition hover:border-amber-500/50 hover:bg-amber-950/30"
+                    disabled={locked}
+                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-amber-400 transition hover:border-amber-500/50 hover:bg-amber-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <Ban size={11} />
                     {allSelectedDisabled ? t("leg.bulkUnblock") : t("leg.bulkBlock")}
                   </button>
                   <button
                     onClick={onRequestBulkDelete}
-                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-rose-400 transition hover:border-rose-500/50 hover:bg-rose-950/30"
+                    disabled={locked}
+                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-rose-400 transition hover:border-rose-500/50 hover:bg-rose-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <Trash2 size={11} />
                     {t("leg.bulkDelete")}
                   </button>
                   <button
                     onClick={onUnifyQty}
-                    disabled={!canUnifyLegs}
+                    disabled={!canUnifyLegs || locked}
                     title={t("leg.unifyHint")}
                     className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -269,7 +287,7 @@ export default function LegListSection({
                   </button>
                   <button
                     onClick={onUnifyStrike}
-                    disabled={!canUnifyLegs}
+                    disabled={!canUnifyLegs || locked}
                     title={t("leg.unifyHint")}
                     className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -278,7 +296,7 @@ export default function LegListSection({
                   </button>
                   <button
                     onClick={onUnifyDte}
-                    disabled={!canUnifyLegs}
+                    disabled={!canUnifyLegs || locked}
                     title={t("leg.unifyHint")}
                     className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -289,7 +307,7 @@ export default function LegListSection({
               )}
               <button
                 onClick={onSaveStrategy}
-                disabled={!canSaveStrategy}
+                disabled={!canSaveStrategy || locked}
                 title={t("toolbar.saveStrategy")}
                 className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-emerald-400 transition hover:border-emerald-500/50 hover:bg-emerald-950/30 disabled:cursor-not-allowed disabled:opacity-40"
               >
@@ -324,6 +342,7 @@ export default function LegListSection({
               // role-info survive. Outside compare mode this is the one and
               // only combo (analysis mode), so everything is live.
               hidePriceRefresh={isCompareMode}
+              expired={contractsExpired}
               onChange={(patch) => onChangeLeg(leg.id, patch)}
               onToggleDisable={() => onToggleLeg(leg.id)}
               onDelete={isCompareMode ? undefined : () => onDeleteLeg(leg.id)}
@@ -338,6 +357,7 @@ export default function LegListSection({
               canMoveDown={i < legs.length - 1}
               selected={selectedLegIds.has(leg.id)}
               onToggleSelect={() => onToggleLegSelection(leg.id)}
+              locked={locked}
             />
           ))
         )}
@@ -351,7 +371,7 @@ export default function LegListSection({
         <div className="shrink-0 px-2 pb-2">
           <button
             onClick={() => onConfirmSimOpen({ symbol, legs: activeLegs, spot, openingAt })}
-            disabled={activeLegs.length === 0 || spot <= 0}
+            disabled={activeLegs.length === 0 || spot <= 0 || locked}
             className="flex w-full items-center justify-center gap-1.5 rounded-md border border-emerald-500 bg-emerald-600 py-2 text-[12px] font-bold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Plus size={13} />

@@ -7,12 +7,6 @@ import { weightedAvgIV } from "@/lib/pricing";
 import type { SavedStrategy, TrackedSnapshot } from "@/lib/savedStrategies";
 import { computeLegLinks } from "@/lib/legLinks";
 import LegRow from "@/components/LegRow";
-// "持仓处置建议" retrieval feature paused 2026-09-10 (xue: redesigning the
-// advice content/format — see claude/retrieval-feature-design.md) — button
-// + dialog render commented out below, not deleted. Re-enable by
-// uncommenting this import and the two blocks marked "PAUSED" below.
-// import PositionAdviceDialog from "@/components/PositionAdviceDialog";
-// import { matchStrategy } from "@/lib/matchStrategy"; // only used by the paused advice feature, see above
 import { useI18n } from "@/i18n/I18nContext";
 
 // Compare mode's "今日组合" (today's combo) block — snapshot picker/save
@@ -71,9 +65,14 @@ interface Props {
   onHedge: () => void;
   onProtect: (id: string) => void;
   onMoveTrackedLeg: (index: number, direction: -1 | 1) => void;
-  // For the "持仓处置建议" retrieval button (see claude/retrieval-feature-design.md)
-  // — same breakevens App.tsx already computes for explainTrackedPosition().
-  breakevens: number[];
+  // 2026-09-17新增：这条策略的真实到期日已经过去（App.tsx的
+  // isExpiredReal）。跟"开仓组合"那份历史快照不同，"今日组合"这个列表本
+  // 来就是给"恢复市场价"用的（对着真实行情刷新），如果背后合约已经真实
+  // 到期，这个刷新按钮点了会静默snap到今天附近某个完全不同的合约上重新
+  // 定价——所以这里必须把这个信号传给每条LegRow挡住，不像"开仓组合"那边
+  // 可以直接整体hidePriceRefresh了事（这个列表在未过期时是需要刷新功能
+  // 的，不能整体关掉）。见LegRow.tsx的expired prop注释。
+  contractsExpired?: boolean;
 }
 
 export default function TrackedComboSection({
@@ -104,12 +103,9 @@ export default function TrackedComboSection({
   onHedge,
   onProtect,
   onMoveTrackedLeg,
-  // breakevens, // only used by the paused advice feature, see the import comment above
+  contractsExpired = false,
 }: Props) {
   const { t } = useI18n();
-  // PAUSED (see import comment above):
-  // const [showAdvice, setShowAdvice] = useState(false);
-  // const activeLegsForAdvice = (activeTrackedLegs ?? trackedLegs).filter((l) => !l.disabled);
 
   // Roll/Protect pairing badges (see lib/legLinks.ts), scoped to the
   // tracked-combo leg list — same helper LegListSection.tsx uses for the
@@ -161,17 +157,6 @@ export default function TrackedComboSection({
           );
         })()}
         <div className="ml-auto flex shrink-0 items-center gap-2">
-          {/* PAUSED (see import comment above): "持仓处置建议" button
-          <button
-            onClick={() => setShowAdvice(true)}
-            disabled={activeLegsForAdvice.length === 0 || effectiveTrackedSpot <= 0}
-            title={t("advice.button")}
-            className="flex shrink-0 items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-violet-400 transition hover:border-violet-500/50 hover:bg-violet-950/30 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <Sparkles size={11} />
-            {t("advice.button")}
-          </button>
-          */}
           <button
             onClick={onSaveTracked}
             disabled={!trackedDirty}
@@ -256,6 +241,7 @@ export default function TrackedComboSection({
             roleInfo={trackedLegRolesById.get(leg.id)}
             linkInfo={trackedLegLinksById.get(leg.id)}
             deleteVariant="close"
+            expired={contractsExpired}
             onChange={(patch) => onChangeTrackedLeg(leg.id, patch)}
             onToggleDisable={() => onToggleTrackedLeg(leg.id)}
             onDelete={() => onCloseTrackedLeg(leg.id, trackedLegPnlById.get(leg.id) ?? 0)}
@@ -271,23 +257,6 @@ export default function TrackedComboSection({
           />
         ))}
       </div>
-      {/* PAUSED (see import comment above): "持仓处置建议" dialog
-      {showAdvice && trackedResult && (
-        <PositionAdviceDialog
-          title={t("advice.dialogTitle")}
-          legs={activeLegsForAdvice}
-          spot={effectiveTrackedSpot}
-          change={trackedResult.change}
-          entryNetPremium={trackedResult.netPremium}
-          breakevens={breakevens}
-          dte={activeLegsForAdvice.filter((l) => l.kind !== "stock").length > 0
-            ? Math.min(...activeLegsForAdvice.filter((l) => l.kind !== "stock").map((l) => l.dte))
-            : null}
-          matchedStrategyName={matchStrategy(activeLegsForAdvice, effectiveTrackedSpot, [])}
-          onClose={() => setShowAdvice(false)}
-        />
-      )}
-      */}
     </div>
   );
 }
