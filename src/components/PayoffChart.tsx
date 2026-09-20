@@ -8,18 +8,7 @@ import { addCalendarDays, formatDateInput } from "@/lib/dateUtils";
 import { useI18n } from "@/i18n/I18nContext";
 import { RefreshCw, AlertTriangle } from "lucide-react";
 import PositionHealthBadge from "@/components/PositionHealthBadge";
-
-export type AlertZone = "golden" | "danger" | "stop" | null;
-export interface AlertInfo {
-  zone: AlertZone;
-  pnl: number;
-  netCredit: number;
-  capturedPct: number;
-  days: number;
-  stock: boolean;
-  maxProfit: number;
-  maxLoss: number;
-}
+import type { AlertSeverity } from "@/lib/situationExplainer";
 
 interface PerLegValue {
   leg: Leg;
@@ -55,7 +44,12 @@ interface Props {
   perLegValues?: PerLegValue[];
   netValue?: number;
   netChange?: number;
-  onAlert?: (info: AlertInfo) => void;
+  // 2026-09-19：取代原来这里的onAlert/getZone/zoneBands那套（按净收权利金
+  // 比例算的旧规则，跟540格表各算各的，同一个仓位能给出两个不一样的判
+  // 断——见situationExplainer.ts里AlertSeverity的说明）。现在图表提示条
+  // 和当前盈亏点颜色都直接读App.tsx算好的这一个信号，只有熊市Call/牛市
+  // Put价差这两个已有540格表的形状会给出非空值。
+  alertSeverity?: AlertSeverity;
   correctedSpot?: number | null;
   correcting?: boolean;
   onCorrectSpot?: () => void;
@@ -177,48 +171,9 @@ function calcTrackedPnLAtTime(trackedLegs: Leg[], openingLegs: Leg[], spot: numb
   return pnl;
 }
 
-function hasStock(legs: Leg[]): boolean {
-  return legs.some((l) => l.kind === "stock");
-}
-
-type Zone = "golden" | "great" | "danger" | "stop" | "neutral";
-
-function getZone(pnl: number, netCredit: number, maxProfit: number, maxLoss: number, stock: boolean): Zone {
-  if (stock) {
-    const maxP = maxProfit > 0 ? maxProfit : 1;
-    const maxL = maxLoss < 0 ? maxLoss : -1;
-    if (pnl >= 0.5 * maxP && pnl <= 0.8 * maxP) return "golden";
-    if (pnl > 0.8 * maxP) return "great";
-    if (pnl <= 0.5 * maxL) return "danger";
-    if (pnl <= 0.8 * maxL) return "stop";
-    return "neutral";
-  }
-  if (netCredit > 0) {
-    if (pnl < -1.5 * netCredit) return "stop";
-    if (pnl < -netCredit) return "danger";
-    if (pnl >= 0.5 * netCredit && pnl <= 0.7 * netCredit) return "golden";
-    if (pnl > 0.7 * netCredit) return "great";
-  } else {
-    const maxP = maxProfit > 0 ? maxProfit : 1;
-    // Debit-strategy mirror of the credit-strategy branch above: "golden"
-    // needs an upper bound too (0.5-0.7 of maxProfit), otherwise "great"
-    // (pnl > 0.7*maxP) is unreachable — pnl >= 0.5*maxP already matched and
-    // returned first for every point past 0.5*maxP, "great" included. A
-    // debit strategy that ran deep into its best-case territory kept
-    // reporting the take-profit "golden" alert instead of correctly going
-    // quiet past 70% of max profit the way a credit strategy already does.
-    if (pnl >= 0.5 * maxP && pnl <= 0.7 * maxP) return "golden";
-    if (pnl > 0.7 * maxP) return "great";
-    const cost = Math.abs(netCredit);
-    if (pnl < -0.5 * cost) return "danger";
-    if (pnl < -0.8 * cost) return "stop";
-  }
-  return "neutral";
-}
-
 const FAN_COLORS = ["#fbbf24", "#f59e0b", "#a3a3a3", "#475569"];
 
-export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, onAlert, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot, expired, openingAt }: Props) {
+export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, alertSeverity, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot, expired, openingAt }: Props) {
   const { t } = useI18n();
   // 情景滑块ΔT对应的实际日期——day0(openingAt)+shifts.dT天。只在分析模式
   // 显示（见Props.openingAt注释）。固定用mm/dd/yyyy（xue指定的格式），不
@@ -252,7 +207,6 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
   const isDragging = useRef(false);
 
   const active = legs.length > 0 && spot > 0;
-  const stock = hasStock(compareMode && trackedLegs ? trackedLegs : legs);
 
   useEffect(() => {
     const el = svgContainerRef.current;
@@ -341,10 +295,6 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
   }, []);
 
   const baseLegs = compareMode && trackedLegs ? trackedLegs : legs;
-  const netCredit = useMemo(
-    () => baseLegs.reduce((acc, l) => acc + (l.kind === "stock" ? 0 : (l.action === "sell" ? l.premium : -l.premium) * (l.qty ?? 1)), 0),
-    [baseLegs]
-  );
   const maxDte = useMemo(
     () => baseLegs.length > 0 ? Math.max(...baseLegs.filter(l => l.kind !== "stock").map((l) => l.dte), 0) : 30,
     [baseLegs]
@@ -459,16 +409,6 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
       : (active ? calcPnL(legs, spot, shifts, currentSpot) : 0),
     [compareMode, hasTracked, openingLegs, netChange, active, legs, spot, shifts, currentSpot]
   );
-  const currentZone = getZone(currentPnL, netCredit, maxProfit, maxLoss, stock);
-  const capturedPct = stock
-    ? (maxProfit > 0 ? (currentPnL / maxProfit) * 100 : 0)
-    : (netCredit > 0 ? (currentPnL / netCredit) * 100 : 0);
-  const alertZone: AlertZone = (currentZone === "golden" || currentZone === "danger" || currentZone === "stop") ? currentZone : null;
-
-  useEffect(() => {
-    onAlert?.({ zone: alertZone, pnl: currentPnL, netCredit, capturedPct, days: compareMode ? 0 : shifts.dT, stock, maxProfit, maxLoss });
-  }, [alertZone, currentPnL, netCredit, capturedPct, compareMode, shifts.dT, onAlert, stock, maxProfit, maxLoss]);
-
   if (!active) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-slate-600">
@@ -518,24 +458,6 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
   const xTicks = Array.from({ length: xTickCount + 1 }, (_, i) => sMin + (i / xTickCount) * (sMax - sMin));
 
   const strikes = [...new Set(baseLegs.filter(l => l.kind !== "stock").map((l) => l.strike))];
-
-  const zoneBands = (() => {
-    if (stock) {
-      const maxP = maxProfit > 0 ? maxProfit : 0;
-      const maxL = maxLoss < 0 ? maxLoss : 0;
-      return {
-        golden: maxP > 0 ? { y1: toY(0.8 * maxP), y2: toY(0.5 * maxP) } : null,
-        stop:   maxL < 0 ? { y1: toY(0.5 * maxL), y2: toY(0.8 * maxL) } : null,
-      };
-    }
-    if (netCredit > 0) {
-      return {
-        golden: { y1: toY(0.7 * netCredit), y2: toY(0.5 * netCredit) },
-        stop:   { y1: toY(-netCredit), y2: toY(-1.5 * netCredit) },
-      };
-    }
-    return { golden: null, stop: null };
-  })();
 
   const isZoomed = xZoom > 1.01;
 
@@ -711,25 +633,6 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
               <line key={v} x1={PAD.l} x2={PAD.l + CW} y1={toY(v)} y2={toY(v)} stroke="rgb(51 65 85)" strokeWidth="0.5" />
             ))}
 
-            {/* Golden zone band */}
-            {zoneBands.golden && (() => {
-              const { y1, y2 } = zoneBands.golden;
-              if (Math.min(y1, y2) >= PAD.t + CH || Math.max(y1, y2) <= PAD.t) return null;
-              return <rect x={PAD.l} y={Math.min(y1, y2)} width={CW} height={Math.abs(y2 - y1)} fill="rgba(52,211,153,0.06)" clipPath="url(#chart-clip)" />;
-            })()}
-
-            {/* Stop zone band */}
-            {zoneBands.stop && (() => {
-              const { y1, y2 } = zoneBands.stop;
-              const yTop = Math.min(y1, y2), yBot = Math.max(y1, y2);
-              if (yTop >= PAD.t + CH || yBot <= PAD.t) return null;
-              return (
-                <rect x={PAD.l} y={Math.max(PAD.t, yTop)} width={CW}
-                  height={Math.min(yBot, PAD.t + CH) - Math.max(PAD.t, yTop)}
-                  fill="rgba(244,63,94,0.07)" clipPath="url(#chart-clip)" />
-              );
-            })()}
-
             {/* Strike lines */}
             {strikes.map((k) => (
               <line key={k} x1={toX(k)} x2={toX(k)} y1={PAD.t} y2={PAD.t + CH}
@@ -770,38 +673,6 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
                 strokeWidth={i === 0 ? 1.5 : 1.2} strokeDasharray={i === 0 ? "none" : "4 3"}
                 opacity={0.85} clipPath="url(#chart-clip)" />
             ))}
-
-            {/* Golden zone label */}
-            {zoneBands.golden && (() => {
-              const { y1, y2 } = zoneBands.golden;
-              const midY = (y1 + y2) / 2;
-              if (midY < PAD.t || midY > PAD.t + CH) return null;
-              const label = stock ? t("chart.goldenZoneStock") : t("chart.goldenZone");
-              return (
-                <g clipPath="url(#chart-clip)">
-                  <line x1={PAD.l - 4} x2={PAD.l + CW} y1={y2} y2={y2} stroke="rgba(52,211,153,0.35)" strokeWidth="0.8" strokeDasharray="3 2" />
-                  <line x1={PAD.l - 4} x2={PAD.l + CW} y1={y1} y2={y1} stroke="rgba(52,211,153,0.35)" strokeWidth="0.8" strokeDasharray="3 2" />
-                  <rect x={PAD.l + CW - 60} y={midY - 8} width={58} height={13} rx={2} fill="rgba(16,42,28,0.9)" />
-                  <text x={PAD.l + CW - 31} y={midY + 1} textAnchor="middle" fontSize="7.5" fill="rgba(52,211,153,0.9)" fontWeight="bold">{label}</text>
-                </g>
-              );
-            })()}
-
-            {/* Stop zone label */}
-            {zoneBands.stop && (() => {
-              const { y1, y2 } = zoneBands.stop;
-              const midY = (y1 + y2) / 2;
-              if (midY < PAD.t || midY > PAD.t + CH) return null;
-              const label = stock ? t("chart.stopZoneStock") : t("chart.stopZone");
-              return (
-                <g clipPath="url(#chart-clip)">
-                  <line x1={PAD.l - 4} x2={PAD.l + CW} y1={y1} y2={y1} stroke="rgba(244,63,94,0.4)" strokeWidth="0.8" strokeDasharray="3 2" />
-                  <line x1={PAD.l - 4} x2={PAD.l + CW} y1={y2} y2={y2} stroke="rgba(244,63,94,0.4)" strokeWidth="0.8" strokeDasharray="3 2" />
-                  <rect x={PAD.l + CW - 60} y={midY - 8} width={58} height={13} rx={2} fill="rgba(42,10,18,0.9)" />
-                  <text x={PAD.l + CW - 31} y={midY + 1} textAnchor="middle" fontSize="7.5" fill="rgba(244,63,94,0.9)" fontWeight="bold">{label}</text>
-                </g>
-              );
-            })()}
 
             {/* Main P&L curve */}
             <path d={pathD} fill="none" stroke="#34d399" strokeWidth="2" clipPath="url(#chart-clip)" />
@@ -855,7 +726,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
               return (
                 <g clipPath="url(#chart-clip)">
                   <circle cx={currentX} cy={py} r="4"
-                    fill={currentZone === "golden" ? "#34d399" : currentZone === "danger" || currentZone === "stop" ? "#f43f5e" : "#fbbf24"}
+                    fill={alertSeverity === "takeProfit" ? "#34d399" : alertSeverity === "stopLoss" ? "#f43f5e" : alertSeverity === "monitor" ? "#fbbf24" : accent}
                     stroke="#1e293b" strokeWidth="1.5" />
                   <rect x={labelX} y={labelY} width={labelW} height={labelH} rx={3} fill="#1e293b" fillOpacity={0.95} stroke={accent} strokeWidth="0.8" />
                   <text x={labelX + labelW / 2} y={labelY + labelH - 4} textAnchor="middle" fontSize="10" fill={accent} fontWeight="bold">

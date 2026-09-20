@@ -6,7 +6,7 @@ import PnlAttributionPanel from "@/components/PnlAttributionPanel";
 import { matchStrategy } from "@/lib/matchStrategy";
 import LegListSection from "@/components/LegListSection";
 import ShiftSliders from "@/components/ShiftSliders";
-import PayoffChart, { type AlertInfo } from "@/components/PayoffChart";
+import PayoffChart from "@/components/PayoffChart";
 import { useStockQuote } from "@/lib/useStockQuote";
 import { useEpsEstimate } from "@/hooks/useEpsEstimate";
 import { loadRecentSymbols, addRecentSymbol } from "@/lib/recentSymbols";
@@ -68,7 +68,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   } = useCustomPresets();
   const [recentSymbols, setRecentSymbols] = useState<string[]>([]);
   const [symbolDropdownOpen, setSymbolDropdownOpen] = useState(false);
-  const [alert, setAlert] = useState<AlertInfo>({ zone: null, pnl: 0, netCredit: 0, capturedPct: 0, days: 0, stock: false, maxProfit: 0, maxLoss: 0 });
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const [showImpliedInfo, setShowImpliedInfo] = useState(false);
   const [correctedSpot, setCorrectedSpot] = useState<number | null>(null);
@@ -642,15 +641,23 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       shifts: analyticsShifts,
       result,
       health: positionHealth,
-      attribution: analysisAttribution,
-      breakevens,
       lang,
       t,
     });
   }, [
     isCompareMode, activeTrackedLegs, trackedGreeks, activeLegs, activeAnalyticsLegs, spot, analyticsSpot, effectiveTrackedSpot, effectiveDaysElapsed,
-    t, lang, analyticsShifts, result, positionHealth, analysisAttribution, breakevens,
+    t, lang, analyticsShifts, result, positionHealth,
   ]);
+
+  // 图表提示条/盈亏点颜色：从situationExplanation的sections里找带severity的
+  // 那一条（目前只有熊市Call/牛市Put价差的540格表分支会设置severity），取
+  // 它的alertBody（没有就退回body）。取代原来PayoffChart自己算的
+  // getZone/zoneBands那套（2026-09-19移除，见situationExplainer.ts头部）。
+  const chartAlert = useMemo(() => {
+    const section = situationExplanation?.sections.find((s) => s.severity);
+    if (!section || !section.severity) return null;
+    return { severity: section.severity, body: section.alertBody ?? section.body };
+  }, [situationExplanation]);
 
   useEffect(() => {
     if (isCompareMode && !compareGuideShown.current) {
@@ -1101,7 +1108,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
           {/* Alert footer */}
           <div className="shrink-0 border-t border-slate-800 px-3 py-2">
-            <AlertCard alert={alert} />
+            <AlertCard alert={chartAlert} />
           </div>
         </div>
 
@@ -1125,7 +1132,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 netChange={isCompareMode && trackedResult ? trackedResult.change : result.change}
                 trackedSpot={isCompareMode ? effectiveTrackedSpot : undefined}
                 liveSpot={isCompareMode && liveTrackedSpot !== null ? liveTrackedSpot : undefined}
-                onAlert={setAlert}
+                alertSeverity={chartAlert?.severity}
                 correctedSpot={correctedSpot}
                 correcting={correcting}
                 onCorrectSpot={handleCorrectSpot}

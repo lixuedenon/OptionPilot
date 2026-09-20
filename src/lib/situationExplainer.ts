@@ -1,10 +1,9 @@
 // src/lib/situationExplainer.ts
-// src/lib/situationExplainer.ts
 import type { Leg, Shifts } from "./types";
-import type { ComboResult, PnlAttribution } from "./pricing";
+import type { ComboResult } from "./pricing";
 import { maxProfitLoss, impliedVol, resolveOpeningLeg } from "./pricing";
 import type { HealthResult } from "./positionHealth";
-import { bearCallSpreadTable, type SupportedLang } from "./bearCallSpreadTable";
+import { bearCallSpreadTable, type SupportedLang, type BearCallAction } from "./bearCallSpreadTable";
 import { bullPutSpreadTable } from "./bullPutSpreadTable";
 
 // Local alias instead of importing useI18n's type from I18nContext.tsx — same
@@ -12,9 +11,32 @@ import { bullPutSpreadTable } from "./bullPutSpreadTable";
 // shouldn't pull a component module in just for a function type.
 type TFunc = (key: string, vars?: Record<string, string | number>) => string;
 
+// 图表上的提示条/当前盈亏点颜色用的信号（2026-09-19，取代PayoffChart.tsx
+// 里那套按净收权利金比例算的旧getZone——那套东西跟这里的540格表各算各
+// 的，同一个仓位能给出两个不一样的判断。只有走到540格表的两个信用价差
+// 函数（bearCallSpreadAdvice/bullPutSpreadAdvice）会给出这个信号：危险
+// 覆盖分支（zone0/1且亏损≥70%最大亏损）算stopLoss；查表分支按表里本来
+// 就有、之前一直被`[, cellDesc, cellAdvice]`这个解构丢掉的action字段
+// 换算——CLOSE按当前盈亏正负分成takeProfit/stopLoss，MONITOR算monitor，
+// HOLD/WAIT不给信号（不提示）。裸卖单腿/借方价差/跨式/占位这些形状目前
+// 没有专属表，不产出这个信号——图表那边对应的提示/色带就不显示，不用旧
+// 公式硬凑一个。
+export type AlertSeverity = "takeProfit" | "stopLoss" | "monitor";
+
+function severityFromAction(action: BearCallAction, pnl: number): AlertSeverity | undefined {
+  if (action === "CLOSE") return pnl >= 0 ? "takeProfit" : "stopLoss";
+  if (action === "MONITOR") return "monitor";
+  return undefined;
+}
+
 export interface ExplainSection {
   title: string;
   body: string;
+  // 只给图表提示条用的精简文案+信号——跟body（弹窗里给人读的完整解释，包
+  // 含"开仓到现在过了几天/目前盈亏多少"这段描述）分开存，避免弹窗文案变
+  // 长后banner跟着变长。两者都没有时，这条section不驱动任何图表提示。
+  severity?: AlertSeverity;
+  alertBody?: string;
 }
 
 export interface SituationExplanation {
@@ -35,10 +57,8 @@ export interface SituationExplanation {
 //已有功能"). All display text goes through `t` — nothing here is a hardcoded
 // literal in either language.
 
-const DTE_HINT_THRESHOLD = 21; // same tastytrade-style convention SimulatorPage.tsx's DTE_ALERT_THRESHOLD uses
 const HIGH_DELTA_THRESHOLD = 0.7; // matches positionHealth.ts's own "bad" boundary for avg delta per contract
 const LOW_DELTA_THRESHOLD = 0.3; // matches positionHealth.ts's own "good" boundary for avg delta per contract
-const BREAKEVEN_HINT_THRESHOLD = 3; // percent — a supplementary trigger for the action-hint section, deliberately a bit looser than positionHealth's own 2%/8% good/bad band since this is "worth a mention", not itself a score
 
 // ── "怎么办"建议系统（2026-09-13/14 对话定稿，取代对比模式下的
 // explainTrackedPosition）──
@@ -115,25 +135,6 @@ function avgDeltaPerContract(legs: Leg[], netDelta: number): number {
   return totalQty > 0 ? netDelta / totalQty : netDelta;
 }
 
-// Nearest breakeven distance as a % of the given spot — breakevens themselves
-// are shift-invariant (structural property of strikes/premiums only, see
-// findBreakevens in pricing.ts), only which spot we measure distance from
-// changes between analysis mode (shifted spot) and compare mode (today's spot).
-function nearestBreakevenPct(breakevens: number[], atSpot: number): number | null {
-  if (breakevens.length === 0 || atSpot <= 0) return null;
-  return (Math.min(...breakevens.map((be) => Math.abs(atSpot - be))) / atSpot) * 100;
-}
-
-// Analysis mode: DTE remaining AFTER the slider's time shift — mirrors
-// positionHealth.ts's buildShiftedLegs dte adjustment (that function itself
-// is private/non-exported, so this is a minimal standalone re-derivation of
-// just the dte part, not a duplicate of its premium-repricing logic).
-function minShiftedDte(legs: Leg[], dT: number): number | null {
-  const optionLegs = legs.filter((l) => l.kind !== "stock");
-  if (optionLegs.length === 0) return null;
-  return Math.min(...optionLegs.map((l) => Math.max(0, Math.round(l.dte - dT))));
-}
-
 // Deliberately NOT re-listing each of health.factors here (xue's explicit
 // call, 2026-09-09: this used to copy PositionHealthBadge.tsx's popover
 // content verbatim — POP/breakeven-distance/DTE/delta shown twice, word for
@@ -152,44 +153,6 @@ function healthSections(t: TFunc, health: HealthResult | null): ExplainSection[]
       body: t("explain.healthSummaryBody", { score: String(health.score), summary: health.summary }),
     },
   ];
-}
-
-// Shared tail of both explainers: Roll/Hedge/Protect are available from both
-// the opening combo (analysis mode) and today's combo (compare mode, see
-// TrackedComboSection.tsx's onRoll/onHedge/onProtect), so those three hints
-// are worded identically either way. Decision Compare ("决策对比") is
-// analysis-mode only (see CLAUDE.md's "五、2" — TrackedComboSection.tsx
-// never gets an onCompare prop), so the near-max-profit/loss hints — the
-// only ones that would naturally reach for it — get a mode-specific pair of
-// keys instead.
-function actionHints(t: TFunc, params: {
-  isCompareMode: boolean;
-  dte: number | null;
-  avgDelta: number;
-  breakevenPct: number | null;
-  zone: PnlZone;
-  pct: number;
-}): string {
-  const { isCompareMode, dte, avgDelta, breakevenPct, zone, pct } = params;
-  const hints: string[] = [];
-
-  if (dte !== null && dte <= DTE_HINT_THRESHOLD) {
-    hints.push(t("explain.actionDte", { dte: dte.toFixed(0) }));
-  }
-  if (Math.abs(avgDelta) >= HIGH_DELTA_THRESHOLD) {
-    hints.push(t("explain.actionDelta", { delta: fmtSigned(avgDelta) }));
-  }
-  if (breakevenPct !== null && breakevenPct < BREAKEVEN_HINT_THRESHOLD) {
-    hints.push(t("explain.actionBreakeven", { pct: breakevenPct.toFixed(1) }));
-  }
-  if (zone === "nearMaxProfit") {
-    hints.push(t(isCompareMode ? "explain.actionNearMaxProfitCompare" : "explain.actionNearMaxProfitAnalysis", { pct: pct.toFixed(0) }));
-  }
-  if (zone === "nearMaxLoss") {
-    hints.push(t(isCompareMode ? "explain.actionNearMaxLossCompare" : "explain.actionNearMaxLossAnalysis", { pct: pct.toFixed(0) }));
-  }
-
-  return hints.length > 0 ? hints.join(" ") : t("explain.actionNone");
 }
 
 // Analysis mode: builds the "shifted" (scenario) leg clone the leg-role
@@ -223,12 +186,10 @@ export function explainAnalysisScenario(params: {
   shifts: Shifts;
   result: ComboResult;
   health: HealthResult | null;
-  attribution: PnlAttribution | null;
-  breakevens: number[];
   lang: SupportedLang;
   t: TFunc;
 }): SituationExplanation | null {
-  const { legs, spot, shifts, result, health, attribution, breakevens, lang, t } = params;
+  const { legs, spot, shifts, result, health, lang, t } = params;
   const active = legs.filter((l) => !l.disabled);
   if (active.length === 0 || spot <= 0) return null;
 
@@ -252,33 +213,28 @@ export function explainAnalysisScenario(params: {
     { title: t("explain.pnlTitle"), body: pnlBody(t, zone, result.change, pct) },
   ];
 
-  if (attribution) {
-    sections.push({
-      title: t("explain.attributionTitle"),
-      body: t("explain.attributionBody", {
-        price: fmtSigned(attribution.priceEffect, 0),
-        time: fmtSigned(attribution.timeEffect, 0),
-        iv: fmtSigned(attribution.ivEffect, 0),
-      }),
-    });
-  }
-
   sections.push({ title: t("explain.deltaTitle"), body: deltaBody(t, avgDelta) });
   sections.push(...healthSections(t, health));
 
-  // "怎么办"：跟对比模式共用同一套按腿角色分类的建议系统（buildLegAdviceSections，
-  // 定义见下方——2026-09-18 xue明确要求"对比模式里边有了，也要放在分析模式
-  // 里"）。分析模式没有真实的"开仓腿"/"当前腿"两份独立数据——只有滑块位移
-  // 前的entered legs和位移后的情景——所以这里把entered legs当"开仓"
+  // "怎么办"：完全复用对比模式的buildLegAdviceSections（定义见下方）——
+  // 2026-09-18 xue明确要求"两套解释内容不需要老版本了，只保留现在最新的
+  // 多情况样板版本"：分析模式原来自己那套通用阈值提示（dte/delta/距盈亏
+  // 平衡点距离/是否接近最大盈亏——旧的actionHints函数，已整个删除，连同
+  // 只给它用的DTE_HINT_THRESHOLD/BREAKEVEN_HINT_THRESHOLD/minShiftedDte/
+  // nearestBreakevenPct一起）现在完全换成跟对比模式一模一样的按腿角色分类
+  // 建议：能配对成裸卖单腿/信用价差(540格)/借方价差/卖出跨式的，给对应的
+  // 具体建议；配不成的形状（3条腿以上、日历/对角、纯买方单腿等）用
+  // buildLegAdviceSections自己的占位文案（posAdvice.notImplementedBody），
+  // 不再退回旧版通用提示——跟对比模式完全一致，不存在两套并行的解释内容。
+  //
+  // 分析模式没有真实的"开仓腿"/"当前腿"两份独立数据——只有滑块位移前的
+  // entered legs和位移后的情景——所以这里把entered legs当"开仓"
   // （resolveOpen按id查回原始leg），再用shiftLegForAdvice（上面）算出情景
-  // 位移后的"当前腿"克隆去跑同一套分类逻辑。只有真的落进某张专属表/裸卖出
-  // 单腿判断（不是占位文案）时才替换掉下面这条通用的actionHints——3条腿
-  // 以上、日历/对角、纯买方单腿这些还没有专属表的形状，继续用原来的通用
-  // 阈值提示，不因为这次改动倒退。
+  // 位移后的"当前腿"克隆去跑同一套分类逻辑。
   const openingById = new Map(active.map((l) => [l.id, l]));
   const shiftedLegs = active.map((l) => shiftLegForAdvice(l, shifts, spot, result));
   const resolveOpen = (leg: Leg): Leg | undefined => openingById.get(leg.id);
-  const { sections: legAdviceSections, hasSpecificAdvice } = buildLegAdviceSections({
+  sections.push(...buildLegAdviceSections({
     active: shiftedLegs,
     resolveOpen,
     trackedSpot: shiftedSpot,
@@ -287,24 +243,8 @@ export function explainAnalysisScenario(params: {
     result,
     lang,
     t,
-  });
-
-  if (hasSpecificAdvice) {
-    sections.push(...legAdviceSections);
-    sections.push({ title: t("posAdvice.caveatTitle"), body: t("posAdvice.caveatBody") });
-  } else {
-    sections.push({
-      title: t("explain.actionsTitle"),
-      body: actionHints(t, {
-        isCompareMode: false,
-        dte: minShiftedDte(active, shifts.dT),
-        avgDelta,
-        breakevenPct: nearestBreakevenPct(breakevens, shiftedSpot),
-        zone,
-        pct,
-      }),
-    });
-  }
+  }));
+  sections.push({ title: t("posAdvice.caveatTitle"), body: t("posAdvice.caveatBody") });
 
   return {
     headline: t("explain.headlineAnalysis", { spot: shiftedSpot.toFixed(2), days: shifts.dT.toFixed(0) }),
@@ -577,7 +517,8 @@ function bearCallSpreadAdvice(params: {
   if (pnl < 0 && zone <= 1) {
     const lossPct = maxLoss !== 0 ? (pnl / maxLoss) * 100 : 0;
     if (lossPct >= VERTICAL_DANGER_LOSS_PCT) {
-      return { title: label, body: `${desc} ${t("posAdvice.verticalCreditDangerBody", { pct: lossPct.toFixed(0) })}` };
+      const dangerBody = t("posAdvice.verticalCreditDangerBody", { pct: lossPct.toFixed(0) });
+      return { title: label, body: `${desc} ${dangerBody}`, severity: "stopLoss", alertBody: dangerBody };
     }
     const holdKey = zone === 0 ? "posAdvice.verticalCreditSafeHoldDeep" : "posAdvice.verticalCreditSafeHoldNearMoney";
     return { title: label, body: `${desc} ${t(holdKey, { pct: lossPct.toFixed(0) })}` };
@@ -585,9 +526,9 @@ function bearCallSpreadAdvice(params: {
 
   const periodIdx = classifyBearCallPeriod(elapsedPct);
   const bracketIdx = classifyBearCallBracket(pnl, maxProfit, maxLoss);
-  const [, cellDesc, cellAdvice] = bearCallSpreadTable[lang][zone][periodIdx][bracketIdx];
+  const [action, cellDesc, cellAdvice] = bearCallSpreadTable[lang][zone][periodIdx][bracketIdx];
 
-  return { title: label, body: `${desc} ${cellDesc} ${cellAdvice}` };
+  return { title: label, body: `${desc} ${cellDesc} ${cellAdvice}`, severity: severityFromAction(action, pnl), alertBody: cellAdvice };
 }
 
 // 牛市Put价差版——跟bearCallSpreadAdvice结构完全一样，只是zone分类换成
@@ -629,7 +570,8 @@ function bullPutSpreadAdvice(params: {
   if (pnl < 0 && zone <= 1) {
     const lossPct = maxLoss !== 0 ? (pnl / maxLoss) * 100 : 0;
     if (lossPct >= VERTICAL_DANGER_LOSS_PCT) {
-      return { title: label, body: `${desc} ${t("posAdvice.verticalCreditDangerBody", { pct: lossPct.toFixed(0) })}` };
+      const dangerBody = t("posAdvice.verticalCreditDangerBody", { pct: lossPct.toFixed(0) });
+      return { title: label, body: `${desc} ${dangerBody}`, severity: "stopLoss", alertBody: dangerBody };
     }
     const holdKey = zone === 0 ? "posAdvice.verticalCreditSafeHoldDeep" : "posAdvice.verticalCreditSafeHoldNearMoney";
     return { title: label, body: `${desc} ${t(holdKey, { pct: lossPct.toFixed(0) })}` };
@@ -637,9 +579,9 @@ function bullPutSpreadAdvice(params: {
 
   const periodIdx = classifyBearCallPeriod(elapsedPct);
   const bracketIdx = classifyBearCallBracket(pnl, maxProfit, maxLoss);
-  const [, cellDesc, cellAdvice] = bullPutSpreadTable[lang][zone][periodIdx][bracketIdx];
+  const [action, cellDesc, cellAdvice] = bullPutSpreadTable[lang][zone][periodIdx][bracketIdx];
 
-  return { title: label, body: `${desc} ${cellDesc} ${cellAdvice}` };
+  return { title: label, body: `${desc} ${cellDesc} ${cellAdvice}`, severity: severityFromAction(action, pnl), alertBody: cellAdvice };
 }
 
 // 垂直价差（1条卖出+1条买入，同类型同到期日，行权价不同）——现在只剩借
@@ -812,9 +754,10 @@ function shortStrangleAdvice(params: {
 // analysis mode（见上面explainAnalysisScenario）没有真实的历史开仓记
 // 录，直接按id去entered legs里查——两种"开仓从哪来"的语义完全不同，但对
 // 这个函数来说都只是"给一条当前腿，返回它的开仓腿（或undefined）"。
-// `hasSpecificAdvice`让调用方知道这次结果里有没有真的落进某张专属表/裸卖
-// 出单腿判断（而不是清一色占位文案）——analysis mode用它来决定要不要用
-// 这套结果替换掉原来的通用actionHints提示（见上面）。
+// 两个模式现在都无条件用这个函数的结果作为"怎么办"整块内容——不再有旧版
+// 通用阈值提示（actionHints，2026-09-18已删除）当兜底，配不成任何专属表
+// 的形状就用下面自己的占位文案（posAdvice.notImplementedBody），跟对比
+// 模式完全一致。
 function buildLegAdviceSections(params: {
   active: Leg[];
   resolveOpen: (leg: Leg) => Leg | undefined;
@@ -824,10 +767,9 @@ function buildLegAdviceSections(params: {
   result: ComboResult;
   lang: SupportedLang;
   t: TFunc;
-}): { sections: ExplainSection[]; hasSpecificAdvice: boolean } {
+}): ExplainSection[] {
   const { active, resolveOpen, trackedSpot, openSpot, daysElapsed, result, lang, t } = params;
   const sections: ExplainSection[] = [];
-  let hasSpecificAdvice = false;
 
   const stockLegCount = active.filter((l) => l.kind === "stock").length;
   for (let i = 0; i < stockLegCount; i++) {
@@ -844,14 +786,11 @@ function buildLegAdviceSections(params: {
   if (isShortStrangleShape) {
     const callLeg = callGroup[0];
     const putLeg = putGroup[0];
-    const openCallLeg = resolveOpen(callLeg);
-    const openPutLeg = resolveOpen(putLeg);
     sections.push(shortStrangleAdvice({
       callLeg, putLeg,
-      openCallLeg, openPutLeg,
+      openCallLeg: resolveOpen(callLeg), openPutLeg: resolveOpen(putLeg),
       trackedSpot, openSpot, daysElapsed, result, t,
     }));
-    if (openCallLeg && openPutLeg) hasSpecificAdvice = true;
   } else {
     for (const type of ["call", "put"] as const) {
       const group = type === "call" ? callGroup : putGroup;
@@ -860,9 +799,7 @@ function buildLegAdviceSections(params: {
       if (group.length === 1) {
         const leg = group[0];
         if (leg.action === "sell") {
-          const openLeg = resolveOpen(leg);
-          sections.push(nakedShortAdvice({ leg, openLeg, trackedSpot, openSpot, daysElapsed, result, t }));
-          if (openLeg) hasSpecificAdvice = true;
+          sections.push(nakedShortAdvice({ leg, openLeg: resolveOpen(leg), trackedSpot, openSpot, daysElapsed, result, t }));
         } else {
           const key = leg.type === "call" ? "posAdvice.legLabelLongCall" : "posAdvice.legLabelLongPut";
           sections.push(placeholderSection(t, t(key, { strike: leg.strike })));
@@ -875,14 +812,11 @@ function buildLegAdviceSections(params: {
         if (a.dte === b.dte && a.action !== b.action && a.strike !== b.strike) {
           const sellLeg = a.action === "sell" ? a : b;
           const buyLeg = a.action === "sell" ? b : a;
-          const openSellLeg = resolveOpen(sellLeg);
-          const openBuyLeg = resolveOpen(buyLeg);
           sections.push(verticalSpreadAdvice({
             sellLeg, buyLeg,
-            openSellLeg, openBuyLeg,
+            openSellLeg: resolveOpen(sellLeg), openBuyLeg: resolveOpen(buyLeg),
             trackedSpot, openSpot, daysElapsed, lang, t,
           }));
-          if (openSellLeg && openBuyLeg) hasSpecificAdvice = true;
           continue;
         }
       }
@@ -898,7 +832,7 @@ function buildLegAdviceSections(params: {
     }
   }
 
-  return { sections, hasSpecificAdvice };
+  return sections;
 }
 
 // Compare mode: "该怎么办"——取代原来的explainTrackedPosition（纯状态
@@ -921,7 +855,7 @@ export function explainTrackedPositionAdvice(params: {
   const resolveOpen = (leg: Leg): Leg | undefined =>
     openingLegs ? resolveOpeningLeg(leg, active.indexOf(leg), openingLegs, openingById) : undefined;
 
-  const { sections } = buildLegAdviceSections({
+  const sections = buildLegAdviceSections({
     active, resolveOpen, trackedSpot, openSpot: openingSpot, daysElapsed, result, lang, t,
   });
 
