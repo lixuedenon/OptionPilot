@@ -1,14 +1,11 @@
 // src/components/PayoffChart.tsx
 import { useMemo, useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import type { Leg, Shifts } from "@/lib/types";
-import type { HealthResult } from "@/lib/positionHealth";
 import { blackScholes } from "@/lib/bs";
 import { resolveOpeningLeg, impliedVol } from "@/lib/pricing";
 import { addCalendarDays, formatDateInput } from "@/lib/dateUtils";
 import { useI18n } from "@/i18n/I18nContext";
 import { RefreshCw, AlertTriangle } from "lucide-react";
-import PositionHealthBadge from "@/components/PositionHealthBadge";
-import type { AlertSeverity } from "@/lib/situationExplainer";
 
 interface PerLegValue {
   leg: Leg;
@@ -21,14 +18,12 @@ interface Props {
   spot: number;
   shifts: Shifts;
   symbol: string;
-  // Health badge + mode-switch button (2026-09-07, per xue's request) —
-  // both used to live buried in the left panel (the badge next to 保存策略
-  // 组合/保存追踪快照, the switch button first in legToolbar) and moved here
-  // to sit right next to the ticker symbol instead, since that's what the
-  // eye actually goes to first. App.tsx still owns the state/handlers
-  // behind both — this component only renders what it's handed. Either can
-  // be omitted/null (e.g. before any legs exist) with nothing rendered.
-  positionHealth?: HealthResult | null;
+  // Mode-switch button (2026-09-07, per xue's request) — used to live buried
+  // in the left panel (first in legToolbar) and moved here to sit right next
+  // to the ticker symbol instead, since that's what the eye actually goes to
+  // first. App.tsx still owns the state/handlers behind it — this component
+  // only renders what it's handed. Can be omitted/null (e.g. before any legs
+  // exist) with nothing rendered.
   modeSwitchButton?: ReactNode;
   breakevens: number[];
   // 2026-09-17新增：情景滑块ΔT对应的实际日期(=day0/openingAt + shifts.dT
@@ -44,12 +39,6 @@ interface Props {
   perLegValues?: PerLegValue[];
   netValue?: number;
   netChange?: number;
-  // 2026-09-19：取代原来这里的onAlert/getZone/zoneBands那套（按净收权利金
-  // 比例算的旧规则，跟540格表各算各的，同一个仓位能给出两个不一样的判
-  // 断——见situationExplainer.ts里AlertSeverity的说明）。现在图表提示条
-  // 和当前盈亏点颜色都直接读App.tsx算好的这一个信号，只有熊市Call/牛市
-  // Put价差这两个已有540格表的形状会给出非空值。
-  alertSeverity?: AlertSeverity;
   correctedSpot?: number | null;
   correcting?: boolean;
   onCorrectSpot?: () => void;
@@ -68,6 +57,18 @@ interface Props {
   // 完整原始周期内自由拖动，见ExpiredStrategyDialog.tsx和savedStrategies.ts的
   // OpeningSimBasis注释。
   expired?: boolean;
+  // 2026-09-21新增，"多方案对比"功能：分析模式下最多再加2份独立的候选
+  // combo（B/C，见useCompareSlots.ts），跟主combo（这份Props本身的
+  // `legs`，即"方案A"）叠加画在同一张图上，方便"该买Call还是价差还是卖
+  // Put"这种同标的多方案对比。只在!compareMode（分析模式）下由App.tsx
+  // 传入，对比模式(isCompareMode)下不传（该功能跟"跟踪一个真实仓位"是两
+  // 个不同场景，见App.tsx对应注释）。每条曲线的计算方式故意跟主曲线
+  // （calcPnL，见下）保持一致——同样吃这份Props的`spot`/`shifts`，这样
+  // 情景滑块（现价/时间/IV）拖动时三条曲线一起变形，才是"同一情景下三个
+  // 方案怎么比"这个功能真正的意义所在；不复用pricing.ts的
+  // payoffCurvePoints()，那个函数算的是固定到期payoff（不跟随shifts），
+  // 语义不同。
+  compareCurves?: { id: string; label: string; color: string; legs: Leg[] }[];
 }
 
 const POINTS = 200;
@@ -173,7 +174,7 @@ function calcTrackedPnLAtTime(trackedLegs: Leg[], openingLegs: Leg[], spot: numb
 
 const FAN_COLORS = ["#fbbf24", "#f59e0b", "#a3a3a3", "#475569"];
 
-export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, alertSeverity, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot, expired, openingAt }: Props) {
+export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot, expired, openingAt, compareCurves }: Props) {
   const { t } = useI18n();
   // 情景滑块ΔT对应的实际日期——day0(openingAt)+shifts.dT天。只在分析模式
   // 显示（见Props.openingAt注释）。固定用mm/dd/yyyy（xue指定的格式），不
@@ -335,6 +336,21 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
     return pts;
   }, [active, hasTracked, trackedLegs, openingLegs, effectiveTrackedSpot, trackedCurrentPnl, sMin, sMax]);
 
+  // 多方案对比曲线（见Props.compareCurves注释）——跟主曲线`points`用完全
+  // 相同的算法（calcPnL，跟随shifts）和相同的x轴采样窗口(sMin/sMax)，只
+  // 是换一份legs。空数组/未传时直接是[]，不影响任何既有渲染路径。
+  const comparePointSets = useMemo(() => {
+    if (!active || !compareCurves || compareCurves.length === 0) return [];
+    return compareCurves.map((c) => {
+      const pts: { s: number; pnl: number }[] = [];
+      for (let i = 0; i <= POINTS; i++) {
+        const s = sMin + (i / POINTS) * (sMax - sMin);
+        pts.push({ s, pnl: calcPnL(c.legs, spot, shifts, s) });
+      }
+      return { ...c, points: pts };
+    });
+  }, [active, compareCurves, spot, shifts, sMin, sMax]);
+
   const fanPaths = useMemo(() => {
     if (!active || !showFan) return [];
     const fanLegs = compareMode && trackedLegs ? trackedLegs : legs;
@@ -370,12 +386,18 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
       if (p.pnl < rawMin) rawMin = p.pnl;
       if (p.pnl > rawMax) rawMax = p.pnl;
     }
+    for (const set of comparePointSets) {
+      for (const p of set.points) {
+        if (p.pnl < rawMin) rawMin = p.pnl;
+        if (p.pnl > rawMax) rawMax = p.pnl;
+      }
+    }
     if (trackedCurrentPnl !== null) {
       rawMin = Math.min(rawMin, trackedCurrentPnl);
       rawMax = Math.max(rawMax, trackedCurrentPnl);
     }
     return { rawMin, rawMax, maxProfit, maxProfitS, maxLoss, maxLossS };
-  }, [points, trackedPoints, compareMode]);
+  }, [points, trackedPoints, compareMode, comparePointSets]);
 
   const fanBounds = useMemo(() => {
     if (!showFan || fanPaths.length === 0) return { fMin: 0, fMax: 0 };
@@ -474,7 +496,6 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
         <div className="flex items-center justify-between">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-sm font-extrabold text-slate-50">{symbol}</span>
-            {positionHealth && <PositionHealthBadge health={positionHealth} />}
             {modeSwitchButton}
             <span className="text-[9px] text-slate-500">{t("chart.currentPnl")}</span>
           </div>
@@ -539,6 +560,23 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
 
       {/* Main Chart */}
       <div className="relative flex-1 min-h-0">
+        {/* Compare-curves legend (方案A/B/C，见Props.compareCurves) — only
+            when the compare feature is actually in use, top-left so it
+            doesn't collide with the existing zoom/fan controls at top-right. */}
+        {comparePointSets.length > 0 && (
+          <div className="pointer-events-none absolute left-0 top-0 z-10 flex items-center gap-2 rounded border border-slate-700/60 bg-slate-900/80 px-1.5 py-0.5 text-[9px] font-semibold">
+            <span className="flex items-center gap-1 text-emerald-400">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
+              {t("compare.slotA")}
+            </span>
+            {comparePointSets.map((set) => (
+              <span key={set.id} className="flex items-center gap-1" style={{ color: set.color }}>
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
+                {set.label}
+              </span>
+            ))}
+          </div>
+        )}
         {/* Top-right controls */}
         <div className="absolute right-0 top-0 z-10 flex items-center gap-1">
           {isZoomed && (
@@ -677,6 +715,12 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
             {/* Main P&L curve */}
             <path d={pathD} fill="none" stroke="#34d399" strokeWidth="2" clipPath="url(#chart-clip)" />
 
+            {/* Compare curves（方案B/C，见Props.compareCurves） */}
+            {comparePointSets.map((set) => {
+              const d = set.points.map((p, i) => `${i === 0 ? "M" : "L"}${toX(p.s).toFixed(1)},${toY(p.pnl).toFixed(1)}`).join(" ");
+              return <path key={set.id} d={d} fill="none" stroke={set.color} strokeWidth="2" strokeDasharray="2 2" clipPath="url(#chart-clip)" />;
+            })}
+
             {/* Tracked (current combo) — fixed curve */}
             {hasTracked && trackedPoints.length > 0 && (() => {
               const d = trackedPoints.map((p, i) => `${i === 0 ? "M" : "L"}${toX(p.s).toFixed(1)},${toY(p.pnl).toFixed(1)}`).join(" ");
@@ -726,7 +770,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, positionHealth
               return (
                 <g clipPath="url(#chart-clip)">
                   <circle cx={currentX} cy={py} r="4"
-                    fill={alertSeverity === "takeProfit" ? "#34d399" : alertSeverity === "stopLoss" ? "#f43f5e" : alertSeverity === "monitor" ? "#fbbf24" : accent}
+                    fill={accent}
                     stroke="#1e293b" strokeWidth="1.5" />
                   <rect x={labelX} y={labelY} width={labelW} height={labelH} rx={3} fill="#1e293b" fillOpacity={0.95} stroke={accent} strokeWidth="0.8" />
                   <text x={labelX + labelW / 2} y={labelY + labelH - 4} textAnchor="middle" fontSize="10" fill={accent} fontWeight="bold">

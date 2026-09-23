@@ -1,6 +1,7 @@
 // src/hooks/useLegEditing.ts
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type { Leg } from "@/lib/types";
+import { useLegBatchOps } from "@/hooks/useLegBatchOps";
 
 // Which combo an in-flight roll/protect/hedge action targets. Defaults to
 // "legs" everywhere below so every pre-existing call site (LegListSection's
@@ -58,8 +59,26 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs, setT
   const [hedgeOpen, setHedgeOpen] = useState(false);
   const [hedgeTargetSource, setHedgeTargetSource] = useState<LegTarget>("legs");
   const [compareTargetId, setCompareTargetId] = useState<string | null>(null);
-  const [selectedLegIds, setSelectedLegIds] = useState<Set<string>>(new Set());
-  const [confirmBulkDeleteOpen, setConfirmBulkDeleteOpen] = useState(false);
+  // 2026-09-22：批量选择/全选/批量屏蔽/批量删除/统一数量-行权价-到期日这
+  // 部分逻辑抽到useLegBatchOps.ts了（跟B/C对比槽位共用，见该文件的注
+  // 释），这里只是消费它、把返回值原样透传，对外API（App.tsx的调用点）
+  // 没有任何变化。
+  const {
+    selectedLegIds,
+    confirmBulkDeleteOpen, setConfirmBulkDeleteOpen,
+    toggleLegSelection,
+    clearLegSelection,
+    selectAllLegs,
+    selectedCount,
+    allSelectedDisabled,
+    bulkToggleDisable,
+    requestBulkDelete,
+    confirmBulkDelete,
+    canUnifyLegs,
+    unifyQty,
+    unifyStrike,
+    unifyDte,
+  } = useLegBatchOps(legs, setLegs);
 
   const updateLeg = (id: string, patch: Partial<Leg>) =>
     setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
@@ -87,92 +106,7 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs, setT
       }
       return filtered;
     });
-    setSelectedLegIds((prev) => {
-      if (!prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
   };
-
-  // ── Batch selection (analysis + tracking's shared open-combo list) ──
-  const toggleLegSelection = (id: string) => {
-    setSelectedLegIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-  const clearLegSelection = () => setSelectedLegIds(new Set());
-  const selectAllLegs = () => setSelectedLegIds(new Set(legs.map((l) => l.id)));
-
-  const selectedLegsList = useMemo(
-    () => legs.filter((l) => selectedLegIds.has(l.id)),
-    [legs, selectedLegIds],
-  );
-  const selectedCount = selectedLegsList.length;
-  const allSelectedDisabled = selectedCount > 0 && selectedLegsList.every((l) => l.disabled);
-
-  // Toggle disable for every currently-selected leg in one go. Mirrors the
-  // per-row block/unblock: if every selected leg is already blocked, this
-  // unblocks them all; otherwise it blocks them all (so a mixed selection
-  // always resolves to "block everything selected" rather than a confusing
-  // per-leg flip).
-  const bulkToggleDisable = () => {
-    if (selectedCount === 0) return;
-    setLegs((prev) => prev.map((l) => (selectedLegIds.has(l.id) ? { ...l, disabled: !allSelectedDisabled } : l)));
-  };
-
-  const requestBulkDelete = () => {
-    if (selectedCount === 0) return;
-    setConfirmBulkDeleteOpen(true);
-  };
-  const confirmBulkDelete = () => {
-    setLegs((prev) => prev.filter((l) => !selectedLegIds.has(l.id)));
-    setConfirmBulkDeleteOpen(false);
-    clearLegSelection();
-  };
-
-  // "统一数量/行权价/到期日" (2026-09-12, xue's request): sync the rest of
-  // the selected legs to match the FIRST selected leg's value, so adjusting
-  // a multi-leg combo (e.g. every leg of an iron condor) doesn't mean
-  // repeating the same qty/strike/expiry edit on every row by hand.
-  // Restricted to option legs — a stock leg's `strike` field is actually
-  // its entry price and it has neither `dte` nor `qty` (see types.ts), so
-  // letting one anchor or receive one of these values would silently apply
-  // a number that means something else entirely on that row. Fewer than
-  // two eligible (option) legs selected means there's nothing to sync, so
-  // both the availability flag and the action itself are no-ops then.
-  const eligibleForUnify = useMemo(
-    () => selectedLegsList.filter((l) => l.kind !== "stock"),
-    [selectedLegsList],
-  );
-  const canUnifyLegs = eligibleForUnify.length >= 2;
-
-  const unifyLegField = (field: "qty" | "strike" | "dte") => {
-    if (eligibleForUnify.length < 2) return;
-    const baseline = eligibleForUnify[0];
-    const targetIds = new Set(eligibleForUnify.slice(1).map((l) => l.id));
-    setLegs((prev) =>
-      prev.map((l) => {
-        if (!targetIds.has(l.id)) return l;
-        if (field === "qty") return { ...l, qty: baseline.qty ?? 1 };
-        // Strike/expiry changing invalidates whatever premium was quoted
-        // for the leg's OLD contract — resetting it to 0 here is exactly
-        // what LegRow's own strike/expiry pickers already do
-        // (handleSelectExpiry), which lets each affected row's existing
-        // auto-fill effect fetch the right premium for its new strike/
-        // expiry, rather than this hook trying to fetch option chains
-        // itself.
-        if (field === "strike") return { ...l, strike: baseline.strike, premium: 0 };
-        return { ...l, dte: baseline.dte, premium: 0 };
-      }),
-    );
-  };
-  const unifyQty = () => unifyLegField("qty");
-  const unifyStrike = () => unifyLegField("strike");
-  const unifyDte = () => unifyLegField("dte");
 
   // `source` picks which combo the leg is looked up in AND which combo the
   // confirm handler below eventually mutates — "legs" (the default, so

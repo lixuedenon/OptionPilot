@@ -1,5 +1,4 @@
 // src/components/dialogs/index.ts
-export { default as AlertCard } from "./AlertCard";
 export { default as ConfirmBulkDeleteDialog } from "./ConfirmBulkDeleteDialog";
 export { default as ConfirmClearDialog } from "./ConfirmClearDialog";
 export { default as ConfirmLockRollDialog } from "./ConfirmLockRollDialog";
@@ -11,6 +10,5 @@ export { default as ImpliedSpotInfoPanel } from "./ImpliedSpotInfoPanel";
 export { default as MarginErrorDialog } from "./MarginErrorDialog";
 export { default as ConfirmResetAccountDialog } from "./ConfirmResetAccountDialog";
 export { default as ConfirmLeaveDialog } from "./ConfirmLeaveDialog";
-export { default as SituationExplainDialog } from "./SituationExplainDialog";
 export { default as ExpiredStrategyDialog } from "./ExpiredStrategyDialog";
 export { default as ExpiredTrackPromptDialog } from "./ExpiredTrackPromptDialog";

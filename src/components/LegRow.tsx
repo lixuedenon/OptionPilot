@@ -194,20 +194,12 @@ function NumField({
   onChange: (v: number) => void;
   disabled?: boolean;
 }) {
-  const { t } = useI18n();
-  // 2026-09-17新增：分析模式滑块动过之后所有输入被锁定（见App.tsx的
-  // isExploring/LegRow的locked/fieldsDisabled），此时点这些锁住的输入框
-  // 原生<input disabled>本身不会响应任何点击/事件——所以在外面叠一层
-  // pointer-events:auto的透明div来接住点击，弹一个2.5秒后自动消失的
-  // 小提示条，告诉用户要去点"未来情景模拟"的重置按钮。只在disabled时
-  // 渲染这层遮罩，不影响正常可编辑状态下的任何行为。
-  const [showHint, setShowHint] = useState(false);
-  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flashHint = () => {
-    setShowHint(true);
-    if (hintTimer.current) clearTimeout(hintTimer.current);
-    hintTimer.current = setTimeout(() => setShowHint(false), 2500);
-  };
+  // 2026-09-22移除：这里以前自己叠一层遮罩、点击锁定态的输入框弹提示
+  // ("请先点重置")。现在这个反馈已经上移到容器级——LegListSection.tsx/
+  // ComboCompareSlots.tsx用LockedOverlay包住整个combo容器，点锁定态下
+  // 容器里任意位置都会弹同样的提示，层级比这里高，点击会被那层先拦
+  // 截，这里的遮罩+提示永远轮不到、是打不到的死代码，所以直接删掉。
+  // disabled状态本身（灰置、input.disabled）还在，只是不再自己接住点击。
   return (
     <label className="relative flex flex-col gap-0" style={{ width }}>
       <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
@@ -219,17 +211,6 @@ function NumField({
         disabled={disabled}
         onChange={(e) => onChange(num(e.target.value))}
       />
-      {disabled && (
-        <div
-          className="absolute inset-x-0 bottom-0 top-3 cursor-not-allowed"
-          onClick={flashHint}
-        />
-      )}
-      {showHint && (
-        <div className="absolute left-0 top-full z-20 mt-1 w-max max-w-[180px] rounded border border-amber-600/50 bg-slate-900 px-1.5 py-1 text-[9px] font-medium text-amber-300 shadow-lg">
-          {t("leg.lockedInputHint", { section: t("shift.scenario") })}
-        </div>
-      )}
     </label>
   );
 }

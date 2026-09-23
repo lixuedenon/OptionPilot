@@ -3,7 +3,6 @@ import { useMemo } from "react";
 import type { Leg, Shifts } from "@/lib/types";
 import { priceCombo, probabilityOfProfit, weightedAvgIV, impliedSpotFromPremiums, attributePnl, maxProfitLoss, resolveOpeningLeg } from "@/lib/pricing";
 import { explainLegRoles } from "@/lib/legRoles";
-import { computeHealth } from "@/lib/positionHealth";
 import type { SavedStrategy } from "@/lib/savedStrategies";
 
 type TFunc = (key: string, vars?: Record<string, string | number>) => string;
@@ -64,7 +63,10 @@ export function useComboAnalytics(params: {
   // 引入一个未使用的局部变量。仍然留在参数类型里，是因为App.tsx调用处
   // 传参对象字面量里两者都要给（historically一起传的一组"当前状态"），
   // 而不是这个hook还需要它。
-  const { legs, analyticsLegs, analyticsSpot, analyticsShifts, trackedLegs, trackedSpot, correctedSpot, trackedDaysElapsed, spot, trackingStrategyId, savedStrategies, t } = params;
+  // params.t同理：健康度计算（computeHealth）删除后，这个hook内部已经
+  // 不再需要t（i18n翻译函数）——不解构它。仍留在参数类型里，原因跟
+  // shifts一样：App.tsx调用处历史上就是整组"当前状态"一起传的。
+  const { legs, analyticsLegs, analyticsSpot, analyticsShifts, trackedLegs, trackedSpot, correctedSpot, trackedDaysElapsed, spot, trackingStrategyId, savedStrategies } = params;
 
   const activeLegs = useMemo(() => legs.filter((l) => !l.disabled), [legs]);
   // 图表定价基准的过滤版——见上面params类型里analyticsLegs的注释。跟
@@ -93,51 +95,6 @@ export function useComboAnalytics(params: {
   }, [isCompareMode, activeTrackedLegs, activeLegs, spot]);
 
   const effectiveTrackedSpot = correctedSpot ?? impliedSpot ?? trackedSpot ?? spot;
-
-  // Real Black-Scholes combo Greeks (delta/gamma/theta/vega) for "今日组合"
-  // at ITS OWN current spot/premiums, zero shift — compare mode's sliders
-  // are frozen read-only telemetry, not a scenario to rehearse (see
-  // ShiftSliders.tsx), so there's no "shifted" version of this to compute.
-  // Deliberately a separate memo from trackedResult below (which only does
-  // raw premium-difference P&L — no Black-Scholes needed for that — and
-  // still carries its own hardcoded-zero breakdown, unused elsewhere) so
-  // this doesn't disturb that already-working P&L math. Feeds Position
-  // Health's delta/gamma factors in compare mode. The net-Greeks numbers
-  // themselves are no longer displayed anywhere (removed 2026-09-07, xue's
-  // call — the four-number readout wasn't earning its header-row space) but
-  // this computation stays: positionHealth's Gamma-risk and Delta-normalized
-  // factors still consume trackedGreeks.breakdown below, so it can't be
-  // deleted, only its now-unused display counterpart (displayGreeks/
-  // fmtGreek/the Term-wrapped JSX panel) was.
-  const trackedGreeks = useMemo(() => {
-    if (!isCompareMode || !activeTrackedLegs || activeTrackedLegs.length === 0 || effectiveTrackedSpot <= 0) return null;
-    return priceCombo(activeTrackedLegs, { dS: 0, dT: 0, dV: 0 }, effectiveTrackedSpot);
-  }, [isCompareMode, activeTrackedLegs, effectiveTrackedSpot]);
-
-  // Position Health follows whichever combo is actually on screen: analysis
-  // mode's shifted opening combo (rehearsing the sliders — result.breakdown
-  // is itself computed at the live shifts, so all four factors, delta
-  // included, move together as the sliders move), or compare mode's real
-  // CURRENT tracked combo at zero shift — never the stale opening combo
-  // once something is actually being tracked. (Previously this always read
-  // the opening combo/`result` even in compare mode; fixed 2026-09-06 —
-  // see claude/analysis-compare-mode-review-2026-09-06.md.) Because this
-  // now keys off `activeTrackedLegs`/`effectiveTrackedSpot` — which change
-  // with whichever snapshot is selected — switching snapshots naturally
-  // gives each one its own health score, with no separate per-snapshot
-  // storage needed.
-  const positionHealth = useMemo(() => {
-    if (isCompareMode) {
-      if (!activeTrackedLegs || activeTrackedLegs.length === 0 || effectiveTrackedSpot <= 0 || !trackedGreeks) return null;
-      return computeHealth(activeTrackedLegs, effectiveTrackedSpot, { dS: 0, dT: 0, dV: 0 }, trackedGreeks.breakdown, t);
-    }
-    // 2026-09-16改用activePricingLegs/analyticsSpot/analyticsShifts（图表
-    // 定价基准），不再是activeLegs/spot/shifts（实时编辑状态）——见params
-    // 类型里analyticsLegs的注释，跟result保持同一份基准，否则健康度徽章
-    // 会跟图表/归因面板对不上。
-    if (activePricingLegs.length === 0 || analyticsSpot <= 0) return null;
-    return computeHealth(activePricingLegs, analyticsSpot, analyticsShifts, result.breakdown, t);
-  }, [isCompareMode, activeTrackedLegs, effectiveTrackedSpot, trackedGreeks, activePricingLegs, analyticsSpot, analyticsShifts, result, t]);
 
   const { pop, breakevens } = useMemo(() => probabilityOfProfit(activeLegs, spot), [activeLegs, spot]);
 
@@ -319,8 +276,6 @@ export function useComboAnalytics(params: {
     scenarioPriceById,
     impliedSpot,
     effectiveTrackedSpot,
-    trackedGreeks,
-    positionHealth,
     pop,
     breakevens,
     analysisAttribution,

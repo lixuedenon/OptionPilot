@@ -39,38 +39,19 @@ const en: Dict = {
   "leg.switchSourceSnapshot": "Or pick a snapshot",
   "leg.pop": "POP",
   "leg.breakeven": "Breakeven",
-  "health.title": "Position Health",
-  // ── position health (src/lib/positionHealth.ts) ── computeHealth() takes
-  // `t` and builds every label/note/meaning/summary string from these keys
-  // — nothing in that file should be a hardcoded English literal.
-  "health.factor.pop": "Probability of Profit",
-  "health.factor.breakeven": "Distance to Breakeven",
-  "health.factor.dte": "Days-to-Expiry Risk",
-  "health.factor.delta": "Directional Exposure (Delta)",
-  "health.pop.note": "{value}%",
-  "health.pop.suffixGood": ", a relatively safe range",
-  "health.pop.suffixWarn": ", a moderate level",
-  "health.pop.suffixBad": ", noticeably low",
-  "health.pop.meaning": "Estimated from current implied volatility: the probability this combo is profitable at expiry. Higher looks like a steady, high-win-rate trade; lower looks more like a long-shot bet on a big payout.",
-  "health.breakeven.note": "About {value}% from the nearest breakeven",
-  "health.breakeven.suffixCritical": ", very close to the edge",
-  "health.breakeven.notFound": "No breakeven point found within the scan range",
-  "health.breakeven.meaning": "Breakeven is the price at expiry where the combo neither gains nor loses. The stock has to move this much further against you before profit turns to loss — the bigger the gap, the thicker the cushion.",
-  "health.breakeven.meaningNotFound": "Breakeven is the price at expiry where the combo neither gains nor loses. None was found here, which usually means this combo has no clear profit-to-loss threshold under the current scenario.",
-  "health.dte.note": "{value} days left on the nearest leg",
-  "health.dte.suffixHighRisk": ", elevated gamma risk — even a small price move can swing P&L noticeably",
-  "health.dte.noOptions": "No option legs in this combo, so there's no expiry risk",
-  "health.dte.meaning": "The closer to expiry, the more even a small price move gets amplified in the option's value and P&L. More days left means more buffer.",
-  "health.dte.meaningNoOptions": "The closer to expiry, the more even a small price move gets amplified in an option's value and P&L. Plain stock has no expiry, so this risk doesn't apply.",
-  "health.delta.note": "Average delta per contract {avg} (net combo delta {net})",
-  "health.delta.suffixDirectional": ", already fairly close to a directional bet",
-  "health.delta.meaning": "Delta measures how tightly the combo's value is tied to the stock's price — closer to 0 looks like a neutral, theta-harvesting strategy, further from 0 looks more like a straight directional bet.",
-  "health.summary.healthy": "Overall healthy — every factor sits in a relatively safe range.",
-  "health.summary.bad": "Clear risk points: {list} are weak — worth watching closely.",
-  "health.summary.warn": "Manageable overall, but {list} sit at a moderate level worth noting.",
-  "health.summary.ok": "Overall condition is acceptable.",
-  "health.listSeparator": ", ",
-  "health.labelSeparator": ": ",
+
+  // ── combo compare (multi-plan comparison, 2026-09-21) ──
+  "compare.title": "Compare Plans",
+  "compare.addSlot": "Add Plan",
+  "compare.hint": "Add up to 2 more candidate plans for the same underlying (e.g. Buy Call vs. spread vs. Sell Put) — their payoff curves overlay on the chart for a direct comparison.",
+  "compare.remove": "Remove",
+  "compare.emptySlot": "No legs yet — click \"Add Leg\" below to start",
+  "compare.addLeg": "Add Leg",
+  "compare.slotA": "Plan A",
+  "compare.slotB": "Plan B",
+  "compare.slotC": "Plan C",
+  "compare.table.cost": "Cost",
+
   "leg.noLegs": "No legs yet",
   "leg.noLegsHint": "Click + to add manually, or pick a preset from the top-right",
   "leg.addLeg": "Add Leg",
@@ -429,11 +410,6 @@ const en: Dict = {
   "implied.correct": "Correct",
   "implied.fetching": "Fetching...",
 
-  // ── alert card ──
-  "alert.takeProfit": "Take Profit: ",
-  "alert.stopLoss": "Stop Loss: ",
-  "alert.monitor": "Monitor: ",
-
   // ── preset picker ──
   "preset.market": "Market",
   "preset.stocks": "Suitable",
@@ -644,27 +620,6 @@ const en: Dict = {
   // not an independent forward call. Needs to be said plainly.
   "valuation.caveat1y": "Note: the EPS estimate behind \"Next 1yr\" likely overlaps the same window used to compute the current P/E, so this figure is closer to what the market already prices in today than an independent forecast. \"Next 2yr\" (when available) is a more genuinely forward-looking number.",
 
-  // ── situation explainer ("Explain Current Situation", 2026-09-09) ──
-  "explain.button": "Explain Current Situation",
-  "explain.dialogTitleAnalysis": "Current Scenario Explained",
-  "explain.dialogTitleCompare": "Current Position Explained",
-  "explain.headlineAnalysis": "With spot moved to {spot} and time advanced {days} days, here's the overall picture:",
-  "explain.headlineCompare": "{days} days since opening — here's the overall picture of today's combo:",
-  "explain.scenarioTitle": "Current Scenario",
-  "explain.scenarioBody": "With spot shifted to {spot} ({spotChange}, {spotPct}), time advanced {days} days, and IV changed {vol}, the combo looks like this:",
-  "explain.pnlTitle": "P&L",
-  "explain.pnlBodyNearMaxProfit": "Current P&L is {change}, about {pct}% of this combo's theoretical max profit — near the top of its profit range.",
-  "explain.pnlBodyProfit": "Current P&L is {change}, in profit with some room left before the theoretical max profit (about {pct}%).",
-  "explain.pnlBodyNearMaxLoss": "Current P&L is {change}, about {pct}% of this combo's theoretical max loss — near the bottom of its loss range.",
-  "explain.pnlBodyLoss": "Current P&L is {change}, at a loss with some room left before the theoretical max loss (about {pct}%).",
-  "explain.pnlBodyFlat": "Current P&L is {change}, roughly at breakeven.",
-  "explain.deltaTitle": "Directional Exposure",
-  "explain.deltaBodyHigh": "The combo's average delta per contract is {delta} — directional exposure is high, so spot moves will meaningfully affect the combo's value.",
-  "explain.deltaBodyModerate": "The combo's average delta per contract is {delta} — some directional exposure, but still within a manageable range.",
-  "explain.deltaBodyLow": "The combo's average delta per contract is {delta} — directional exposure is low, so spot moves have relatively little effect on the combo's value.",
-  "explain.healthTitle": "Position Health",
-  "explain.healthSummaryBody": "{score}/100. {summary} For the POP / breakeven-distance / DTE / delta breakdown, click the health badge next to the chart title — not repeated here.",
-
   // ── strategy badge / directions ──
   "dir.bullish": "Bullish",
   "dir.bearish": "Bearish",
@@ -783,54 +738,6 @@ const en: Dict = {
   "scenario.maxProfit": "Max profit",
   "scenario.maxLoss": "Max loss",
   "scenario.blockedNote": "This combination contradicts itself (e.g. wanting both extreme tails to pay off AND flat to pay off) — no standard structure can satisfy both. Try a different combination.",
-
-  // 2026-09-14: Compare-mode "what to do" advice system
-  // (situationExplainer.ts's explainTrackedPositionAdvice), replacing the
-  // old explainTrackedPosition. Deliberately a separate namespace
-  // (posAdvice.* vs advice.* above, which is the paused KB-retrieval
-  // "position disposal advice" feature) — two independent features, not to
-  // be conflated.
-  "posAdvice.call": "Call",
-  "posAdvice.put": "Put",
-  "posAdvice.legLabelStock": "Stock position",
-  "posAdvice.legLabelShortCall": "Short Call@{strike}",
-  "posAdvice.legLabelShortPut": "Short Put@{strike}",
-  "posAdvice.legLabelLongCall": "Long Call@{strike}",
-  "posAdvice.legLabelLongPut": "Long Put@{strike}",
-  "posAdvice.legLabelVertical": "{type} spread (short {sellStrike} / long {buyStrike})",
-  "posAdvice.descWithPct": "{days} days since opening ({elapsedPct}%) — currently {pnl} ({pctLabel}).",
-  "posAdvice.descNoPct": "{days} days since opening ({elapsedPct}%) — currently {pnl}.",
-  "posAdvice.pctOfMaxProfit": "{pct}% of max profit",
-  "posAdvice.pctOfMaxLoss": "{pct}% of max loss",
-  "posAdvice.notImplementedBody": "This shape (e.g. calendar/diagonal, straddle/strangle, butterfly) doesn't have its own advice rules yet — placeholder for now. Use the chart and health badge to judge for yourself.",
-  "posAdvice.profitProgressClause": "profit is at {pct}% of max profit — short of the early-exit rule (50%+ and 20pp ahead of elapsed time)",
-  "posAdvice.profitProgressClauseNone": "there's no unrealized profit yet, so early profit-taking doesn't apply",
-  "posAdvice.holdBodyNaked": "Suggestion: keep holding as planned. Why: delta is only {delta}, well below the 0.7 danger threshold; {profitClause}; {dte} days to expiry, not yet in the near-expiry window — nothing here needs action right now.",
-  "posAdvice.holdBodyVerticalDebit": "Suggestion: keep holding as planned. Why: the loss is {lossPct}% of the premium paid, well short of the 50% stop-loss threshold; profit is {profitPct}% of max profit, short of both the 70% take-profit threshold and the early-profit rule (40%+ with only 20% of time elapsed); {dte} days to expiry, not yet in the near-expiry window — nothing here needs action right now.",
-  "posAdvice.holdBodyStrangle": "Suggestion: keep holding as planned. Why: delta is {callDelta} on the call side and {putDelta} on the put side, both well below the 0.7 danger threshold; spot ({spot}) hasn't breached the call strike ({callStrike}) or fallen below the put strike ({putStrike}), so neither side has been tested; {profitClause}; {dte} days to expiry, not yet in the near-expiry window — nothing here needs action right now.",
-  "posAdvice.dangerBodyCall": "Suggestion: close it soon, or hedge/protect it — don't keep riding it naked. Why: a short call's risk is theoretically unlimited, and delta is already at {delta} — likely to be assigned, and the loss could keep growing the longer you hold.",
-  "posAdvice.dangerBodyPut": "Suggestion: close, roll, or protect it soon — don't keep riding it naked. Why: delta is already at {delta} — likely to be assigned the shares; deal with it now if you don't want that many shares.",
-  "posAdvice.nearExpiryBodyCall": "Suggestion: handle it now (close or roll) — don't leave it to the last moment. Why: only {dte} days left, and spot is already sitting right at your short strike — the closer to expiry, the more a small move swings your P&L, and assignment risk is rising fast.",
-  "posAdvice.nearExpiryBodyPut": "Suggestion: handle it now (close or roll) — don't leave it to the last moment. Why: only {dte} days left, and spot is already sitting right at your short strike — dragging it out raises the risk of being assigned the shares.",
-  "posAdvice.profitAheadBody": "Suggestion: close it now and free up the capital for the next trade. Why: profit has already reached {pct}% of max — it's running well ahead of how much time has passed, so what's left to gain from waiting is small.",
-  "posAdvice.testedBody": "Suggestion: don't rush to act, but watch it closely — if the loss grows meaningfully, consider a stop-loss or a roll. Why: spot has pushed this leg in-the-money (delta {delta}) — risk is rising but it's not yet the worst case, so closing now would lock in a loss you don't have to take yet.",
-  "posAdvice.velocityAbnormal": "This move happened much faster than its opening implied volatility would suggest is normal — judge for yourself: if it keeps running after a news-driven jump, the risk is higher; if it's likely to fade back, you can wait it out; if it just consolidates sideways, the suggestion above still applies.",
-  "posAdvice.verticalCreditDangerBody": "Suggestion: cut the loss, or roll out to a further month/further strikes and collect fresh credit. Why: the loss is already {pct}% of this spread's max loss — the downside left is limited, but the loss that's already locked in is substantial.",
-  "posAdvice.verticalCreditSafeHoldDeep": "Suggestion: keep holding, stay the course. Why: both legs are still out-of-the-money and the structure is safe — the current loss is only {pct}% of max loss, well below the 70% danger line. This drawdown is most likely short-term noise or an IV move; no need to close in a hurry.",
-  "posAdvice.verticalCreditSafeHoldNearMoney": "Suggestion: keep holding, but watch spot closely. Why: the short leg is sitting right at the strike but hasn't truly been tested yet — the current loss is only {pct}% of max loss, well below the 70% danger line. Worth watching, not yet worth closing.",
-  "posAdvice.caveatTitle": "What this advice doesn't account for",
-  "posAdvice.caveatBody": "This advice only looks at price, elapsed time, and P&L ratios — it doesn't factor in known events like earnings, unexpected major news, or support/resistance levels. If this position is near an earnings date or a known major event, weigh that yourself; don't rely on this advice alone.",
-  "posAdvice.debitStopLossBody": "Suggestion: cut the loss. Why: the loss is already {pct}% of the premium you paid (your max loss) — the trade isn't playing out as expected, and the odds of recovering aren't great, so cutting it preserves the rest of your capital.",
-  "posAdvice.debitNearExpiryProfitBody": "Suggestion: close now and lock in the profit — don't wait for expiration. Why: only {dte} days left and profit is already close to this trade's cap — there's little more to gain, but a reversal in the last few days could give it back.",
-  "posAdvice.debitNearExpiryOpenBody": "Suggestion: close early and take what P&L is on the table — don't leave it to the last moment. Why: only {dte} days left for this to play out, and time value keeps decaying fast from here — waiting likely just bleeds away what's left.",
-  "posAdvice.debitProfitTakeBody": "Suggestion: close now and lock in the profit. Why: profit has already reached {pct}% of max — this kind of strategy has a capped upside, so there's little left to gain by holding on.",
-  "posAdvice.debitEarlyProfitBody": "Suggestion: consider taking some profit off the table now, and let the rest ride. Why: profit is already at {pct}% of max, but very little time has passed — it moved faster than the clock, and there's still plenty of time left for it to reverse and give the gain back.",
-  "posAdvice.legLabelShortStrangle": "Short Strangle/Straddle (Call {callStrike} / Put {putStrike})",
-  "posAdvice.strangleDangerBodyCall": "Suggestion: deal with the short call side soon (close, roll, or hedge/protect it) — don't keep riding both sides naked. Why: the call side's delta is already at {delta} — likely to be assigned, and its risk is theoretically unlimited.",
-  "posAdvice.strangleDangerBodyPut": "Suggestion: deal with the short put side soon (close, roll, or hedge/protect it) — don't keep riding both sides naked. Why: the put side's delta is already at {delta} — likely to be assigned the shares.",
-  "posAdvice.strangleNearExpiryBody": "Suggestion: handle it now — don't leave it to the last moment. Why: only {dte} days left, and spot is already sitting right at one of your short strikes — dragging it out raises assignment risk.",
-  "posAdvice.strangleTestedBodyCall": "Suggestion: don't rush to act, but watch the call side closely — if the loss grows meaningfully, consider a stop-loss, a roll, or hedging that side. Why: spot has pushed above your short call strike {strike} — that side is now in-the-money and risk is rising.",
-  "posAdvice.strangleTestedBodyPut": "Suggestion: don't rush to act, but watch the put side closely — if the loss grows meaningfully, consider a stop-loss, a roll, or hedging that side. Why: spot has fallen below your short put strike {strike} — that side is now in-the-money and risk is rising.",
 };
 
 export default en;

@@ -1,13 +1,16 @@
 // src/components/LegListSection.tsx
-// src/components/LegListSection.tsx
 import { Clock, Ban, Trash2, Plus, Save, Hash, Crosshair, CalendarClock, Pencil, RotateCcw, AlertTriangle } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import type { Leg } from "@/lib/types";
 import type { SavedStrategy } from "@/lib/savedStrategies";
+import type { CustomPreset } from "@/lib/customPresets";
 import { formatDateInput, parseDateInput } from "@/lib/dateUtils";
 import { explainLegRoles } from "@/lib/legRoles";
 import { computeLegLinks } from "@/lib/legLinks";
 import LegRow from "@/components/LegRow";
+import LockedOverlay from "@/components/LockedOverlay";
+import StrategyBadge from "@/components/StrategyBadge";
+import PopBreakevenBadge from "@/components/PopBreakevenBadge";
 import { useI18n } from "@/i18n/I18nContext";
 
 // This is the App.tsx split's second step (see the AppHeader extraction
@@ -20,6 +23,17 @@ import { useI18n } from "@/i18n/I18nContext";
 // call site, not a sign the extraction itself is riskier in kind.
 interface Props {
   isCompareMode: boolean;
+  // 2026-09-22新增：策略名称徽章，从LegPanelTitleRow.tsx搬过来——xue的要
+  // 求是紧挨着"全选"复选框显示，而不是顶部标题行。strategyName为空字符
+  // 串时（还没识别出策略）不渲染，跟原来在LegPanelTitleRow.tsx里的判断
+  // 条件一致。
+  strategyName: string;
+  customPresets: CustomPreset[];
+  // 2026-09-22新增：只在存在B/C对比方案时非null——App.tsx这时把原来顶
+  // 部单独显示的"到期盈利+盈亏平衡"readout挪到这里，紧挨着策略徽章，
+  // 见App.tsx里那处改动的注释和PopBreakevenBadge.tsx。只有一个方案A
+  // 时传null，这里不渲染，App.tsx顶部保持原样，不重复显示两份。
+  inlinePopBreakeven: { pop: number; breakevens: number[] } | null;
   // ⚠️ 2026-09-14: trackedStrategy/activeSnapshotId/onUpdateSnapshotTime当
   // 前在这个组件里未被使用了——它们以前驱动的是"开仓组合"标题栏那个日期
   // 字段，但那个字段实际改的是"当前选中快照的保存时间"，跟"开仓组合"这个
@@ -96,6 +110,9 @@ interface Props {
 
 export default function LegListSection({
   isCompareMode,
+  strategyName,
+  customPresets,
+  inlinePopBreakeven,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept unused on purpose, see the Props interface comment just above
   trackedStrategy,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept unused on purpose, see the Props interface comment just above
@@ -169,7 +186,7 @@ export default function LegListSection({
 
   return (
     <>
-      <div className="p-2 space-y-1">
+      <LockedOverlay locked={locked} className="p-2 space-y-1">
         {isCompareMode && (
           <div className="flex flex-wrap items-center gap-2 bg-slate-900/40 py-1 rounded px-2">
             <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-400">{t("compare.openCombo")}</span>
@@ -257,6 +274,12 @@ export default function LegListSection({
               />
               {selectedCount > 0 ? t("leg.selectedCount", { count: selectedCount }) : t("leg.selectAll")}
             </label>
+            {strategyName && (
+              <StrategyBadge name={strategyName} customPresets={customPresets} />
+            )}
+            {inlinePopBreakeven && (
+              <PopBreakevenBadge pop={inlinePopBreakeven.pop} breakevens={inlinePopBreakeven.breakevens} />
+            )}
             <div className="ml-auto flex items-center gap-1.5">
               {selectedCount > 0 && (
                 <>
@@ -361,7 +384,7 @@ export default function LegListSection({
             />
           ))
         )}
-      </div>
+      </LockedOverlay>
 
       {/* Confirm-open sits right under the leg rows the person just
           reviewed/adjusted, not up in the header — the button's whole job

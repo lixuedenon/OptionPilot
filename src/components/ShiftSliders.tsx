@@ -34,14 +34,6 @@ interface Props {
   // frozen=false：标题仍显示"未来情景模拟"（不会被误当成对比模式），重置
   // 按钮也照常显示（虽然此时shifts本来就该是0,0,0，点了也无副作用）。
   frozen?: boolean;
-  // "解释当前情况" button (2026-09-09) — rendered in the header row next to
-  // the title, same slot for both modes (this row renders whether or not
-  // `disabled` is set, unlike `onReset` which only shows when frozen isn't
-  // set). A plain ReactNode so this component doesn't need to know anything
-  // about situationExplainer.ts/SituationExplainDialog — App.tsx builds the
-  // button and owns the dialog's open state, same pattern as
-  // PayoffChart.tsx's modeSwitchButton prop.
-  explainButton?: React.ReactNode;
 }
 
 function Slider({
@@ -136,19 +128,13 @@ function Slider({
   );
 }
 
-export default function ShiftSliders({ shifts, onChange, spot, maxDte, todayDte, onJumpToday, onReset, trackedSpot, trackedDays, trackedVolShift, disabled, frozen, explainButton }: Props) {
+export default function ShiftSliders({ shifts, onChange, spot, maxDte, todayDte, onJumpToday, onReset, trackedSpot, trackedDays, trackedVolShift, disabled, frozen }: Props) {
   const { t } = useI18n();
   return (
     <div className={disabled ? "pointer-events-none" : ""}>
       <div className="mb-1 flex items-center justify-between">
-        {/* explainButton sits right next to the title now (2026-09-12, per
-            Xue) instead of over on the far right by the reset button — it
-            used to be easy to miss all the way over there, separated from
-            the title by the whole width of this row; right next to the
-            title it's much more likely to actually get noticed. */}
         <div className="pointer-events-auto flex items-center gap-2">
           <span className="text-[13px] font-bold text-sky-400">{frozen ? t("shift.scenarioFrozen") : t("shift.scenario")}</span>
-          {explainButton}
         </div>
         {!frozen && (
           // 2026-09-17：改大改醒目——一旦滑块动过，这是唯一能解锁所有输入

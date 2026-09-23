@@ -1,8 +1,9 @@
 // src/App.tsx
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Layers, Settings2, RefreshCw, Trash2, Clock, DollarSign, Wallet, GitCompare, History, Lightbulb } from "lucide-react";
+import { Plus, Layers, Settings2, RefreshCw, Trash2, Clock, DollarSign, Wallet, GitCompare, History } from "lucide-react";
 import type { Leg, Shifts } from "@/lib/types";
 import PnlAttributionPanel from "@/components/PnlAttributionPanel";
+import PopBreakevenBadge from "@/components/PopBreakevenBadge";
 import { matchStrategy } from "@/lib/matchStrategy";
 import LegListSection from "@/components/LegListSection";
 import ShiftSliders from "@/components/ShiftSliders";
@@ -10,13 +11,16 @@ import PayoffChart from "@/components/PayoffChart";
 import { useStockQuote } from "@/lib/useStockQuote";
 import { useEpsEstimate } from "@/hooks/useEpsEstimate";
 import { loadRecentSymbols, addRecentSymbol } from "@/lib/recentSymbols";
-import { serializeStrategyState, computeOpeningSimBasis, type SavedStrategy, type OpeningSimBasis } from "@/lib/savedStrategies";
+import { serializeStrategyState, computeOpeningSimBasis, saveStrategy, overwriteStrategy, type SavedStrategy, type OpeningSimBasis } from "@/lib/savedStrategies";
 import DropdownMenu from "@/components/DropdownMenu";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
 import { useSavedStrategies } from "@/hooks/useSavedStrategies";
 import { useLegEditing } from "@/hooks/useLegEditing";
+import { useLegBatchOps } from "@/hooks/useLegBatchOps";
 import { useComboAnalytics } from "@/hooks/useComboAnalytics";
+import { useCompareSlots, COMPARE_SLOT_COLORS, MAX_COMPARE_SLOT_LEGS, MAX_COMPARE_SLOTS } from "@/hooks/useCompareSlots";
+import ComboCompareSlots from "@/components/ComboCompareSlots";
 import { useStrategyOrchestration } from "@/hooks/useStrategyOrchestration";
 import { nearestFridayDte, formatDateInput, parseDateInput } from "@/lib/dateUtils";
 import { uid, PRESET_DTE_SET } from "@/lib/legFactory";
@@ -28,9 +32,8 @@ import LegPanelTitleRow from "@/components/LegPanelTitleRow";
 import TrackedComboSection from "@/components/TrackedComboSection";
 import LegActionDialogs from "@/components/LegActionDialogs";
 import StrategyPersistenceDialogs from "@/components/StrategyPersistenceDialogs";
-import { AlertCard, ConfirmLockRollDialog, HelpPanel, isGuideDismissed, SituationExplainDialog, ExpiredStrategyDialog, ExpiredTrackPromptDialog } from "@/components/dialogs";
+import { ConfirmLockRollDialog, HelpPanel, isGuideDismissed, ExpiredStrategyDialog, ExpiredTrackPromptDialog } from "@/components/dialogs";
 import ErrorBoundary from "@/components/ErrorBoundary";
-import { explainAnalysisScenario, explainTrackedPositionAdvice } from "@/lib/situationExplainer";
 
 interface AppProps {
   onBackHome?: () => void;
@@ -96,6 +99,82 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const [activeSnapshotId, setActiveSnapshotId] = useState<string | null>(null);
   const [trackedDirty, setTrackedDirty] = useState(false);
   const [confirmSaveTrackedOpen, setConfirmSaveTrackedOpen] = useState(false);
+  // "多方案对比"（方案B/C，见useCompareSlots.ts/ComboCompareSlots.tsx）——
+  // 完全独立于legs/trackedLegs的一份新state，只在分析模式下渲染（见下方
+  // JSX里!isCompareMode判断），对比模式下这套state仍然存在但不显示、不
+  // 参与任何计算。声明放在这么靠前，是因为下面`rescaleForNewSymbol`（换
+  // 标的时清空对比槽位）会用到`clearCompareSlots`——晚于该useCallback声
+  // 明会导致依赖数组在这个函数真正初始化之前就引用它，触发TDZ报错。
+  const {
+    compareSlots,
+    addCompareSlot,
+    removeCompareSlot,
+    addCompareSlotLeg,
+    updateCompareSlotLeg,
+    deleteCompareSlotLeg,
+    toggleCompareSlotLeg,
+    applyPresetToSlot,
+    applyStrategyToSlot,
+    setCompareSlotLegs,
+    clearCompareSlots,
+  } = useCompareSlots();
+  // 2026-09-22新增："A/B/C完全对等"这轮改动的第一步——哪个combo容器当前
+  // 被"激活"（点击容器任意区域切换，见ComboCompareSlots.tsx/LockedOverlay
+  // 的onClick）。0=主combo(A/legs)，1=compareSlots[0](B)，2=compareSlots[1]
+  // (C)。目前唯一的消费方是下面"策略库"选中预设时的分支——按xue确认过的
+  // 决定（"B/C也能直接应用预设"），激活B/C时选预设直接调
+  // applyPresetToSlot，不再套用A专属的"未保存变更"确认流程（B/C是临时候
+  // 选方案，本来就可以随时覆盖，见useCompareSlots.ts里applyPresetToSlot的
+  // 注释）。批量选择/统一数量-行权价-到期日/展期/保护/对冲/决策对比这些
+  // 操作暂时仍然只对A生效——这些是"管理一个当下的仓位"语义，B/C作为纯候
+  // 选方案是否需要同等粒度的对等，还需要进一步跟xue确认范围，未列入这一
+  // 步的改动。
+  const [activeComboIndex, setActiveComboIndex] = useState(0);
+  // 退出分析模式、清空对比槽位、或某个被激活的槽位被删除时，把激活对象
+  // 收回主combo——避免留着一个指向不存在槽位的激活状态。
+  useEffect(() => {
+    if (activeComboIndex > compareSlots.length) setActiveComboIndex(0);
+  }, [activeComboIndex, compareSlots.length]);
+  // 2026-09-22新增：点"对比方案"新建一个B/C槽位后，直接把激活状态切到刚
+  // 建出来的这个槽位，不需要用户再点一次容器才能获得焦点——否则新建方案
+  // 之后立刻点"+"或策略库，实际操作的还是没被激活的主combo（A），这正是
+  // xue反馈的诉求。addCompareSlot本身在达到MAX_COMPARE_SLOTS上限时是no-op
+  // （见useCompareSlots.ts），这里同样先判一次上限，避免在没有真正新建出
+  // 槽位的情况下把激活状态指向一个并不存在的索引。新槽位固定是追加到末
+  // 尾，所以它的index就是"新建前的compareSlots.length + 1"（0=A，1/2=
+  // compareSlots[0]/[1]）。
+  const handleAddCompareSlotAndActivate = () => {
+    if (compareSlots.length >= MAX_COMPARE_SLOTS) return;
+    const newIndex = compareSlots.length + 1;
+    addCompareSlot();
+    setActiveComboIndex(newIndex);
+  };
+  // ⚠️ 这里故意用trackedLegs!==null而不是下面才声明的isCompareMode（来自
+  // useComboAnalytics()的返回值，声明在这个state之后）——引用晚声明的变
+  // 量会触发App.tsx这个文件已知的TDZ风险（CLAUDE.md"五、5"），语义上跟
+  // isCompareModeNow（同样出于这个原因手写的等价判断）一致。
+  useEffect(() => {
+    if (trackedLegs !== null || simOrigin) setActiveComboIndex(0);
+  }, [trackedLegs, simOrigin]);
+  // 2026-09-22新增："批量选择/全选/批量屏蔽/批量删除/统一数量-行权价-到
+  // 期日"对B/C对比槽位同等生效（xue明确要求）。复用跟A（useLegEditing内
+  // 部）同一份useLegBatchOps.ts逻辑，固定调用两次（hooks不能在.map里变
+  // 量数量地调用，跟ComboCompareSlots.tsx里归因/统计那两份固定调用是同
+  // 样的限制）——B/C是临时候选方案，批量删除不弹二次确认
+  // （confirmBeforeBulkDelete:false），理由跟applyPresetToSlot跳过"未保
+  // 存变更"确认流程一致，见useCompareSlots.ts。
+  const compareSlotB = compareSlots[0];
+  const compareSlotC = compareSlots[1];
+  const batchOpsB = useLegBatchOps(
+    compareSlotB?.legs ?? [],
+    (action) => { if (compareSlotB) setCompareSlotLegs(compareSlotB.id, action); },
+    { confirmBeforeBulkDelete: false },
+  );
+  const batchOpsC = useLegBatchOps(
+    compareSlotC?.legs ?? [],
+    (action) => { if (compareSlotC) setCompareSlotLegs(compareSlotC.id, action); },
+    { confirmBeforeBulkDelete: false },
+  );
   // 2026-09-12: gates the "保存追踪快照" BUTTON specifically (not
   // handleSaveTracked itself, which useStrategyOrchestration.ts's other
   // callers — save-then-clear/switch-mode/switch-preset/symbol-change — all
@@ -167,13 +246,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const { t, lang } = useI18n();
 
   const [helpOpen, setHelpOpen] = useState(false);
-  // "解释当前情况" dialog (2026-09-09) — separate open-state from helpOpen,
-  // which is the static per-module usage guide; this one is generated content
-  // (situationExplainer.ts) describing whatever the sliders/tracked position
-  // currently show. See the situationExplanation useMemo below (placed after
-  // useComboAnalytics's destructure, since it depends on nearly everything
-  // that chain returns) for how the content itself is built.
-  const [explainOpen, setExplainOpen] = useState(false);
   // Per-module first-entry guides (2026-09-06; persistent "don't show
   // again" added 2026-09-07 — see HelpPanel.tsx's isGuideDismissed).
   // Analysis guide gates fresh entry into analysis mode (skipped for the
@@ -321,7 +393,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     legBaseSpot.current = newSpot;
     legBaseSymbol.current = newSymbol;
     spotManuallySet.current = false;
-  }, []);
+    // 换标的后旧行权价没有意义了（跟主combo/今日组合一样），对比槽位
+    // （方案B/C）直接清空，而不是尝试按比例重映射——那套重映射逻辑是为
+    // 已经过审的、有真实持仓语义的legs设计的，对比槽位只是临时候选方
+    // 案，换标的时清空重来更简单也更不容易踩坑。
+    clearCompareSlots();
+  }, [clearCompareSlots]);
 
 
   const { quote, loading: quoteLoading, error: quoteError, refetch } = useStockQuote(symbol);
@@ -578,8 +655,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     result,
     scenarioPriceById,
     effectiveTrackedSpot,
-    trackedGreeks,
-    positionHealth,
     pop,
     breakevens,
     analysisAttribution,
@@ -593,71 +668,21 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     trackedVolShift,
     pnlAttribution,
   } = useComboAnalytics({ legs, analyticsLegs, analyticsSpot, analyticsShifts, trackedLegs, trackedSpot, correctedSpot, trackedDaysElapsed, spot, shifts, trackingStrategyId, savedStrategies, t });
-  // situationExplanation（下面）里"解释当前情况"要跟result/positionHealth/
-  // analysisAttribution用同一份图表定价基准的腿位，否则文字引用的数字会
-  // 跟图形对不上——不能直接用activeLegs（那是实时编辑腿位，见上面大段注
-  // 释），单独过滤一份跟hook内部一致的filter。
-  const activeAnalyticsLegs = useMemo(() => analyticsLegs.filter((l) => !l.disabled), [analyticsLegs]);
 
-  // "解释当前情况"内容：分析模式（explainAnalysisScenario，情景滑块下的
-  // 前瞻式说明）保持不变；对比模式2026-09-14起改用explainTrackedPositionAdvice
-  // ——"该怎么办"建议系统，按腿角色（裸卖出/垂直价差/占位）给出优先级排序
-  // 的单一结论，取代原来纯状态描述的explainTrackedPosition（见
-  // situationExplainer.ts头部注释）。组合健康度徽章是独立UI元素
-  // （PayoffChart.tsx标题栏），不受这次替换影响。Placed right after the
-  // useComboAnalytics destructure since that's the first point every value
-  // it depends on (activeLegs/activeTrackedLegs/result/trackedResult/
-  // positionHealth/analysisAttribution/breakevens/effectiveTrackedSpot/
-  // effectiveDaysElapsed) is already in scope — see CLAUDE.md's TDZ-risk
-  // note on where new memos in this file need to go. Returns null when
-  // there's nothing to explain yet (no legs), same "return null" convention
-  // positionHealth.computeHealth uses.
-  const situationExplanation = useMemo(() => {
-    if (isCompareMode) {
-      // result: trackedGreeks, NOT trackedResult — see the destructure
-      // comment above trackedGreeks for why. trackedResult's perLeg[].change
-      // has real `.total` (P&L) but hardcoded-zero Greek fields; legDeltaMag
-      // (situationExplainer.ts) needs the real per-leg delta, which only
-      // trackedGreeks (a genuine priceCombo() at zero shift) has.
-      if (!activeTrackedLegs || !trackedGreeks) return null;
-      return explainTrackedPositionAdvice({
-        legs: activeTrackedLegs,
-        openingLegs: activeLegs,
-        openingSpot: spot,
-        trackedSpot: effectiveTrackedSpot,
-        daysElapsed: effectiveDaysElapsed,
-        result: trackedGreeks,
-        lang,
-        t,
-      });
-    }
-    // legs用activeAnalyticsLegs（图表定价基准的过滤版），不是activeLegs
-    // （实时编辑腿位）——否则"解释当前情况"引用的腿位跟result/
-    // positionHealth/analysisAttribution用的不是同一份数据，文字和图形
-    // 对不上。
-    return explainAnalysisScenario({
-      legs: activeAnalyticsLegs,
-      spot: analyticsSpot,
-      shifts: analyticsShifts,
-      result,
-      health: positionHealth,
-      lang,
-      t,
-    });
-  }, [
-    isCompareMode, activeTrackedLegs, trackedGreeks, activeLegs, activeAnalyticsLegs, spot, analyticsSpot, effectiveTrackedSpot, effectiveDaysElapsed,
-    t, lang, analyticsShifts, result, positionHealth,
-  ]);
-
-  // 图表提示条/盈亏点颜色：从situationExplanation的sections里找带severity的
-  // 那一条（目前只有熊市Call/牛市Put价差的540格表分支会设置severity），取
-  // 它的alertBody（没有就退回body）。取代原来PayoffChart自己算的
-  // getZone/zoneBands那套（2026-09-19移除，见situationExplainer.ts头部）。
-  const chartAlert = useMemo(() => {
-    const section = situationExplanation?.sections.find((s) => s.severity);
-    if (!section || !section.severity) return null;
-    return { severity: section.severity, body: section.alertBody ?? section.body };
-  }, [situationExplanation]);
+  // compareSlots等几个handler已经在上面（useCompareSlots()调用，跟其它
+  // useState放在一起——早于下面rescaleForNewSymbol的声明，避免它的
+  // useCallback依赖数组在clearCompareSlots真正声明之前就引用它，见该
+  // useCallback调用点的调整说明）。这里只算图表要用的compareCurves——
+  // 需要用到上面useI18n()给的`t`，放在这里而不是跟hook调用放一起。
+  const compareCurves = useMemo(
+    () => compareSlots.map((s, i) => ({
+      id: s.id,
+      label: i === 0 ? t("compare.slotB") : t("compare.slotC"),
+      color: COMPARE_SLOT_COLORS[i],
+      legs: s.legs.filter((l) => !l.disabled),
+    })),
+    [compareSlots, t],
+  );
 
   useEffect(() => {
     if (isCompareMode && !compareGuideShown.current) {
@@ -711,6 +736,93 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     pendingPreset, pendingPresetReplace, pendingLeaveAfterSave, pendingSaveTrackedAfterStrategy, pendingSwitchSource,
     clearLegSelection, onBackHome, onAddToSimAccount, addCustomPresetToLibrary, quote, t,
   });
+
+  // 2026-09-22修复：上一轮"A/B/C完全对等"只接了策略库预设应用和批量操
+  // 作，漏了顶部工具栏最基础的"+"（加腿）和垃圾桶（清空）——这两个按钮
+  // 原来硬连着主combo的addLeg/clearAllLegs（刚好在上面才声明出来，就是
+  // 这里补在useStrategyOrchestration()调用之后、不能挪到更早的
+  // batchOpsB/C旁边的原因），激活B/C后点它们实际改的还是A，这是xue实测
+  // 点出来的真实bug，不是"还没做"的范围内事项。这里按activeComboIndex
+  // 分流：激活的是B/C时，"+"直接往那个槽位加一条空腿（复用已有的
+  // addCompareSlotLeg，行为跟ComboCompareSlots.tsx自己的"添加腿位"按钮
+  // 一致），垃圾桶直接清空那个槽位的legs（不弹确认——B/C本来就是可随时
+  // 覆盖的临时候选方案，跟applyPresetToSlot/批量删除跳过确认是同一个决
+  // 定）；激活的是A（默认）时，两个按钮行为完全不变。
+  const activeSlot = activeComboIndex > 0 ? compareSlots[activeComboIndex - 1] : undefined;
+  const activeToolbarLegsCount = activeSlot ? activeSlot.legs.length : legs.length;
+  const activeToolbarLegCap = activeSlot ? MAX_COMPARE_SLOT_LEGS : 10;
+  const handleToolbarAddLeg = () => {
+    if (activeSlot) { addCompareSlotLeg(activeSlot.id); return; }
+    addLeg();
+  };
+  const handleToolbarClear = () => {
+    if (activeSlot) { setCompareSlotLegs(activeSlot.id, []); return; }
+    if (legs.length > 0) setConfirmClearOpen(true);
+  };
+  // 2026-09-22新增：xue追问"保存呢，是不是也该保存被激活的容器内容"点出
+  // 来的第三处同类bug——"加入模拟账户"也是legToolbar里跟"+"/清空共用同
+  // 一排的共享按钮，之前同样没接activeComboIndex，激活B/C时点它，实际
+  // 加进模拟账户的还是A的内容。这里按同样的模式分流：激活B/C时把该槽位
+  // 的legs、当前全局spot/symbol、以及"今天"（B/C没有自己的开仓日期概
+  // 念，这是"把这个候选方案从今天开始模拟"）喂给
+  // handleAddToSimAccount的override参数；激活A时不传override，行为完全
+  // 不变。
+  //
+  // 注意区分：另一个"保存策略组合"按钮（LegListSection.tsx里，全选行右
+  // 侧那一排）当时不是这一类bug——它本来只存在于A自己的UI区域，从来没
+  // 有在B/C里出现过，不存在"点了但作用错了对象"的问题。xue追问后确认
+  // "激活哪个容器就保存哪个、都存进同一个策略库"是想要的行为，见下面
+  // activeSlotDirection起的这一段——这是新增功能（在ComboCompareSlots.tsx
+  // 里给每个激活的槽位也加了一个同名按钮），不是修复之前的bug。
+  const handleToolbarAddToSim = () => {
+    if (activeSlot) {
+      void handleAddToSimAccount({ legs: activeSlot.legs, spot, symbol, openingAt: Date.now() });
+      return;
+    }
+    void handleAddToSimAccount();
+  };
+
+  // 2026-09-22新增："保存策略组合"接入B/C——xue明确要求"激活哪个容器就
+  // 保存哪个，都存在同一个策略库里边"，不是分开建两套存储、也不需要先
+  // "转正"成A再保存。
+  //
+  // 没有直接复用handleSaveStrategy/handleOverwriteStrategy（useStrategy
+  // Orchestration.ts）——那两个函数深度耦合A自己的保存后联动
+  // （strategyBaseline重算、以及pendingPresetReplace/pendingLeaveAfterSave/
+  // pendingSaveTrackedAfterStrategy这几个只在"离开页面前/切换预设/保存
+  // 追踪快照"这些A专属流程里才会被设置的ref），套用到B/C是错的——保存一
+  // 个候选方案，不该顺带触发"如果正在等待保存后离开页面就跳转回首页"这
+  // 类完全不相关的副作用。这里直接调savedStrategies.ts的
+  // saveStrategy/overwriteStrategy写入同一份storage、setSavedStrategies
+  // 刷新列表、关对话框，就是全部要做的事——跟applyStrategyToSlot不复用
+  // applyPreset是同一个理由（见useCompareSlots.ts）。
+  //
+  // openingAt固定传Date.now()——跟"加入模拟账户"那个override同一个理
+  // 由，B/C没有真实历史开仓日期这个概念；shifts固定传零位移
+  // ——B/C不保存"情景滑块偏移"这个视图状态（这本来就是A专属的、跟已保
+  // 存策略绑在一起的展示状态，见handleSaveStrategy自己保存shifts的用
+  // 途），不是遗漏。
+  const activeSlotDirection: "buy" | "sell" =
+    activeSlot && activeSlot.legs.length > 0 && activeSlot.legs.every((l) => l.action === "buy") ? "buy" : "sell";
+  const activeSlotStrategyName = activeSlot ? matchStrategy(activeSlot.legs, spot, customPresets) : "";
+  const handleSaveStrategyForActive = async (filename: string) => {
+    if (activeSlot) {
+      const updated = await saveStrategy({ filename, symbol, spot, legs: activeSlot.legs, shifts: { dS: 0, dT: 0, dV: 0 }, openingAt: Date.now() });
+      setSavedStrategies(updated);
+      setSaveStrategyOpen(false);
+      return;
+    }
+    await handleSaveStrategy(filename);
+  };
+  const handleOverwriteStrategyForActive = async (id: string, filename: string) => {
+    if (activeSlot) {
+      const updated = await overwriteStrategy(id, { filename, symbol, spot, legs: activeSlot.legs, shifts: { dS: 0, dT: 0, dV: 0 }, openingAt: Date.now() });
+      setSavedStrategies(updated);
+      setSaveStrategyOpen(false);
+      return;
+    }
+    await handleOverwriteStrategy(id, filename);
+  };
 
   // 2026-09-12: wraps handleSaveTracked ONLY for TrackedComboSection's own
   // "保存追踪快照" button (below) — the hook's other internal callers
@@ -790,39 +902,19 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     </>
   );
 
-  // "解释当前情况" button — rendered into ShiftSliders' header row via its
-  // explainButton prop (same "App.tsx builds the JSX, the child component
-  // just renders it" pattern as modeSwitchButton/PayoffChart.tsx above).
-  // Disabled (not hidden) when there's nothing to explain yet, same
-  // "展示框架+解释原因" convention CLAUDE.md documents elsewhere — an empty
-  // combo still shows the button, just inert, rather than the row shifting
-  // around as legs are added.
-  const explainButton = (
-    <button
-      onClick={() => setExplainOpen(true)}
-      disabled={!situationExplanation}
-      title={t("explain.button")}
-      aria-label={t("explain.button")}
-      className="inline-flex items-center gap-1 text-[9px] font-semibold text-amber-400 transition hover:text-amber-300 disabled:cursor-not-allowed disabled:text-slate-600"
-    >
-      <Lightbulb size={11} />
-      {t("explain.button")}
-    </button>
-  );
-
   const legToolbar = (
     <>
       <button
-        onClick={addLeg}
-        disabled={legs.length >= 10 || isExploring}
+        onClick={handleToolbarAddLeg}
+        disabled={activeToolbarLegsCount >= activeToolbarLegCap || isExploring}
         title={t("leg.addLeg")}
         className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
       >
         <Plus size={12} />
       </button>
       <button
-        onClick={() => legs.length > 0 && setConfirmClearOpen(true)}
-        disabled={legs.length === 0 || isExploring}
+        onClick={handleToolbarClear}
+        disabled={activeToolbarLegsCount === 0 || isExploring}
         title={t("leg.clearAll")}
         className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-slate-400 transition hover:border-rose-500 hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-40"
       >
@@ -840,8 +932,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       </DropdownMenu>
       {!isCompareMode && !simOrigin && onAddToSimAccount && (
         <button
-          onClick={handleAddToSimAccount}
-          disabled={activeLegs.length === 0 || spot <= 0 || addingToSim || isExploring}
+          onClick={handleToolbarAddToSim}
+          disabled={activeToolbarLegsCount === 0 || spot <= 0 || addingToSim || isExploring}
           title={t("toolbar.addToSim")}
           className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-slate-400 transition hover:border-emerald-500/50 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
         >
@@ -866,6 +958,15 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         onDeleteCustomPreset={handleDeleteCustom}
         onSelectPreset={(preset) => {
           const rawLegs = preset.legs();
+          // 2026-09-22新增：当前激活的是B/C槽位时，预设直接填进该槽位——
+          // 不走下面A专属的"未保存变更"确认流程，B/C本来就是可以随时被
+          // 覆盖的临时候选方案（xue确认过的决定，见useCompareSlots.ts里
+          // applyPresetToSlot的注释）。
+          if (activeComboIndex > 0) {
+            const slot = compareSlots[activeComboIndex - 1];
+            if (slot) applyPresetToSlot(slot.id, rawLegs, spot, symbol);
+            return;
+          }
           if (isCompareMode && trackedDirty) {
             pendingPresetAction.current = { name: typeof preset.name === "string" ? preset.name : preset.name.zh, rawLegs };
             setConfirmPresetOpen(true);
@@ -916,8 +1017,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         <div className="flex shrink-0 flex-col overflow-y-auto border-r border-slate-800" style={{ width: "38%", minWidth: 380 }}>
           <div className="sticky top-0 z-20 grid shrink-0 grid-cols-[auto_minmax(0,1fr)] grid-rows-[auto_auto] items-center gap-x-2 gap-y-1 border-b border-slate-800/60 bg-slate-950 px-3 py-1.5">
             <LegPanelTitleRow
-              strategyName={strategyName}
-              customPresets={customPresets}
               legsCount={legs.length}
             />
             {!isCompareMode && (
@@ -982,31 +1081,40 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 item in legToolbar) — per xue's request, since that's what
                 the eye actually goes to first, more than a spot buried in
                 the left panel. */}
+            {/* 2026-09-22改：一旦有B/C对比方案存在，这份"到期盈利+盈亏平衡"
+                readout就从这个顶部位置搬到LegListSection.tsx里"全选+策略
+                徽章"那一行旁边（B/C同理搬到ComboCompareSlots.tsx里各自的
+                同一行），每个方案各显示各自的一份——不再在这里单独显示一
+                份只属于A的数据，xue的原话是"移动"不是"多显示一份"，见
+                PopBreakevenBadge.tsx的注释。只有compareSlots为空（还没添加
+                任何B/C）时，这里才继续保持原样。 */}
             <div className="col-start-2 row-start-1 ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
-              {activeLegs.length > 0 && pop > 0 && (
-                <div className="flex shrink-0 items-center gap-2">
-                  <div className="flex items-baseline gap-1">
-                    <span className="whitespace-nowrap text-[10px] text-slate-500">{t("leg.pop")}</span>
-                    <span className={`text-base font-bold tabular-nums leading-none ${
-                      pop >= 0.55 ? "text-emerald-400" : pop >= 0.45 ? "text-amber-400" : "text-rose-400"
-                    }`}>{(pop * 100).toFixed(0)}%</span>
-                  </div>
-                  {breakevens.length > 0 && (
-                    <div className="flex items-baseline gap-1">
-                      <span className="whitespace-nowrap text-[10px] text-slate-500">{t("leg.breakeven")}</span>
-                      <span className="whitespace-nowrap text-xs font-semibold tabular-nums text-sky-300">
-                        {breakevens.map((be) => be.toFixed(2)).join(" / ")}
-                      </span>
-                    </div>
-                  )}
-                </div>
+              {compareSlots.length === 0 && activeLegs.length > 0 && (
+                <PopBreakevenBadge pop={pop} breakevens={breakevens} />
               )}
             </div>
           </div>
 
           {/* ── Original combo section ── */}
+          {/* 2026-09-22新增：包一层激活容器，跟ComboCompareSlots.tsx里B/C
+              槽位用的是同一套"点击任意区域激活"交互（见LockedOverlay的
+              onClick）。只在真的存在B/C可以切换时才给出高亮/手型反馈，避
+              免没有任何对比槽位时，主combo自己也无意义地显示"可点击"样
+              式。对比模式/simOrigin下不渲染B/C，激活状态也没有意义，见上
+              面清空activeComboIndex的effect。 */}
+          <div
+            onClick={() => setActiveComboIndex(0)}
+            className={
+              !isCompareMode && !simOrigin && compareSlots.length > 0
+                ? `cursor-pointer rounded transition ${activeComboIndex === 0 ? "ring-1 ring-emerald-500/40" : ""}`
+                : ""
+            }
+          >
           <LegListSection
             isCompareMode={isCompareMode}
+            strategyName={strategyName}
+            customPresets={customPresets}
+            inlinePopBreakeven={compareSlots.length > 0 ? { pop, breakevens } : null}
             trackedStrategy={trackedStrategy}
             activeSnapshotId={activeSnapshotId}
             onUpdateSnapshotTime={handleUpdateSnapshotTime}
@@ -1047,6 +1155,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             locked={isExploring}
             contractsExpired={isExpiredReal}
           />
+          </div>
           {/* ── Today's combo section (compare mode only) ── */}
           {isCompareMode && trackedLegs && (
             <TrackedComboSection
@@ -1106,10 +1215,30 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             </div>
           )}
 
-          {/* Alert footer */}
-          <div className="shrink-0 border-t border-slate-800 px-3 py-2">
-            <AlertCard alert={chartAlert} />
-          </div>
+          {/* 多方案对比（方案B/C）——只在分析模式下渲染，见App.tsx顶部
+              useCompareSlots()调用处的注释和ComboCompareSlots.tsx。 */}
+          {!isCompareMode && !simOrigin && (
+            <ComboCompareSlots
+              spot={spot}
+              symbol={symbol}
+              customPresets={customPresets}
+              mainLegs={legs}
+              slots={compareSlots}
+              locked={isExploring}
+              analyticsSpot={analyticsSpot}
+              analyticsShifts={analyticsShifts}
+              activeComboIndex={activeComboIndex}
+              onActivate={setActiveComboIndex}
+              slotBatchOps={[batchOpsB, batchOpsC]}
+              onSaveSlot={() => setSaveStrategyOpen(true)}
+              onAddSlot={handleAddCompareSlotAndActivate}
+              onRemoveSlot={removeCompareSlot}
+              onUpdateLeg={updateCompareSlotLeg}
+              onDeleteLeg={deleteCompareSlotLeg}
+              onToggleLeg={toggleCompareSlotLeg}
+            />
+          )}
+
         </div>
 
         {/* RIGHT: Chart + sliders */}
@@ -1121,7 +1250,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 spot={analyticsSpot}
                 shifts={analyticsShifts}
                 symbol={symbol}
-                positionHealth={positionHealth}
                 modeSwitchButton={modeSwitchButton}
                 breakevens={breakevens}
                 trackedLegs={activeTrackedLegs ?? undefined}
@@ -1132,13 +1260,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 netChange={isCompareMode && trackedResult ? trackedResult.change : result.change}
                 trackedSpot={isCompareMode ? effectiveTrackedSpot : undefined}
                 liveSpot={isCompareMode && liveTrackedSpot !== null ? liveTrackedSpot : undefined}
-                alertSeverity={chartAlert?.severity}
                 correctedSpot={correctedSpot}
                 correcting={correcting}
                 onCorrectSpot={handleCorrectSpot}
                 symbolForCorrect={symbol}
                 expired={isExpiredOpening}
                 openingAt={openingAt}
+                compareCurves={!isCompareMode ? compareCurves : undefined}
               />
             </ErrorBoundary>
           </div>
@@ -1167,7 +1295,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               // 比模式的"情景偏移对比"。
               disabled={isCompareMode || activeLegs.length === 0}
               frozen={isCompareMode}
-              explainButton={explainButton}
             />
           </div>
         </div>
@@ -1175,14 +1302,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
       {helpOpen && (
         <HelpPanel moduleId={isCompareMode ? "compare" : "analysis"} variant="info" onClose={() => setHelpOpen(false)} />
-      )}
-
-      {explainOpen && situationExplanation && (
-        <SituationExplainDialog
-          title={t(isCompareMode ? "explain.dialogTitleCompare" : "explain.dialogTitleAnalysis")}
-          explanation={situationExplanation}
-          onClose={() => setExplainOpen(false)}
-        />
       )}
 
       {confirmLockRollOpen && (
@@ -1346,20 +1465,36 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         }}
         saveStrategyOpen={saveStrategyOpen}
         onCloseSaveStrategy={() => { setSaveStrategyOpen(false); pendingPresetReplace.current = null; pendingLeaveAfterSave.current = false; pendingSaveTrackedAfterStrategy.current = false; }}
-        onSaveStrategy={handleSaveStrategy}
-        onOverwriteStrategy={handleOverwriteStrategy}
+        onSaveStrategy={handleSaveStrategyForActive}
+        onOverwriteStrategy={handleOverwriteStrategyForActive}
         symbol={symbol}
-        comboDirection={comboDirection}
-        strategyName={strategyName}
-        activeLegs={activeLegs}
+        comboDirection={activeSlot ? activeSlotDirection : comboDirection}
+        strategyName={activeSlot ? activeSlotStrategyName : strategyName}
+        activeLegs={activeSlot ? activeSlot.legs : activeLegs}
         spot={spot}
-        shifts={shifts}
-        openingAt={openingAt}
+        shifts={activeSlot ? { dS: 0, dT: 0, dV: 0 } : shifts}
+        openingAt={activeSlot ? Date.now() : openingAt}
         savedStrategies={savedStrategies}
         manageStrategyOpen={manageStrategyOpen}
         onCloseManage={() => setManageStrategyOpen(false)}
         manageMode={manageMode}
-        onOpenStrategy={handleOpenStrategy}
+        // 2026-09-22修复：xue实测发现的真实bug——"打开策略"之前完全没接
+        // activeComboIndex，不管激活的是不是B/C都硬写A（handleOpenStrategy
+        // 内部无条件setLegs），跟当初"+"/清空同一个成因（补丁没跟上这一
+        // 个入口）。这里按跟onSelectPreset一样的模式分流：激活B/C时改用
+        // applyStrategyToSlot（见useCompareSlots.ts，用真实的"s.spot→当
+        // 前现价"比例缩放，不是applyPresetToSlot那套预设模板专用的
+        // spot/100约定），不触碰trackingStrategyId/trackedLegs等一整串
+        // A专属的策略生命周期state；激活A时行为完全不变。
+        onOpenStrategy={(s) => {
+          if (activeComboIndex > 0) {
+            const slot = compareSlots[activeComboIndex - 1];
+            if (slot) applyStrategyToSlot(slot.id, s.legs, s.spot, spot, symbol);
+            setManageStrategyOpen(false);
+            return;
+          }
+          handleOpenStrategy(s);
+        }}
         onReorderStrategies={handleReorderStrategies}
         onRenameStrategy={handleRenameStrategy}
         onDeleteStrategy={handleDeleteStrategy}
