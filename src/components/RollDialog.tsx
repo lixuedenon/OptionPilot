@@ -8,6 +8,7 @@ import { impliedVol } from "@/lib/pricing";
 import { fetchLegPremium } from "@/lib/optionChain";
 import { useI18n } from "@/i18n/I18nContext";
 import RollComparisonChart from "@/components/RollComparisonChart";
+import { NUMBER_RULES, clampToRule, blockInvalidNumberKey } from "@/lib/numberInput";
 
 const RATE = 0.05;
 
@@ -255,8 +256,12 @@ export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConf
               <input
                 type="number"
                 step={0.5}
+                min={NUMBER_RULES.price.min}
+                max={NUMBER_RULES.price.max}
                 value={newStrike}
-                onChange={(e) => { setPremiumTouched(false); setLiveNote(null); setNewStrike(parseFloat(e.target.value) || 0); }}
+                onChange={(e) => { setPremiumTouched(false); setLiveNote(null); setNewStrike(clampToRule(parseFloat(e.target.value), NUMBER_RULES.price)); }}
+                onKeyDown={(e) => blockInvalidNumberKey(e, NUMBER_RULES.price)}
+                onWheel={(e) => e.currentTarget.blur()}
                 className={inp}
               />
             </label>
@@ -268,8 +273,12 @@ export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConf
               <input
                 type="number"
                 step={0.01}
+                min={NUMBER_RULES.premium.min}
+                max={NUMBER_RULES.premium.max}
                 value={newPremium}
-                onChange={(e) => { setPremiumTouched(true); setNewPremium(parseFloat(e.target.value) || 0); }}
+                onChange={(e) => { setPremiumTouched(true); setNewPremium(clampToRule(parseFloat(e.target.value), NUMBER_RULES.premium)); }}
+                onKeyDown={(e) => blockInvalidNumberKey(e, NUMBER_RULES.premium)}
+                onWheel={(e) => e.currentTarget.blur()}
                 className={inp}
               />
             </label>

@@ -7,6 +7,7 @@ import { blackScholes } from "@/lib/bs";
 import { impliedVol } from "@/lib/pricing";
 import { fetchLegPremium } from "@/lib/optionChain";
 import { useI18n } from "@/i18n/I18nContext";
+import { NUMBER_RULES, clampToRule, blockInvalidNumberKey } from "@/lib/numberInput";
 
 const RATE = 0.05;
 
@@ -161,8 +162,12 @@ export default function ProtectDialog({ leg, spot, symbol, onClose, onConfirm }:
                 <input
                   type="number"
                   step={0.5}
+                  min={NUMBER_RULES.price.min}
+                  max={NUMBER_RULES.price.max}
                   value={strike}
-                  onChange={(e) => { setPremiumTouched(false); setLiveNote(null); setStrike(parseFloat(e.target.value) || 0); }}
+                  onChange={(e) => { setPremiumTouched(false); setLiveNote(null); setStrike(clampToRule(parseFloat(e.target.value), NUMBER_RULES.price)); }}
+                  onKeyDown={(e) => blockInvalidNumberKey(e, NUMBER_RULES.price)}
+                  onWheel={(e) => e.currentTarget.blur()}
                   className={inp}
                 />
               </label>
@@ -190,8 +195,12 @@ export default function ProtectDialog({ leg, spot, symbol, onClose, onConfirm }:
                 <input
                   type="number"
                   step={0.01}
+                  min={NUMBER_RULES.premium.min}
+                  max={NUMBER_RULES.premium.max}
                   value={premium}
-                  onChange={(e) => { setPremiumTouched(true); setPremium(parseFloat(e.target.value) || 0); }}
+                  onChange={(e) => { setPremiumTouched(true); setPremium(clampToRule(parseFloat(e.target.value), NUMBER_RULES.premium)); }}
+                  onKeyDown={(e) => blockInvalidNumberKey(e, NUMBER_RULES.premium)}
+                  onWheel={(e) => e.currentTarget.blur()}
                   className={inp}
                 />
               </label>

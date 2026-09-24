@@ -21,6 +21,7 @@ import type { Leg } from "@/lib/types";
 import { dateFromDte, dteFromDate } from "@/lib/dateUtils";
 import { fetchLegPremium, getOptionChain, premiumFromQuote, type LegPremiumResult, type OptionChainResponse } from "@/lib/optionChain";
 import { useI18n } from "@/i18n/I18nContext";
+import { NUMBER_RULES, clampToRule, blockInvalidNumberKey, type NumberInputRule } from "@/lib/numberInput";
 
 interface Props {
   leg: Leg;
@@ -192,6 +193,7 @@ function NumField({
   width,
   onChange,
   disabled,
+  rule,
 }: {
   label: string;
   value: number;
@@ -199,6 +201,12 @@ function NumField({
   width: string;
   onChange: (v: number) => void;
   disabled?: boolean;
+  // 2026-09-24新增：行权价/权利金/数量/股数四类调用点各自传各自的规则
+  // （NUMBER_RULES.price/premium/qty/shares），onChange前统一clamp到
+  // [min,max]区间+按小数位数四舍五入。这是LegRow.tsx里数值输入完全没
+  // 有上限/负数防护这个系统性缺口的修复——之前行权价输负数会让
+  // bs.ts的Black-Scholes公式算出NaN，一路传染到整个组合定价。
+  rule: NumberInputRule;
 }) {
   // 2026-09-22移除：这里以前自己叠一层遮罩、点击锁定态的输入框弹提示
   // ("请先点重置")。现在这个反馈已经上移到容器级——LegListSection.tsx/
@@ -213,9 +221,13 @@ function NumField({
         className={disabled ? inpDisabled : inp}
         type="number"
         step={step}
+        min={rule.min}
+        max={rule.max}
         value={value}
         disabled={disabled}
-        onChange={(e) => onChange(num(e.target.value))}
+        onChange={(e) => onChange(clampToRule(num(e.target.value), rule))}
+        onKeyDown={(e) => blockInvalidNumberKey(e, rule)}
+        onWheel={(e) => e.currentTarget.blur()}
       />
     </label>
   );
@@ -793,8 +805,8 @@ export default function LegRow({
             disabled={fieldsDisabled}
           />
         </div>
-        <NumField label={t("leg.buyPrice")} value={leg.strike} step={0.5} width="72px" onChange={(v) => onChange({ strike: v })} disabled={fieldsDisabled} />
-        <NumField label={t("leg.sharesLabel")} value={leg.shares ?? 100} step={1} width="56px" onChange={(v) => onChange({ shares: v })} disabled={fieldsDisabled} />
+        <NumField label={t("leg.buyPrice")} value={leg.strike} step={0.5} width="72px" onChange={(v) => onChange({ strike: v })} disabled={fieldsDisabled} rule={NUMBER_RULES.price} />
+        <NumField label={t("leg.sharesLabel")} value={leg.shares ?? 100} step={1} width="56px" onChange={(v) => onChange({ shares: v })} disabled={fieldsDisabled} rule={NUMBER_RULES.shares} />
         <div className="flex flex-col gap-0.5">
           <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">Delta</span>
           <span className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-semibold text-emerald-400">
@@ -851,12 +863,13 @@ export default function LegRow({
         value={leg.qty ?? 1}
         step={1}
         width="52px"
-        onChange={(v) => onChange({ qty: Math.max(1, Math.round(v)) })}
+        onChange={(v) => onChange({ qty: v })}
         disabled={fieldsDisabled}
+        rule={NUMBER_RULES.qty}
       />
 
       <div ref={strikeMenuRef} className="relative flex shrink-0 items-end gap-0.5">
-        <NumField label={t("leg.strike")} value={leg.strike} step={0.5} width="52px" onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ strike: v }); }} disabled={fieldsDisabled} />
+        <NumField label={t("leg.strike")} value={leg.strike} step={0.5} width="52px" onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ strike: v }); }} disabled={fieldsDisabled} rule={NUMBER_RULES.price} />
         {!disabled && (
           <button
             onClick={() => setStrikeMenuOpen((v) => !v)}
@@ -927,7 +940,7 @@ export default function LegRow({
         )}
       </div>
       <div className="flex shrink-0 items-end gap-0.5">
-        <NumField label={t("leg.premium")} value={leg.premium} step={0.01}  width="76px" onChange={(v) => { setPriceError(null); setPriceNote(null); setPriceView("opening"); onChange({ premium: v }); }} disabled={fieldsDisabled} />
+        <NumField label={t("leg.premium")} value={leg.premium} step={0.01}  width="76px" onChange={(v) => { setPriceError(null); setPriceNote(null); setPriceView("opening"); onChange({ premium: v }); }} disabled={fieldsDisabled} rule={NUMBER_RULES.premium} />
         {!disabled && !hidePriceRefresh && (
           <button
             onClick={handleTogglePrice}

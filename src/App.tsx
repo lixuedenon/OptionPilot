@@ -26,6 +26,7 @@ import { nearestFridayDte, formatDateInput, parseDateInput } from "@/lib/dateUti
 import { uid, PRESET_DTE_SET } from "@/lib/legFactory";
 import { getOptionChain, resolveFromCache } from "@/lib/optionChain";
 import { estimateRescaledPremium } from "@/lib/pricing";
+import { NUMBER_RULES, clampToRule, blockInvalidNumberKey } from "@/lib/numberInput";
 import { useI18n } from "@/i18n/I18nContext";
 import AppHeader from "@/components/AppHeader";
 import LegPanelTitleRow from "@/components/LegPanelTitleRow";
@@ -1027,15 +1028,24 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                     <input
                       type="number"
                       step="0.01"
-                      min="0"
+                      min={NUMBER_RULES.price.min}
+                      max={NUMBER_RULES.price.max}
                       value={spot > 0 ? spot : ""}
                       onChange={(e) => {
+                        // 2026-09-24：跟别处一样clamp到[min,max]+3位小数，
+                        // 而不是只挡负数——之前这里虽然有min="0"的HTML
+                        // 属性和v>=0的手动判断，但上限完全没卡，小数位数
+                        // 也不受控（用户能粘贴出任意精度的现价）。空字符
+                        // 串（用户清空输入框想重新打）继续放行，不clamp，
+                        // 否则每敲一下都会被强制拉回min，没法正常编辑。
+                        if (e.target.value === "") return;
                         const v = parseFloat(e.target.value);
-                        if (!isNaN(v) && v >= 0) {
+                        if (Number.isFinite(v)) {
                           spotManuallySet.current = true;
-                          setSpot(v);
+                          setSpot(clampToRule(v, NUMBER_RULES.price));
                         }
                       }}
+                      onKeyDown={(e) => blockInvalidNumberKey(e, NUMBER_RULES.price)}
                       onWheel={(e) => e.currentTarget.blur()}
                       disabled={isExploring}
                       className="w-20 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] tabular-nums text-emerald-400 outline-none transition focus:border-emerald-500 focus:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"

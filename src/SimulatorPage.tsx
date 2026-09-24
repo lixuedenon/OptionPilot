@@ -39,6 +39,7 @@ import { ConfirmResetAccountDialog, HelpPanel, isGuideDismissed } from "@/compon
 import SimStatsPanel from "@/components/SimStatsPanel";
 import LiveClock from "@/components/LiveClock";
 import { computeSimStats } from "@/lib/simStats";
+import { NUMBER_RULES, clampToRule, blockInvalidNumberKey } from "@/lib/numberInput";
 
 interface Props {
   onBack: () => void;
@@ -560,6 +561,12 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
   const [positions, setPositions] = useState<SimPosition[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [startingCapitalInput, setStartingCapitalInput] = useState("10000");
+  // 2026-09-24新增：这个输入框之前是纯文本state，只在点击"创建账户"提交
+  // 那一刻才parseFloat+v<=0校验，校验失败按钮直接静默不动作，用户会以
+  // 为按钮坏了；也完全没有上限，能建一个9999999999999美元的账户。现在
+  // 用NUMBER_RULES.capital（1~1亿，2位小数）在提交时clamp，并给出可见
+  // 的错误提示，键盘层面也拦掉字母/符号，跟全项目其它数值输入框统一。
+  const [startingCapitalError, setStartingCapitalError] = useState(false);
   const [marks, setMarks] = useState<Record<string, MarkState>>({});
   const [regrets, setRegrets] = useState<Record<string, RegretState>>({});
   const [showHistory, setShowHistory] = useState(false);
@@ -603,8 +610,12 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
 
   const handleCreateAccount = async () => {
     const v = parseFloat(startingCapitalInput);
-    if (!Number.isFinite(v) || v <= 0) return;
-    const a = await initSimAccount(v);
+    if (!Number.isFinite(v) || v < NUMBER_RULES.capital.min || v > NUMBER_RULES.capital.max) {
+      setStartingCapitalError(true);
+      return;
+    }
+    setStartingCapitalError(false);
+    const a = await initSimAccount(clampToRule(v, NUMBER_RULES.capital));
     setAccount(a);
   };
 
@@ -1125,9 +1136,14 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
             <div className="mx-auto flex max-w-xs items-center gap-2">
               <input
                 type="number"
+                step={0.01}
+                min={NUMBER_RULES.capital.min}
+                max={NUMBER_RULES.capital.max}
                 value={startingCapitalInput}
-                onChange={(e) => setStartingCapitalInput(e.target.value)}
-                className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-emerald-500 focus:outline-none"
+                onChange={(e) => { setStartingCapitalInput(e.target.value); setStartingCapitalError(false); }}
+                onKeyDown={(e) => blockInvalidNumberKey(e, NUMBER_RULES.capital)}
+                onWheel={(e) => e.currentTarget.blur()}
+                className={`w-full rounded border bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none ${startingCapitalError ? "border-rose-500 focus:border-rose-500" : "border-slate-700 focus:border-emerald-500"}`}
               />
               <button
                 onClick={() => { setJustReset(false); handleCreateAccount(); }}
@@ -1136,6 +1152,9 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                 {t("sim.createAccount")}
               </button>
             </div>
+            {startingCapitalError && (
+              <p className="mx-auto mt-2 max-w-xs text-[11px] text-rose-400">{t("sim.startingCapitalInvalid")}</p>
+            )}
           </div>
         ) : (
           <>

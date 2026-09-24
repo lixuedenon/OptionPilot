@@ -326,6 +326,7 @@ const zh: Dict = {
   "earnings.goAnalyze": "去分析模式看看",
   "earnings.goAnalyzeOptional": "去分析模式（不急）",
   "sim.setupPrompt": "还没有模拟账户，先设置一笔起始资金",
+  "sim.startingCapitalInvalid": "起始资金必须是1到1亿之间的正数",
   "sim.createAccount": "创建账户",
   "sim.totalEquity": "总资产",
   "sim.cash": "现金",

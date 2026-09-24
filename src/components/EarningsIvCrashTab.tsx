@@ -15,6 +15,7 @@ import { loadSimAccount, loadSimPositions, computeAvailableCapital, openSimPosit
 import { fetchSpotPrice } from "@/lib/useStockQuote";
 import { useI18n } from "@/i18n/I18nContext";
 import Term from "@/components/Term";
+import { clamp, blockInvalidNumberKey } from "@/lib/numberInput";
 
 interface Props {
   onOpened: () => void; // called after all 3 groups are successfully opened — the caller navigates back to the simulator so the person sees the new positions
@@ -163,7 +164,9 @@ export default function EarningsIvCrashTab({ onOpened }: Props) {
             max={20}
             step={0.5}
             value={riskPct}
-            onChange={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) { setRiskPct(v); setPreview(null); } }}
+            onChange={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) { setRiskPct(clamp(v, 0.5, 20, 1)); setPreview(null); } }}
+            onKeyDown={(e) => blockInvalidNumberKey(e, { min: 0.5, decimals: 1 })}
+            onWheel={(e) => e.currentTarget.blur()}
             className="w-20 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs tabular-nums text-slate-200 focus:border-sky-500 focus:outline-none"
           />
           <span className="text-xs text-slate-500">%</span>

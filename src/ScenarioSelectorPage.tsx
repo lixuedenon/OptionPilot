@@ -22,6 +22,7 @@ import { dirKeyMap } from "@/components/StrategyBadge";
 import EarningsTabRoot from "@/components/EarningsTabRoot";
 import { useI18n } from "@/i18n/I18nContext";
 import type { Leg } from "@/lib/types";
+import { clamp, blockInvalidNumberKey } from "@/lib/numberInput";
 
 interface Props {
   onBack: () => void;
@@ -396,7 +397,9 @@ export default function ScenarioSelectorPage({ onBack, onUseCandidate, persisted
                 min={1}
                 max={200}
                 value={ivPct}
-                onChange={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) { setIvPct(v); setRecommendations(null); } }}
+                onChange={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) { setIvPct(clamp(v, 1, 200, 0)); setRecommendations(null); } }}
+                onKeyDown={(e) => blockInvalidNumberKey(e, { min: 1, decimals: 0 })}
+                onWheel={(e) => e.currentTarget.blur()}
                 className="w-20 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs tabular-nums text-slate-200 focus:border-sky-500 focus:outline-none"
               />
               <span className="text-xs text-slate-500">%</span>
@@ -568,4 +571,3 @@ export default function ScenarioSelectorPage({ onBack, onUseCandidate, persisted
     </div>
   );
 }
-

@@ -324,6 +324,7 @@ const en: Dict = {
   "earnings.goAnalyze": "Go to Analysis Mode",
   "earnings.goAnalyzeOptional": "Analysis Mode (optional)",
   "sim.setupPrompt": "No simulated account yet — set a starting capital to begin",
+  "sim.startingCapitalInvalid": "Starting capital must be a positive number between 1 and 100,000,000",
   "sim.createAccount": "Create Account",
   "sim.totalEquity": "Total Equity",
   "sim.cash": "Cash",
