@@ -8,7 +8,7 @@ import { impliedVol } from "@/lib/pricing";
 import { fetchLegPremium } from "@/lib/optionChain";
 import { useI18n } from "@/i18n/I18nContext";
 import RollComparisonChart from "@/components/RollComparisonChart";
-import { NUMBER_RULES, clampToRule, blockInvalidNumberKey } from "@/lib/numberInput";
+import { NUMBER_RULES, blockInvalidNumberKey, useClampedNumberField } from "@/lib/numberInput";
 
 const RATE = 0.05;
 
@@ -44,6 +44,18 @@ export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConf
   const [liveFetching, setLiveFetching] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [liveNote, setLiveNote] = useState<string | null>(null);
+
+  // 2026-09-24：行权价/权利金两个数值输入改用useClampedNumberField，修复
+  // "打多位数就卡死"的bug，见numberInput.ts里hook本体的注释。
+  const newStrikeField = useClampedNumberField(newStrike, NUMBER_RULES.price, (v) => {
+    setPremiumTouched(false);
+    setLiveNote(null);
+    setNewStrike(v);
+  });
+  const newPremiumField = useClampedNumberField(newPremium, NUMBER_RULES.premium, (v) => {
+    setPremiumTouched(true);
+    setNewPremium(v);
+  });
 
   const newDate = dateFromDte(newDte);
   const isNakedShortCall = leg.action === "sell" && leg.type === "call" && !covered;
@@ -258,8 +270,10 @@ export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConf
                 step={0.5}
                 min={NUMBER_RULES.price.min}
                 max={NUMBER_RULES.price.max}
-                value={newStrike}
-                onChange={(e) => { setPremiumTouched(false); setLiveNote(null); setNewStrike(clampToRule(parseFloat(e.target.value), NUMBER_RULES.price)); }}
+                value={newStrikeField.text}
+                onFocus={newStrikeField.onFocus}
+                onChange={(e) => newStrikeField.onChange(e.target.value)}
+                onBlur={newStrikeField.onBlur}
                 onKeyDown={(e) => blockInvalidNumberKey(e, NUMBER_RULES.price)}
                 onWheel={(e) => e.currentTarget.blur()}
                 className={inp}
@@ -275,8 +289,10 @@ export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConf
                 step={0.01}
                 min={NUMBER_RULES.premium.min}
                 max={NUMBER_RULES.premium.max}
-                value={newPremium}
-                onChange={(e) => { setPremiumTouched(true); setNewPremium(clampToRule(parseFloat(e.target.value), NUMBER_RULES.premium)); }}
+                value={newPremiumField.text}
+                onFocus={newPremiumField.onFocus}
+                onChange={(e) => newPremiumField.onChange(e.target.value)}
+                onBlur={newPremiumField.onBlur}
                 onKeyDown={(e) => blockInvalidNumberKey(e, NUMBER_RULES.premium)}
                 onWheel={(e) => e.currentTarget.blur()}
                 className={inp}

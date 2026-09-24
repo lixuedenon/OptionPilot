@@ -1037,8 +1037,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                         // 属性和v>=0的手动判断，但上限完全没卡，小数位数
                         // 也不受控（用户能粘贴出任意精度的现价）。空字符
                         // 串（用户清空输入框想重新打）继续放行，不clamp，
-                        // 否则每敲一下都会被强制拉回min，没法正常编辑。
-                        if (e.target.value === "") return;
+                        // 否则每敲一下都会被强制拉回min，没法正常编辑；
+                        // 打到一半的末尾小数点（比如"123."）同样放行不clamp，
+                        // 不然每敲一下"."就被reformat掉，打不出小数（这个
+                        // 跟LegRow.tsx"输入多位数就卡死"是同一类bug，见
+                        // numberInput.ts里useClampedNumberField的注释）。
+                        if (e.target.value === "" || /[.-]$/.test(e.target.value)) return;
                         const v = parseFloat(e.target.value);
                         if (Number.isFinite(v)) {
                           spotManuallySet.current = true;

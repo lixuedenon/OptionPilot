@@ -21,7 +21,7 @@ import type { Leg } from "@/lib/types";
 import { dateFromDte, dteFromDate } from "@/lib/dateUtils";
 import { fetchLegPremium, getOptionChain, premiumFromQuote, type LegPremiumResult, type OptionChainResponse } from "@/lib/optionChain";
 import { useI18n } from "@/i18n/I18nContext";
-import { NUMBER_RULES, clampToRule, blockInvalidNumberKey, type NumberInputRule } from "@/lib/numberInput";
+import { NUMBER_RULES, blockInvalidNumberKey, useClampedNumberField, type NumberInputRule } from "@/lib/numberInput";
 
 interface Props {
   leg: Leg;
@@ -155,11 +155,6 @@ function weekdayLabel(iso: string, lang: string): string {
   return new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", { weekday: "short" }).format(date);
 }
 
-function num(v: string): number {
-  const n = parseFloat(v);
-  return Number.isFinite(n) ? n : 0;
-}
-
 function ToggleBtn({
   value,
   next,
@@ -214,6 +209,18 @@ function NumField({
   // 容器里任意位置都会弹同样的提示，层级比这里高，点击会被那层先拦
   // 截，这里的遮罩+提示永远轮不到、是打不到的死代码，所以直接删掉。
   // disabled状态本身（灰置、input.disabled）还在，只是不再自己接住点击。
+
+  // 2026-09-24修复"输入多位数就卡死"的bug：之前每次keystroke都直接
+  // `onChange(clampToRule(num(e.target.value), rule))`，而input是完全受控
+  // 的（`value={value}`）。清空框准备输入新数字时解析成0，`clampToRule`
+  // 立刻把它钉回rule.min（比如qty是1、价格是0.01），框内瞬间变回"1"，用
+  // 户接下来敲的每个数字都接在这个意外冒出来的"1"后面，清空-弹回-清空-
+  // 弹回，感觉就是"卡死了打不进去"；打小数（比如"12."）时同理，trailing
+  // "."被每次keystroke的clamp立刻吃掉。修复统一收进`useClampedNumberField`
+  // （见numberInput.ts），全项目所有同类数值输入框都改用这一个hook，不
+  // 再各自重复实现，同一时刻只有一份权威逻辑（CLAUDE.md"五、19"）。
+  const field = useClampedNumberField(value, rule, onChange);
+
   return (
     <label className="relative flex flex-col gap-0" style={{ width }}>
       <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
@@ -223,10 +230,15 @@ function NumField({
         step={step}
         min={rule.min}
         max={rule.max}
-        value={value}
+        value={field.text}
         disabled={disabled}
-        onChange={(e) => onChange(clampToRule(num(e.target.value), rule))}
-        onKeyDown={(e) => blockInvalidNumberKey(e, rule)}
+        onFocus={field.onFocus}
+        onChange={(e) => field.onChange(e.target.value)}
+        onBlur={field.onBlur}
+        onKeyDown={(e) => {
+          blockInvalidNumberKey(e, rule);
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
         onWheel={(e) => e.currentTarget.blur()}
       />
     </label>

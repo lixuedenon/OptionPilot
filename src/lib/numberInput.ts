@@ -10,6 +10,8 @@
 // 事收敛成一处，以后任何新增的数值字段都应该调用这里，而不是重新手写一
 // 遍——同一类校验只应该有一份权威实现，参照CLAUDE.md"五、19"同样的原则。
 
+import { useEffect, useRef, useState } from "react";
+
 export interface NumberInputRule {
   min: number;
   max: number;
@@ -78,4 +80,68 @@ export function blockInvalidNumberKey(
   if (e.key === "." && rule.decimals > 0) return;
   if (e.key === "-" && rule.min < 0) return;
   e.preventDefault();
+}
+
+/** 把clamp/round之后的数字转回输入框显示用的字符串，去掉多余的尾随0
+ *（比如decimals=3时，12显示成"12"而不是"12.000"）。 */
+export function formatNumForDisplay(v: number, decimals: number): string {
+  if (decimals <= 0) return String(Math.round(v));
+  const s = v.toFixed(decimals);
+  return s.includes(".") ? s.replace(/0+$/, "").replace(/\.$/, "") : s;
+}
+
+// 2026-09-24新增：数值输入框"打多位数/小数就卡死"bug的统一修复。根因是
+// 之前每个数值<input>都是`value={value}`完全受控，且每次keydown触发的
+// onChange都直接`onChange(clampToRule(parseFloat(e.target.value), rule))`——
+// 清空框准备重打一个数时，`parseFloat("")`是NaN，clampToRule立刻把它钉回
+// rule.min（比如qty是1、价格是0.01），框内瞬间弹回"1"，后续敲的每个数字
+// 都接在这个意外冒出来的"1"后面，清空-弹回-清空-弹回，感觉就是打不进去；
+// 打小数（比如"12."）时同理，trailing "."被每次keystroke的clamp立刻吃掉。
+// 这个hook把"输入框显示什么"改成完全由调用方自己的本地`text`状态管，只有
+// 失焦（blur）那一刻才真正clamp到[min,max]+按小数位数四舍五入；聚焦期间
+// 允许出现空字符串、末尾小数点这些合法的"打了一半"状态，不会被打断。
+// 同时，只要当前字符串已经是一个"完整"数字（不是空、不是正在打小数点/
+// 负号那种半成品），仍然会把clamp后的值实时同步给父组件的onChange——这
+// 样原生输入框的上下箭头（每次给出的都是完整值）、以及依赖这个值联动的
+// 组合定价/图表，照旧能立刻拿到更新，不需要等失焦。
+export function useClampedNumberField(
+  value: number,
+  rule: NumberInputRule,
+  onChange: (v: number) => void
+): {
+  text: string;
+  onChange: (raw: string) => void;
+  onFocus: () => void;
+  onBlur: () => void;
+} {
+  const [text, setText] = useState<string>(() => formatNumForDisplay(value, rule.decimals));
+  const focused = useRef(false);
+
+  useEffect(() => {
+    if (!focused.current) setText(formatNumForDisplay(value, rule.decimals));
+  }, [value, rule.decimals]);
+
+  return {
+    text,
+    onChange: (raw: string) => {
+      setText(raw);
+      if (raw.trim() !== "" && !/[.-]$/.test(raw)) {
+        const live = parseFloat(raw);
+        if (Number.isFinite(live)) {
+          const clamped = clampToRule(live, rule);
+          if (clamped !== value) onChange(clamped);
+        }
+      }
+    },
+    onFocus: () => {
+      focused.current = true;
+    },
+    onBlur: () => {
+      focused.current = false;
+      const parsed = parseFloat(text);
+      const clamped = clampToRule(Number.isFinite(parsed) ? parsed : rule.min, rule);
+      setText(formatNumForDisplay(clamped, rule.decimals));
+      if (clamped !== value) onChange(clamped);
+    },
+  };
 }
