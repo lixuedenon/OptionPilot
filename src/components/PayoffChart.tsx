@@ -467,11 +467,26 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
 
   const yTicks = (() => {
     const span = yMax - yMin;
+    if (!Number.isFinite(span) || span <= 0) return [0];
     const nice = [0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500];
-    const step = nice.find((n) => span / n <= 6) ?? 500;
+    // 2026-09-24修复：原来`nice`表只到500，span超出500*6=3000时`.find`找不到
+    // 匹配、退回`?? 500`这个写死的兜底step——数量上限从100提到9999、价格上限
+    // 提到50万之后，一条腿的到期盈亏span能轻松到数十亿，step却还是500，下面
+    // 的for循环要跑几百万/几千万次，同步阻塞在渲染里，就是"打大数字卡死"。
+    // 这里按10的幂扩大step直到6个刻度够用，并且不管算出来的step多大，都加一
+    // 个硬上限防止任何未预见的边界情况再次死循环。
+    let step = nice.find((n) => span / n <= 6);
+    if (step === undefined) {
+      let mult = 1000;
+      while (span / (500 * mult) > 6 && mult < 1e15) mult *= 10;
+      step = 500 * mult;
+    }
     const ticks: number[] = [];
     const start = Math.ceil(yMin / step) * step;
-    for (let v = start; v <= yMax + 0.001; v += step) ticks.push(parseFloat(v.toFixed(4)));
+    const MAX_TICKS = 20;
+    for (let v = start, i = 0; v <= yMax + 0.001 && i < MAX_TICKS; v += step, i++) {
+      ticks.push(parseFloat(v.toFixed(4)));
+    }
     return ticks;
   })();
 
