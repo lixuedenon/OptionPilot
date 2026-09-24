@@ -221,11 +221,39 @@ function NumField({
   // 再各自重复实现，同一时刻只有一份权威逻辑（CLAUDE.md"五、19"）。
   const field = useClampedNumberField(value, rule, onChange);
 
+  // 2026-09-24修复：这个label之前没有`shrink-0`，是这一整行里唯一一个
+  // 会被flexbox压缩的元素——张数框打进很长的数字时，整行内容变宽，浏览
+  // 器会把没有shrink-0的这一项挤扁（其它列全部有shrink-0，见调用方），
+  // 挤到只剩几像素宽，"张数"两个字因为容器太窄换行变成竖排、输入框里的
+  // 数字也看不到。这里补上shrink-0+minWidth，让这一列的宽度永远钉死在
+  // width这个值，不会因为内容变化被压缩。
+  //
+  // 2026-09-24二次修复：上一版这里写的是"数字比框宽时原生input支持横向
+  // 滚动查看"——被xue指出这就是变相的滚动，跟"容器尺寸固定死、不能靠
+  // 滚动看内容"这条硬性要求是同一个问题，不能这么做。改成：框的宽度
+  // (width/minWidth)保持不变，改由字号跟着输入内容的字符数动态收缩，
+  // 保证任意长度的数字都能完整地、不滚动地显示在这个固定宽度的框里。
+  // BASE_FONT_PX是未收缩时的字号（对应原来text-xs=12px），CHAR_PX是
+  // tabular-nums数字在12px字号下的实测宽度近似值，MIN_FONT_PX是收缩下限
+  // （再小就不可读了，理论上极端情况下数字仍可能略微溢出，但rule.max
+  // 已经在数值层面钉死了每类字段的最大位数，实际不会走到这一步）。
+  const BASE_FONT_PX = 12;
+  const MIN_FONT_PX = 7;
+  const CHAR_PX = 6.6;
+  const widthPx = parseFloat(width) || 52;
+  const innerPx = widthPx - 12; // 扣掉input左右padding(px-1.5=6px*2)+边框
+  const fontSize = (() => {
+    const len = Math.max(field.text.length, 1);
+    const fit = innerPx / (len * (CHAR_PX / BASE_FONT_PX));
+    return Math.max(MIN_FONT_PX, Math.min(BASE_FONT_PX, fit));
+  })();
+
   return (
-    <label className="relative flex flex-col gap-0" style={{ width }}>
-      <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
+    <label className="relative flex shrink-0 flex-col gap-0" style={{ width, minWidth: width }}>
+      <span className="whitespace-nowrap text-[8px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
       <input
         className={disabled ? inpDisabled : inp}
+        style={{ fontSize }}
         type="number"
         step={step}
         min={rule.min}

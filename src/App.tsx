@@ -1,6 +1,6 @@
 // src/App.tsx
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Layers, Settings2, RefreshCw, Trash2, Clock, DollarSign, Wallet, GitCompare, History } from "lucide-react";
+import { Plus, Layers, Settings2, RefreshCw, Trash2, Wallet, GitCompare, History } from "lucide-react";
 import type { Leg, Shifts } from "@/lib/types";
 import PnlAttributionPanel from "@/components/PnlAttributionPanel";
 import PopBreakevenBadge from "@/components/PopBreakevenBadge";
@@ -932,14 +932,17 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         )}
       </DropdownMenu>
       {!isCompareMode && !simOrigin && onAddToSimAccount && (
+        // 2026-09-24改：这个按钮原来是图标+文字，是开仓价/开仓日期那一行
+        // 挤不下、要横向滚动的主因之一。xue明确要求不能用滚动，只能靠简化
+        // 某个元素腾空间——改成纯图标+悬浮提示（title，跟"+"/清空按钮同一
+        // 个模式），文字挪进title，视觉宽度从~80px收窄到~26px。
         <button
           onClick={handleToolbarAddToSim}
           disabled={activeToolbarLegsCount === 0 || spot <= 0 || addingToSim || isExploring}
           title={t("toolbar.addToSim")}
-          className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-slate-400 transition hover:border-emerald-500/50 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-slate-400 transition hover:border-emerald-500/50 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {addingToSim ? <RefreshCw size={12} className="animate-spin" /> : <Wallet size={12} />}
-          {t("toolbar.addToSim")}
         </button>
       )}
     </>
@@ -1021,9 +1024,20 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               legsCount={legs.length}
             />
             {!isCompareMode && (
-                <div className="col-span-2 row-start-2 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 pt-0.5">
+                // 2026-09-24改：这一行（开仓价/开仓日期/加/删/策略库/加入模拟账户）
+                // 原来是flex-wrap，容器不够宽时会拆成两行；xue要求合并成一行。
+                // 第一版改成flex-nowrap+overflow-x-auto（装不下就整行横向滚动）
+                // 被xue否掉——跟张数框那版一样，滚动等于变相破坏了"容器尺寸
+                // 固定死"这条硬性要求。改法：去掉overflow-x-auto，改为纯
+                // flex-nowrap（不横向滚动、也不折行），靠腾出空间让内容真的
+                // 一行放得下——去掉开仓价/开仓日期标签前面的$/时钟图标，
+                // 并把legToolbar里"加入模拟账户"从图标+文字收窄成纯图标+
+                // 悬浮提示（见legToolbar定义处的注释）。这样省下来的宽度
+                // 目前实测足够撑住一行；如果将来某个语言的翻译文字更长导致
+                // 又装不下，下一步应该继续"简化某个元素"（比如策略库也改
+                // 纯图标），而不是重新加回滚动。
+                <div className="col-span-2 row-start-2 flex min-w-0 flex-nowrap items-center gap-x-3 gap-y-1 pt-0.5">
                   <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] text-slate-500" title={t("stock.openPrice")}>
-                    <DollarSign size={10} />
                     <span>{t("stock.openPrice")}</span>
                     <input
                       type="number"
@@ -1061,7 +1075,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                     )}
                   </label>
                       <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] text-slate-500" title={t("stock.openDate")}>
-                    <Clock size={10} />
                     <span>{t("stock.openDate")}</span>
                     <input
                       type="date"
