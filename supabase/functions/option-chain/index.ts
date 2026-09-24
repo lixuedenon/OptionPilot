@@ -1,3 +1,4 @@
+// supabase/functions/option-chain/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -58,6 +59,59 @@ async function writeCache(cacheKey: string, symbol: string, result: ChainResult)
     // from Yahoo instead of hitting a stale/absent cache entry.
   }
 }
+
+// Reads whatever is in the cache table regardless of TTL — used only as a
+// last-resort fallback when the rate limiter says "no more real Yahoo
+// calls right now." Serving slightly-stale data beats a hard error when
+// the alternative is protecting the shared IP from a Yahoo block.
+async function readStaleCache(cacheKey: string): Promise<ChainResult | null> {
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("option_chain_cache")
+      .select("data")
+      .eq("cache_key", cacheKey)
+      .maybeSingle();
+    if (error || !data) return null;
+    return data.data as ChainResult;
+  } catch {
+    return null;
+  }
+}
+
+// Global circuit breaker — see the migration
+// (20260923000000_create_yahoo_rate_limit.sql) for why this needs to be
+// an atomic DB-side check-and-increment rather than a plain read here.
+// Defaults are deliberately conservative for a just-launched, low-traffic
+// app; tune via env vars (Supabase project → Edge Functions → Secrets)
+// once real usage patterns are known, without a code change.
+const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get("YAHOO_RATE_LIMIT_WINDOW_SECONDS") ?? "60");
+const RATE_LIMIT_MAX_CALLS = Number(Deno.env.get("YAHOO_RATE_LIMIT_MAX_CALLS") ?? "20");
+
+async function tryConsumeRateLimitBudget(): Promise<boolean> {
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase.rpc("check_and_increment_rate_limit", {
+      limiter_id: "yahoo",
+      window_seconds: RATE_LIMIT_WINDOW_SECONDS,
+      limit_count: RATE_LIMIT_MAX_CALLS,
+    });
+    if (error) return true; // limiter itself broken — fail OPEN, don't take the whole feature down
+    return data === true;
+  } catch {
+    return true; // same reasoning — a rate-limiter outage shouldn't be a user-facing outage
+  }
+}
+
+// In-flight request de-duplication — scoped to this warm function
+// instance (Edge Functions can and do run multiple concurrent instances,
+// so this is a best-effort reduction, not a global guarantee the way the
+// DB-backed cache/rate-limiter above are). When several browsers ask for
+// the exact same (symbol, date) at the same moment — the common case is
+// many people looking at the same popular ticker — only the FIRST one
+// actually talks to Yahoo; the rest await that same in-progress promise
+// instead of each starting their own redundant fetch.
+const inflightRequests = new Map<string, Promise<ChainResult>>();
 
 // Yahoo now gates /v7/finance/options behind a session cookie + crumb token
 // (the quote endpoint used by stock-quote does not need this, which is why
@@ -216,66 +270,105 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // First call (no date): gives the full list of available expirations plus
-    // the chain nearest to today, which Yahoo uses as its default.
-    const base = await fetchYahooChain(symbol);
-    const expirationDates = base.expirationDates ?? [];
-    if (expirationDates.length === 0) {
+    // Cache miss past this point — this request WOULD talk to Yahoo. Two
+    // guards before it's allowed to:
+    //
+    // 1. In-flight dedupe: if another concurrent request already started
+    //    fetching this exact (symbol, date), piggyback on it instead of
+    //    starting a second real Yahoo fetch.
+    // 2. Global rate limiter: a hard ceiling on how many NEW (not
+    //    deduped, not cached) Yahoo lookups this function will make per
+    //    window, shared across every user — see the migration for why.
+    const existingInflight = inflightRequests.get(cacheKey);
+    if (existingInflight) {
+      const result = await existingInflight;
       return new Response(
-        JSON.stringify({ error: "No option expirations available for symbol" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        JSON.stringify(result),
+        { headers: { ...corsHeaders, "Content-Type": "application/json", "X-Cache": "MISS-DEDUPED" } },
       );
     }
 
-    // Figure out which expiration we actually want: nearest available date to
-    // the caller's requested date (or just Yahoo's default if none given).
-    let targetEpoch: number | null = null;
-    if (dateParam) {
-      const parsed = Date.parse(`${dateParam}T00:00:00Z`);
-      if (!Number.isNaN(parsed)) targetEpoch = Math.floor(parsed / 1000);
-    }
-
-    let usedExpiry: number;
-    if (targetEpoch === null) {
-      usedExpiry = base.options?.[0]?.expirationDate ?? expirationDates[0];
-    } else {
-      usedExpiry = expirationDates.reduce((best, cur) =>
-        Math.abs(cur - targetEpoch!) < Math.abs(best - targetEpoch!) ? cur : best
-      , expirationDates[0]);
-    }
-
-    // Reuse the default chain if it already matches; otherwise fetch that specific expiry.
-    let block = base.options?.find((o) => o.expirationDate === usedExpiry);
-    if (!block) {
-      const specific = await fetchYahooChain(symbol, usedExpiry);
-      block = specific.options?.find((o) => o.expirationDate === usedExpiry) ?? specific.options?.[0];
-    }
-
-    if (!block) {
+    const allowed = await tryConsumeRateLimitBudget();
+    if (!allowed) {
+      const stale = await readStaleCache(cacheKey);
+      if (stale) {
+        return new Response(
+          JSON.stringify(stale),
+          { headers: { ...corsHeaders, "Content-Type": "application/json", "X-Cache": "STALE-RATE-LIMITED" } },
+        );
+      }
       return new Response(
-        JSON.stringify({ error: "No option data found for the selected expiry" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        JSON.stringify({ error: "Too many requests right now — please try again in a moment." }),
+        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    const out: ChainResult = {
-      symbol: symbol.toUpperCase(),
-      usedExpiry,
-      usedExpiryDate: isoDateUTC(usedExpiry),
-      expirationDates,
-      calls: normalizeRows(block.calls),
-      puts: normalizeRows(block.puts),
-    };
+    const fetchPromise = (async (): Promise<ChainResult> => {
+      // First call (no date): gives the full list of available expirations plus
+      // the chain nearest to today, which Yahoo uses as its default.
+      const base = await fetchYahooChain(symbol);
+      const expirationDates = base.expirationDates ?? [];
+      if (expirationDates.length === 0) {
+        throw new Error("No option expirations available for symbol");
+      }
 
-    // Fire-and-forget from the response's perspective, but awaited so the
-    // function doesn't get torn down mid-write — Edge Functions don't keep
-    // running background work after the response is sent.
-    await writeCache(cacheKey, symbol.toUpperCase(), out);
+      // Figure out which expiration we actually want: nearest available date to
+      // the caller's requested date (or just Yahoo's default if none given).
+      let targetEpoch: number | null = null;
+      if (dateParam) {
+        const parsed = Date.parse(`${dateParam}T00:00:00Z`);
+        if (!Number.isNaN(parsed)) targetEpoch = Math.floor(parsed / 1000);
+      }
 
-    return new Response(
-      JSON.stringify(out),
-      { headers: { ...corsHeaders, "Content-Type": "application/json", "X-Cache": "MISS" } },
-    );
+      let usedExpiry: number;
+      if (targetEpoch === null) {
+        usedExpiry = base.options?.[0]?.expirationDate ?? expirationDates[0];
+      } else {
+        usedExpiry = expirationDates.reduce((best, cur) =>
+          Math.abs(cur - targetEpoch!) < Math.abs(best - targetEpoch!) ? cur : best
+        , expirationDates[0]);
+      }
+
+      // Reuse the default chain if it already matches; otherwise fetch that specific expiry.
+      let block = base.options?.find((o) => o.expirationDate === usedExpiry);
+      if (!block) {
+        const specific = await fetchYahooChain(symbol, usedExpiry);
+        block = specific.options?.find((o) => o.expirationDate === usedExpiry) ?? specific.options?.[0];
+      }
+
+      if (!block) {
+        throw new Error("No option data found for the selected expiry");
+      }
+
+      const out: ChainResult = {
+        symbol: symbol.toUpperCase(),
+        usedExpiry,
+        usedExpiryDate: isoDateUTC(usedExpiry),
+        expirationDates,
+        calls: normalizeRows(block.calls),
+        puts: normalizeRows(block.puts),
+      };
+
+      // Fire-and-forget from the response's perspective, but awaited so the
+      // function doesn't get torn down mid-write — Edge Functions don't keep
+      // running background work after the response is sent.
+      await writeCache(cacheKey, symbol.toUpperCase(), out);
+      return out;
+    })();
+
+    inflightRequests.set(cacheKey, fetchPromise);
+    try {
+      const out = await fetchPromise;
+      return new Response(
+        JSON.stringify(out),
+        { headers: { ...corsHeaders, "Content-Type": "application/json", "X-Cache": "MISS" } },
+      );
+    } finally {
+      // Always clear the slot once settled (success or failure) so the
+      // next real request for this key can try again instead of being
+      // stuck awaiting a promise that already resolved/rejected.
+      inflightRequests.delete(cacheKey);
+    }
   } catch (err) {
     return new Response(
       JSON.stringify({ error: err instanceof Error ? err.message : "Unknown error" }),
