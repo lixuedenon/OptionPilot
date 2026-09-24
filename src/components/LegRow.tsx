@@ -85,7 +85,13 @@ interface Props {
   // already-closed leg, shown but no longer actionable), and falls back to
   // `deleteVariant` otherwise — see the deleteConfig logic below.
   onDelete?: () => void;
-  onAddToPreset: () => void;
+  // 2026-09-23起可选：跟onRoll/onHedge/onProtect同一类——对比槽位
+  // （ComboCompareSlots.tsx的B/C候选方案）v1故意不接"添加到预设"这个动
+  // 作（那套流程是给主combo的SavePresetDialog设计的），之前这个字段是
+  // 必填的，调用方漏传时typecheck能抓出来，但vite build不做类型检查，
+  // 运行时onAddToPreset会是undefined，用户在B/C槽位点开某条腿的菜单选
+  // "添加到预设"会直接抛"onAddToPreset is not a function"崩溃。
+  onAddToPreset?: () => void;
   onRoll?: () => void;
   onHedge?: () => void;
   onProtect?: () => void;
@@ -294,7 +300,7 @@ function LegMenu({
     hint?: string;
     title?: string;
   };
-  onAddToPreset: () => void;
+  onAddToPreset?: () => void;
   onRoll?: () => void;
   onHedge?: () => void;
   onProtect?: () => void;
@@ -355,7 +361,7 @@ function LegMenu({
               <div className="my-0.5 border-t border-slate-800" />
             </>
           )}
-          <MenuItem icon={<BookmarkPlus size={12} />} label={t("leg.addToPreset")} hint={t("leg.all")} onClick={() => run(onAddToPreset)} tone="emerald" />
+          {onAddToPreset && <MenuItem icon={<BookmarkPlus size={12} />} label={t("leg.addToPreset")} hint={t("leg.all")} onClick={() => run(onAddToPreset)} tone="emerald" />}
           <div className="my-0.5 border-t border-slate-800" />
           <MenuItem icon={<Ban size={12} />} label={disabled ? t("leg.unblock") : t("leg.block")} hint={t("leg.single")} onClick={() => run(onToggleDisable)} tone="amber" />
           {onDelete && (

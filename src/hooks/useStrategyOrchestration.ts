@@ -167,8 +167,21 @@ export function useStrategyOrchestration(params: {
   // when someone already has a combo built in ordinary analysis mode and
   // wants to paper-trade it without rebuilding it a second time.
   const [addingToSim, setAddingToSim] = useState(false);
-  const handleAddToSimAccount = useCallback(async () => {
-    if (!onAddToSimAccount || activeLegs.length === 0 || spot <= 0) return;
+  // 2026-09-23修复：override参数——App.tsx的handleToolbarAddToSim（B/C对比槽
+  // 位激活时）需要把该槽位自己的legs/spot/symbol/openingAt喂进来，而不是
+  // 无条件用这个hook自己作用域里的activeLegs/spot/symbol/openingAt（那些
+  // 永远是A容器的数据）。之前这个函数签名是`async () => {...}`，不接受任
+  // 何参数，App.tsx那边传参会被TypeScript报"Expected 0 arguments"、运行
+  // 时又被JS静默丢弃——B/C槽位点"加入模拟账户"实际加的还是A的内容，是一
+  // 个typecheck能抓、但build/eslint都抓不出来的真实bug（vite build不做类
+  // 型检查，见CLAUDE.md"一、验证手段"）。override不传时（A容器）行为完
+  // 全不变。
+  const handleAddToSimAccount = useCallback(async (override?: { legs: Leg[]; spot: number; symbol: string; openingAt?: number }) => {
+    const effectiveLegs = override ? override.legs : activeLegs;
+    const effectiveSpot = override ? override.spot : spot;
+    const effectiveSymbol = override ? override.symbol : symbol;
+    const effectiveOpeningAt = override ? override.openingAt : openingAt;
+    if (!onAddToSimAccount || effectiveLegs.length === 0 || effectiveSpot <= 0) return;
     setAddingToSim(true);
     try {
       // openingAt carries over the combo's real opening date (e.g. restored
@@ -178,7 +191,7 @@ export function useStrategyOrchestration(params: {
       // otherwise every DTE/P&L figure downstream in the simulator is
       // computed against the wrong elapsed time. See simAccount.ts's
       // openSimPosition for the other half of this.
-      const result = await onAddToSimAccount({ symbol: symbol.trim(), legs: activeLegs, spot, openingAt });
+      const result = await onAddToSimAccount({ symbol: effectiveSymbol.trim(), legs: effectiveLegs, spot: effectiveSpot, openingAt: effectiveOpeningAt });
       if (!result.ok && result.needsSetup) {
         window.alert(t("sim.needSetupFirst"));
       }
