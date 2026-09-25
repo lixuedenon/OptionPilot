@@ -26,6 +26,11 @@ interface Props {
   onSaveFirstReplace: () => void;
 
   confirmLeaveOpen: boolean;
+  // 2026-09-24新增，配合"退出时逐一提示"——当前正在问哪一个combo（"方案
+  // A/B/C"）、后面还有几个待确认，undefined/0表示不需要显示（只有一个
+  // 待确认，或者调用方没传）。
+  leaveComboLabel?: string;
+  leaveRemainingCount?: number;
   onCancelLeave: () => void;
   onDontSaveLeave: () => void;
   onSaveFirstLeave: () => void;
@@ -67,7 +72,7 @@ interface Props {
 export default function StrategyPersistenceDialogs({
   confirmPresetOpen, onCancelPresetSwitch, onDontSavePresetSwitch, onSaveSnapshotThenPresetSwitch,
   confirmReplaceOpen, onCancelReplace, onDontSaveReplace, onSaveFirstReplace,
-  confirmLeaveOpen, onCancelLeave, onDontSaveLeave, onSaveFirstLeave,
+  confirmLeaveOpen, leaveComboLabel, leaveRemainingCount, onCancelLeave, onDontSaveLeave, onSaveFirstLeave,
   confirmSwitchOpen, onCancelSwitch, onDontSaveSwitch, onSaveSnapshotThenSwitch,
   confirmSymbolChangeOpen, onCancelSymbolChange, onDontSaveSymbolChange, onSaveSnapshotThenSymbolChange,
   saveStrategyOpen, onCloseSaveStrategy, onSaveStrategy, onOverwriteStrategy,
@@ -95,6 +100,8 @@ export default function StrategyPersistenceDialogs({
 
       {confirmLeaveOpen && (
         <ConfirmLeaveDialog
+          comboLabel={leaveComboLabel}
+          remainingCount={leaveRemainingCount}
           onCancel={onCancelLeave}
           onDontSave={onDontSaveLeave}
           onSaveFirst={onSaveFirstLeave}

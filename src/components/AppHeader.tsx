@@ -112,8 +112,15 @@ interface Props {
   onCancelSimOrigin?: () => void;
   onBackHome?: () => void;
   isCompareMode: boolean;
-  canSaveStrategy: boolean;
-  onRequestLeave: () => void; // opens ConfirmLeaveDialog — App.tsx still owns that dialog's rendering and outcome handlers
+  // 2026-09-24修复：这里以前还接一个`canSaveStrategy`，自己判断"要不要提
+  // 示"——只看得到A（主combo）是否有未保存改动，看不到B/C（多方案对比槽
+  // 位）。xue反馈"打开的对比组合有改动就该逐一提示，没改动就不提示"，这
+  // 个判断必须同时看A和所有B/C，而B/C的状态只有App.tsx自己知道（见
+  // useCompareSlots.ts的CompareSlot.baseline/isSlotDirty）。所以不再在这
+  // 里做判断，退出图标点击时无条件调用`onRequestLeave`，由App.tsx的
+  // requestLeave统一算"到底有没有东西没保存、需不需要弹、弹哪几个"——包
+  // 括"什么都没改，直接调onBackHome、不弹任何东西"这个分支也移到那边了。
+  onRequestLeave: () => void; // App.tsx still owns the confirm dialog(s)' rendering and outcome handlers
 
   // presets
   customPresets: CustomPreset[];
@@ -156,7 +163,6 @@ export default function AppHeader({
   onCancelSimOrigin,
   onBackHome,
   isCompareMode,
-  canSaveStrategy,
   onRequestLeave,
   customPresets,
   onDeleteCustomPreset,
@@ -187,7 +193,7 @@ export default function AppHeader({
         <button
           onClick={() => {
             if (simOrigin) { onCancelSimOrigin?.(); return; }
-            if (!isCompareMode && canSaveStrategy) { onRequestLeave(); return; }
+            if (!isCompareMode) { onRequestLeave(); return; }
             onBackHome?.();
           }}
           disabled={!onBackHome && !onCancelSimOrigin}

@@ -28,6 +28,32 @@ import { estimateRescaledPremium } from "@/lib/pricing";
 export interface CompareSlot {
   id: string;
   legs: Leg[];
+  // 2026-09-24新增，配合"退出时按每个组合是否有未保存改动逐一提示"这轮改
+  // 动——记录这个槽位"上一次被认为是干净状态"时的legs序列化快照：新建时
+  // 是空数组的序列化结果，套用预设(applyPresetToSlot)/打开策略库
+  // (applyStrategyToSlot)/成功保存(markSlotSaved)时都会刷新成当时的legs，
+  // 跟A的`strategyBaseline`（App.tsx/useSavedStrategies.ts）是同一个思路，
+  // 只是B/C没有独立的symbol/shifts/openingAt，只需要序列化legs本身。
+  baseline: string;
+}
+
+// 跟savedStrategies.ts里`serializeStrategyState`用的是同一套字段/同一种
+// 拼接方式，只是不包含symbol/shifts/openingAt——B/C槽位没有这几个独立的
+// 概念（跟主combo共用同一个全局symbol/spot），"这个槽位是否被改动过"只取
+// 决于legs本身有没有变化。刻意不直接复用`serializeStrategyState`（塞几个
+// 占位参数进去凑参数表）：那样两处的"是否等价"判断就会隐式绑死在一起，以
+// 后如果`serializeStrategyState`的字段列表变了，这里也要跟着改，但两者的
+// 语义其实是独立的（一个包含symbol，一个不包含）。
+export function serializeSlotLegs(legs: Leg[]): string {
+  const norm = (l: Leg) => `${l.action}-${l.type}-${l.strike}-${l.dte}-${l.premium}-${l.kind ?? "option"}-${l.shares ?? 100}-${l.qty ?? 1}-${l.disabled ?? false}`;
+  return legs.map(norm).join("|");
+}
+
+// 供App.tsx算"退出前要不要逐一提示保存"用：跟`serializeStrategyState`+
+// `strategyBaseline`比较（A用的那一套）是同一个判断思路，这里是B/C专用
+// 的等价版本。
+export function isSlotDirty(slot: CompareSlot): boolean {
+  return serializeSlotLegs(slot.legs) !== slot.baseline;
 }
 
 // A（主combo）之外最多再加2个——B/C。多了对比意义反而下降（曲线叠在一起
@@ -45,7 +71,7 @@ export function useCompareSlots() {
   const [compareSlots, setCompareSlots] = useState<CompareSlot[]>([]);
 
   const addCompareSlot = useCallback(() => {
-    setCompareSlots((prev) => (prev.length >= MAX_COMPARE_SLOTS ? prev : [...prev, { id: uid(), legs: [] }]));
+    setCompareSlots((prev) => (prev.length >= MAX_COMPARE_SLOTS ? prev : [...prev, { id: uid(), legs: [], baseline: serializeSlotLegs([]) }]));
   }, []);
 
   const removeCompareSlot = useCallback((slotId: string) => {
@@ -132,9 +158,10 @@ export function useCompareSlots() {
             dte: resolved ? resolved.dte : targetDte,
           };
         });
-        return { ...s, legs: scaled };
+        return { ...s, legs: scaled, baseline: serializeSlotLegs(scaled) };
       }
-      return { ...s, legs: capped.map((l) => ({ ...l, id: uid(), dte: l.kind === "stock" ? l.dte : nearestFridayDte(l.dte) })) };
+      const finalLegs = capped.map((l) => ({ ...l, id: uid(), dte: l.kind === "stock" ? l.dte : nearestFridayDte(l.dte) }));
+      return { ...s, legs: finalLegs, baseline: serializeSlotLegs(finalLegs) };
     }));
   }, []);
 
@@ -176,8 +203,19 @@ export function useCompareSlots() {
           dte: resolved ? resolved.dte : targetDte,
         };
       });
-      return { ...s, legs: scaled };
+      return { ...s, legs: scaled, baseline: serializeSlotLegs(scaled) };
     }));
+  }, []);
+
+  // 2026-09-24新增，配合"退出时逐一提示"这轮改动：B/C的"保存策略组合"按
+  // 钮（ComboCompareSlots.tsx，走App.tsx的handleSaveStrategyForActive）保
+  // 存成功后调这个，把该槽位的baseline刷新成当前legs——不然保存完之后这
+  // 个槽位仍然会被判定为"跟baseline不一致"（因为baseline还停在加载/新建
+  // 那一刻），退出时明明刚保存过还会被当成未保存改动逐一提示。
+  const markSlotSaved = useCallback((slotId: string) => {
+    setCompareSlots((prev) => prev.map((s) =>
+      s.id === slotId ? { ...s, baseline: serializeSlotLegs(s.legs) } : s
+    ));
   }, []);
 
   return {
@@ -192,5 +230,6 @@ export function useCompareSlots() {
     applyStrategyToSlot,
     setCompareSlotLegs,
     clearCompareSlots,
+    markSlotSaved,
   };
 }

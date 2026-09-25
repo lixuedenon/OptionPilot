@@ -63,6 +63,11 @@ interface Props {
   selectedLegIds: Set<string>;
   onClearLegSelection: () => void;
   onSelectAllLegs: () => void;
+  // 2026-09-24：这个prop不再用来决定"保存策略组合"按钮是否可点——见下面
+  // 按钮定义处的注释。App.tsx里`canSaveStrategy`这同一个值还在给
+  // AppHeader.tsx用来判断"有没有未保存的改动，离开前要不要弹确认"，那
+  // 是完全独立、依然成立的用途，这个prop本身留着不删（调用方App.tsx也
+  // 还在传），只是这个组件自己不再用它来禁用按钮。
   canSaveStrategy: boolean;
   onSaveStrategy: () => void;
   allSelectedDisabled: boolean;
@@ -130,6 +135,7 @@ export default function LegListSection({
   selectedLegIds,
   onClearLegSelection,
   onSelectAllLegs,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept unused on purpose, see the Props interface comment just above
   canSaveStrategy,
   onSaveStrategy,
   allSelectedDisabled,
@@ -259,9 +265,15 @@ export default function LegListSection({
             columns, computed from the same activeLegs/activeTrackedLegs/
             spot values), except that one is a strict superset: it adds a
             fourth 持仓盈亏 column. Per xue's request, only one survives. */}
+        {/* 2026-09-24改：加了flex-wrap（+gap-y-1）作为最后一道防线——全选
+            后"已选N条"+策略徽章+到期盈利/盈亏平衡+若干操作按钮全部挤在
+            一行，内容比容器宽时，没有flex-wrap会被flexbox压缩到文字逐字
+            竖排（本行下面每个子项现在都补了shrink-0+whitespace-nowrap，
+            不会再被压缩），改成"装不下就换到第二行"而不是压扁文字或水
+            平滚动。 */}
         {legs.length > 0 && (
-          <div className="mb-1 flex items-center gap-2 rounded border border-slate-800 bg-slate-900/40 px-2 py-1">
-            <label className="flex shrink-0 items-center gap-1.5 text-[10px] text-slate-400">
+          <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1 rounded border border-slate-800 bg-slate-900/40 px-2 py-1">
+            <label className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[10px] text-slate-400">
               <input
                 type="checkbox"
                 checked={selectedCount > 0 && selectedCount === legs.length}
@@ -280,62 +292,75 @@ export default function LegListSection({
             {inlinePopBreakeven && (
               <PopBreakevenBadge pop={inlinePopBreakeven.pop} breakevens={inlinePopBreakeven.breakevens} />
             )}
-            <div className="ml-auto flex items-center gap-1.5">
+            {/* 2026-09-24改：全选后这一排按钮原来是图标+文字，5个批量按钮
+                +保存按钮加起来太宽，在38%宽的左侧面板里装不下，被flexbox
+                挤压到文字逐字换行竖排（"批\n量\n屏\n蔽"）——违反了"容器尺寸
+                不能变"这条硬性要求。改成跟App.tsx legToolbar同样的处理：
+                全部收窄成纯图标+悬浮提示（title），文字挪进title，不再
+                占据横向空间；容器/按钮框本身尺寸不变，只是不再显示文字。 */}
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">
               {selectedCount > 0 && (
                 <>
                   <button
                     onClick={onBulkToggleDisable}
                     disabled={locked}
-                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-amber-400 transition hover:border-amber-500/50 hover:bg-amber-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={allSelectedDisabled ? t("leg.bulkUnblock") : t("leg.bulkBlock")}
+                    className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-amber-400 transition hover:border-amber-500/50 hover:bg-amber-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <Ban size={11} />
-                    {allSelectedDisabled ? t("leg.bulkUnblock") : t("leg.bulkBlock")}
+                    <Ban size={12} />
                   </button>
                   <button
                     onClick={onRequestBulkDelete}
                     disabled={locked}
-                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-rose-400 transition hover:border-rose-500/50 hover:bg-rose-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={t("leg.bulkDelete")}
+                    className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-rose-400 transition hover:border-rose-500/50 hover:bg-rose-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <Trash2 size={11} />
-                    {t("leg.bulkDelete")}
+                    <Trash2 size={12} />
                   </button>
                   <button
                     onClick={onUnifyQty}
                     disabled={!canUnifyLegs || locked}
-                    title={t("leg.unifyHint")}
-                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={`${t("leg.unifyQty")} · ${t("leg.unifyHint")}`}
+                    className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <Hash size={11} />
-                    {t("leg.unifyQty")}
+                    <Hash size={12} />
                   </button>
                   <button
                     onClick={onUnifyStrike}
                     disabled={!canUnifyLegs || locked}
-                    title={t("leg.unifyHint")}
-                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={`${t("leg.unifyStrike")} · ${t("leg.unifyHint")}`}
+                    className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <Crosshair size={11} />
-                    {t("leg.unifyStrike")}
+                    <Crosshair size={12} />
                   </button>
                   <button
                     onClick={onUnifyDte}
                     disabled={!canUnifyLegs || locked}
-                    title={t("leg.unifyHint")}
-                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={`${t("leg.unifyDte")} · ${t("leg.unifyHint")}`}
+                    className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <CalendarClock size={11} />
-                    {t("leg.unifyDte")}
+                    <CalendarClock size={12} />
                   </button>
                 </>
               )}
+              {/* 2026-09-24修复：这个按钮原来是`disabled={!canSaveStrategy
+                  || locked}`——`canSaveStrategy`要求方案A的内容跟
+                  `strategyBaseline`（上次保存/打开时的快照）有差异才能点，
+                  没有任何改动时按钮是禁用的。但方案B/C同名按钮从来没有这
+                  条"必须有改动"的门槛（只看`locked`），保存对话框自己的
+                  `findDuplicate`已经会在检测到完全重复时提示"覆盖"而不是
+                  静默建重复记录，按钮层面的这道额外门槛是多余的、也是A跟
+                  B/C行为不对等的根源——xue反馈"焦点切到A就不能保存了"，
+                  根因就是这个：不是bug意义上的坏了，是A自己"必须先改点什
+                  么"这条B/C没有的隐藏限制。去掉这条限制，改成只看
+                  `locked`，跟B/C完全一致。 */}
               <button
                 onClick={onSaveStrategy}
-                disabled={!canSaveStrategy || locked}
+                disabled={locked}
                 title={t("toolbar.saveStrategy")}
-                className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-emerald-400 transition hover:border-emerald-500/50 hover:bg-emerald-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-emerald-400 transition hover:border-emerald-500/50 hover:bg-emerald-950/30 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <Save size={11} />
-                {t("toolbar.saveStrategy")}
+                <Save size={12} />
               </button>
             </div>
           </div>

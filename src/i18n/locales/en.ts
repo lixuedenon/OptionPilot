@@ -184,6 +184,7 @@ const en: Dict = {
   "confirm.replaceDesc": "Picking a new preset will replace the current legs, and you have unsaved changes. Save first?",
   "confirm.leaveTitle": "Current combo isn't saved",
   "confirm.leaveDesc": "Leaving analysis mode will lose your unsaved changes. Save first?",
+  "confirm.leaveRemaining": "{count} more plan(s) to confirm after this one",
   "confirm.saveFirst": "Save First",
   "confirm.lockRollTitle": "Can't Be Undone After Saving",
   "confirm.lockRollDesc": "There's an unsaved Roll/Protect/Hedge in today's combo. Saving a snapshot permanently records it into history — after that, it can no longer be undone. Save anyway?",

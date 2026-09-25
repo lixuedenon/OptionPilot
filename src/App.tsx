@@ -19,7 +19,7 @@ import { useSavedStrategies } from "@/hooks/useSavedStrategies";
 import { useLegEditing } from "@/hooks/useLegEditing";
 import { useLegBatchOps } from "@/hooks/useLegBatchOps";
 import { useComboAnalytics } from "@/hooks/useComboAnalytics";
-import { useCompareSlots, COMPARE_SLOT_COLORS, MAX_COMPARE_SLOT_LEGS, MAX_COMPARE_SLOTS } from "@/hooks/useCompareSlots";
+import { useCompareSlots, COMPARE_SLOT_COLORS, MAX_COMPARE_SLOT_LEGS, MAX_COMPARE_SLOTS, isSlotDirty } from "@/hooks/useCompareSlots";
 import ComboCompareSlots from "@/components/ComboCompareSlots";
 import { useStrategyOrchestration } from "@/hooks/useStrategyOrchestration";
 import { nearestFridayDte, formatDateInput, parseDateInput } from "@/lib/dateUtils";
@@ -118,6 +118,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     applyStrategyToSlot,
     setCompareSlotLegs,
     clearCompareSlots,
+    markSlotSaved,
   } = useCompareSlots();
   // 2026-09-22新增："A/B/C完全对等"这轮改动的第一步——哪个combo容器当前
   // 被"激活"（点击容器任意区域切换，见ComboCompareSlots.tsx/LockedOverlay
@@ -329,6 +330,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // same lifecycle as pendingPresetReplace above.
   const pendingLeaveAfterSave = useRef(false);
   const [confirmLeaveOpen, setConfirmLeaveOpen] = useState(false);
+  // 2026-09-24新增："退出时按每个有未保存改动的组合逐一提示"——xue明确要
+  // 求：打开的对比组合（A/B/C）里，只要有改动的就要在退出前逐一提示保
+  // 存，全都没改动的话直接退出不弹任何提示。队列里的元素是combo索引
+  // （0=A，1/2=compareSlots[0]/[1]，跟activeComboIndex同一套编号），由
+  // requestLeave一次性算出"当前有哪些combo脏了"，之后每确认/跳过一个就
+  // 从队首弹出一个，队列空了才真正调用onBackHome。
+  const [leaveQueue, setLeaveQueue] = useState<number[]>([]);
   const symbolWrapRef = useRef<HTMLDivElement>(null);
   const pendingPreset = useRef<{ name: string; rawLegs: Leg[] } | null>(null);
   const legBaseSpot = useRef(simOriginInitial?.spot ?? 0);
@@ -695,6 +703,32 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const strategyName = useMemo(() => matchStrategy(activeLegs, spot, customPresets), [activeLegs, spot, customPresets]);
   const canSaveStrategy = activeLegs.length > 0 && serializeStrategyState(symbol, legs, shifts, openingAt) !== strategyBaseline;
 
+  // 2026-09-24新增："打开的对比组合，没有任何改动就不需要提示保存；有改
+  // 动的就逐一提示"（xue明确要求，理解确认过）。一次性算出当前哪些combo
+  // 脏了（0=A/主combo，1/2=compareSlots[0]/[1]，跟activeComboIndex同一套
+  // 编号），全干净直接走onBackHome，否则把队列灌进leaveQueue、弹出队首那
+  // 个的确认框——AppHeader点击退出图标时统一调这个，不再由AppHeader自己
+  // 判断"要不要提示"（那样只能看到A，看不到B/C）。
+  const requestLeave = () => {
+    const dirty: number[] = [];
+    if (canSaveStrategy) dirty.push(0);
+    compareSlots.forEach((s, i) => { if (isSlotDirty(s)) dirty.push(i + 1); });
+    if (dirty.length === 0) { onBackHome?.(); return; }
+    setLeaveQueue(dirty);
+    setConfirmLeaveOpen(true);
+  };
+  // 队首那个combo被处理完（跳过不保存，或者保存成功）之后调用：从队列里
+  // 弹出一个，还有剩的就重新弹确认框问下一个（ConfirmLeaveDialog的
+  // onCancel/onDontSave/onSaveFirst三个handler，以及保存成功后的两个
+  // handleXxxForActive wrapper，都会走到这里），队列空了才是真的离开。
+  const advanceLeaveQueue = () => {
+    setLeaveQueue((prev) => {
+      const rest = prev.slice(1);
+      if (rest.length === 0) { onBackHome?.(); } else { setConfirmLeaveOpen(true); }
+      return rest;
+    });
+  };
+
   // Combo-mutation + strategy-persistence/mode-switch cluster — moved to
   // useStrategyOrchestration.ts verbatim, 2026-09-08 (second file-size pass).
   // CLAUDE.md flags this as the HIGHER-risk of the two "intentionally not
@@ -811,18 +845,28 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       const updated = await saveStrategy({ filename, symbol, spot, legs: activeSlot.legs, shifts: { dS: 0, dT: 0, dV: 0 }, openingAt: Date.now() });
       setSavedStrategies(updated);
       setSaveStrategyOpen(false);
+      // 2026-09-24新增：保存成功后把这个槽位的baseline刷新成当前legs（不
+      // 然刚保存完还会被判定成"未保存改动"），如果这次保存是"逐一提示"退
+      // 出流程里点的"先保存"，接着把队列往前推一个（见requestLeave/
+      // advanceLeaveQueue上面的注释）。
+      markSlotSaved(activeSlot.id);
+      if (leaveQueue.length > 0) advanceLeaveQueue();
       return;
     }
     await handleSaveStrategy(filename);
+    if (leaveQueue.length > 0) advanceLeaveQueue();
   };
   const handleOverwriteStrategyForActive = async (id: string, filename: string) => {
     if (activeSlot) {
       const updated = await overwriteStrategy(id, { filename, symbol, spot, legs: activeSlot.legs, shifts: { dS: 0, dT: 0, dV: 0 }, openingAt: Date.now() });
       setSavedStrategies(updated);
       setSaveStrategyOpen(false);
+      markSlotSaved(activeSlot.id);
+      if (leaveQueue.length > 0) advanceLeaveQueue();
       return;
     }
     await handleOverwriteStrategy(id, filename);
+    if (leaveQueue.length > 0) advanceLeaveQueue();
   };
 
   // 2026-09-12: wraps handleSaveTracked ONLY for TrackedComboSection's own
@@ -956,8 +1000,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         onCancelSimOrigin={onCancelSimOrigin}
         onBackHome={onBackHome}
         isCompareMode={isCompareMode}
-        canSaveStrategy={canSaveStrategy}
-        onRequestLeave={() => setConfirmLeaveOpen(true)}
+        onRequestLeave={requestLeave}
         customPresets={customPresets}
         onDeleteCustomPreset={handleDeleteCustom}
         onSelectPreset={(preset) => {
@@ -1446,13 +1489,33 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           // pendingPresetReplace stays set — applied once the save succeeds
         }}
         confirmLeaveOpen={confirmLeaveOpen}
-        onCancelLeave={() => setConfirmLeaveOpen(false)}
-        onDontSaveLeave={() => { setConfirmLeaveOpen(false); onBackHome?.(); }}
+        // 2026-09-24新增：队首元素对应哪个combo，就显示哪个的名字（"方案
+        // A/B/C"），还剩几个待确认也一起显示——"逐一提示"如果每次弹出的
+        // 框看起来都一样，用户会以为是同一个提示重复弹（bug假象），必须
+        // 让人分清楚现在问的是哪一个、后面还有没有。
+        leaveComboLabel={
+          leaveQueue.length > 0
+            ? [t("compare.slotA"), t("compare.slotB"), t("compare.slotC")][leaveQueue[0]]
+            : undefined
+        }
+        leaveRemainingCount={Math.max(0, leaveQueue.length - 1)}
+        onCancelLeave={() => { setConfirmLeaveOpen(false); setLeaveQueue([]); }}
+        onDontSaveLeave={() => { setConfirmLeaveOpen(false); advanceLeaveQueue(); }}
         onSaveFirstLeave={() => {
+          // 队首如果是B/C，先把激活焦点切过去，保存对话框才会读到正确的
+          // 那个槽位（activeSlot由activeComboIndex决定，见下面
+          // handleSaveStrategyForActive/onSaveStrategy的接线）。
+          const target = leaveQueue[0];
+          if (target !== undefined && target > 0) setActiveComboIndex(target);
           setConfirmLeaveOpen(false);
-          pendingLeaveAfterSave.current = true;
           setSaveStrategyOpen(true);
-          // navigation fires from inside handleSaveStrategy/handleOverwriteStrategy once the save succeeds
+          // 保存成功后的队列推进在handleSaveStrategyForActive/
+          // handleOverwriteStrategyForActive内部（那两个函数已经知道这次
+          // 保存的是A还是哪个槽位），不需要再靠pendingLeaveAfterSave这个
+          // 旧的单combo专用ref——它继续留着给`handleSaveStrategy`/
+          // `handleOverwriteStrategy`（useStrategyOrchestration.ts）内部
+          // 判断用，但这里不再置true，避免旧的"保存后直接onBackHome"分支
+          // 跟新的队列逻辑重复触发导航。
         }}
         confirmSwitchOpen={confirmSwitchOpen}
         onCancelSwitch={() => { setConfirmSwitchOpen(false); pendingSwitchSource.current = null; }}
@@ -1491,7 +1554,17 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           }
         }}
         saveStrategyOpen={saveStrategyOpen}
-        onCloseSaveStrategy={() => { setSaveStrategyOpen(false); pendingPresetReplace.current = null; pendingLeaveAfterSave.current = false; pendingSaveTrackedAfterStrategy.current = false; }}
+        onCloseSaveStrategy={() => {
+          setSaveStrategyOpen(false);
+          pendingPresetReplace.current = null;
+          pendingLeaveAfterSave.current = false;
+          pendingSaveTrackedAfterStrategy.current = false;
+          // 2026-09-24新增：如果是"逐一提示"流程里点了"先保存"、但在保存
+          // 对话框里又取消了，整个退出动作应该整体放弃（用户还在页面
+          // 上，不应该假装剩下没确认的combo也处理完了），而不是悄悄跳到
+          // 下一个或者直接离开。
+          setLeaveQueue([]);
+        }}
         onSaveStrategy={handleSaveStrategyForActive}
         onOverwriteStrategy={handleOverwriteStrategyForActive}
         symbol={symbol}

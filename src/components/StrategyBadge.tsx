@@ -45,14 +45,20 @@ export default function StrategyBadge({ name, customPresets }: Props) {
 
   const displayName = meta ? ls(meta.name, lang) : name;
 
+  // 2026-09-24修复：这个根<span>之前没有shrink-0/whitespace-nowrap——它
+  // 直接是父级flex行（LegListSection.tsx/ComboCompareSlots.tsx里"全选"那
+  // 一行、以及方案卡片的标题行）的flex子项，默认flex-shrink:1，容器一
+  // 挤，中文策略名（比如"熊市Put价差"）就被压成逐字竖排。补上shrink-0+
+  // whitespace-nowrap，让这个徽章永远保持单行、不被压缩，需要更多空间
+  // 时改由旁边的按钮腾（见下面几处icon-only改动）。
   return (
     <span
       ref={ref}
-      className="relative"
+      className="relative shrink-0 whitespace-nowrap"
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      <span className="cursor-help rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
+      <span className="cursor-help whitespace-nowrap rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
         {displayName}
       </span>
       {hover && desc && (

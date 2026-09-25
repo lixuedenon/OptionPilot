@@ -186,6 +186,7 @@ const zh: Dict = {
   "confirm.replaceDesc": "选择新预设会替换当前的腿位，而当前组合有未保存的改动。要先保存吗？",
   "confirm.leaveTitle": "当前组合尚未保存",
   "confirm.leaveDesc": "离开分析模式会丢失当前未保存的改动。要先保存吗？",
+  "confirm.leaveRemaining": "处理完这个后，还有 {count} 个方案待确认",
   "confirm.saveFirst": "先保存",
   "confirm.lockRollTitle": "保存后将无法撤销",
   "confirm.lockRollDesc": "当前存在尚未保存的展期/保护/对冲操作。保存快照后，这些操作会被永久记录进历史，届时将无法再撤销。确定要保存吗？",

@@ -138,9 +138,18 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
   const scenarioSlot1 = useSlotScenarioPriceById(slots[1]?.legs ?? [], analyticsSpot, analyticsShifts);
   const slotScenarioPriceById = [scenarioSlot0, scenarioSlot1];
 
+  // 2026-09-24改：根容器原来是px-3（12px）+下面每个方案卡片自己又是
+  // p-2（8px）+1px边框，两层padding叠加，腿位行的实际起始缩进比方案A
+  // （LegListSection.tsx，只有外层LockedOverlay一层p-2=8px）多出十几像
+  // 素——xue反馈B/C两个对比方案的"..."菜单跟原始组合对不齐，根因就是这
+  // 层多出来的缩进，不是LegRow.tsx内部列宽的问题（那部分上一轮已经改成
+  // 固定宽度，combo内部自己是对齐的）。改法：根容器去掉横向padding，只
+  // 留纵向的py-2；标题行/空提示文字各自单独补上px-2（它们不是LegRow，
+  // 不需要跟A的缩进对齐，只是要有呼吸空间）；方案卡片自己的p-2保持不
+  // 变，这样卡片内LegRow的缩进就变成单一的8px，跟A完全一致。
   return (
-    <div className="border-t border-slate-800/60 px-3 py-2">
-      <div className="mb-1.5 flex items-center justify-between">
+    <div className="border-t border-slate-800/60 py-2">
+      <div className="mb-1.5 flex items-center justify-between px-2">
         <span className="text-[11px] font-bold text-slate-300">{t("compare.title")}</span>
         <button
           onClick={onAddSlot}
@@ -154,7 +163,7 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
       </div>
 
       {slots.length === 0 && (
-        <p className="text-[10px] text-slate-600">{t("compare.hint")}</p>
+        <p className="px-2 text-[10px] text-slate-600">{t("compare.hint")}</p>
       )}
 
       {slots.map((slot, i) => {
@@ -205,9 +214,12 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
                 主combo那份完全一致（复用同一批i18n key，不新造一套文案）
                 ——只在这个槽位"激活"且有腿位时渲染，未激活的槽位仍然可以
                 正常逐条编辑/删除/屏蔽，只是没有全选/批量/统一这几个动作。 */}
+            {/* 2026-09-24改：跟LegListSection.tsx主combo同一份修复——全选
+                后这一行装不下会被压成逐字竖排文字，改成flex-wrap兜底+
+                下面按钮全部收窄成纯图标+悬浮提示。 */}
             {isActive && batch && slot.legs.length > 0 && (
-              <div className="mb-1 flex items-center gap-2 rounded border border-slate-800 bg-slate-900/40 px-2 py-1">
-                <label className="flex shrink-0 items-center gap-1.5 text-[10px] text-slate-400">
+              <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1 rounded border border-slate-800 bg-slate-900/40 px-2 py-1">
+                <label className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[10px] text-slate-400">
                   <input
                     type="checkbox"
                     checked={batch.selectedCount > 0 && batch.selectedCount === slot.legs.length}
@@ -225,51 +237,48 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
                   />
                   {batch.selectedCount > 0 ? t("leg.selectedCount", { count: batch.selectedCount }) : t("leg.selectAll")}
                 </label>
-                <div className="ml-auto flex items-center gap-1.5">
+                <div className="ml-auto flex shrink-0 items-center gap-1.5">
                   {batch.selectedCount > 0 && (
                     <>
                     <button
                       onClick={(e) => { e.stopPropagation(); batch.bulkToggleDisable(); }}
                       disabled={locked}
-                      className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-amber-400 transition hover:border-amber-500/50 hover:bg-amber-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                      title={batch.allSelectedDisabled ? t("leg.bulkUnblock") : t("leg.bulkBlock")}
+                      className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-amber-400 transition hover:border-amber-500/50 hover:bg-amber-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      <Ban size={11} />
-                      {batch.allSelectedDisabled ? t("leg.bulkUnblock") : t("leg.bulkBlock")}
+                      <Ban size={12} />
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); batch.requestBulkDelete(); }}
                       disabled={locked}
-                      className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-rose-400 transition hover:border-rose-500/50 hover:bg-rose-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                      title={t("leg.bulkDelete")}
+                      className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-rose-400 transition hover:border-rose-500/50 hover:bg-rose-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      <Trash2 size={11} />
-                      {t("leg.bulkDelete")}
+                      <Trash2 size={12} />
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); batch.unifyQty(); }}
                       disabled={!batch.canUnifyLegs || locked}
-                      title={t("leg.unifyHint")}
-                      className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                      title={`${t("leg.unifyQty")} · ${t("leg.unifyHint")}`}
+                      className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      <Hash size={11} />
-                      {t("leg.unifyQty")}
+                      <Hash size={12} />
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); batch.unifyStrike(); }}
                       disabled={!batch.canUnifyLegs || locked}
-                      title={t("leg.unifyHint")}
-                      className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                      title={`${t("leg.unifyStrike")} · ${t("leg.unifyHint")}`}
+                      className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      <Crosshair size={11} />
-                      {t("leg.unifyStrike")}
+                      <Crosshair size={12} />
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); batch.unifyDte(); }}
                       disabled={!batch.canUnifyLegs || locked}
-                      title={t("leg.unifyHint")}
-                      className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                      title={`${t("leg.unifyDte")} · ${t("leg.unifyHint")}`}
+                      className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      <CalendarClock size={11} />
-                      {t("leg.unifyDte")}
+                      <CalendarClock size={12} />
                     </button>
                     </>
                   )}

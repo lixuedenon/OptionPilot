@@ -181,6 +181,55 @@ function ToggleBtn({
   );
 }
 
+// 2026-09-24新增：字号自动收缩的公共公式，NumField（可编辑数值框）和下面
+// 的ValueBadge（只读的情景估值/腿位盈亏徽章）共用同一份——两者都要在
+// "宽度固定死、不能滚动"这条硬性要求下显示长度不定的数字，逻辑完全一样，
+// 不应该各写一份（CLAUDE.md"五、19"：同一套判断逻辑只应有一份权威实现）。
+// BASE_FONT_PX是未收缩时的字号，CHAR_PX是tabular-nums数字在12px字号下的
+// 实测宽度近似值，MIN_FONT_PX是收缩下限（再小就不可读了）。
+const SHRINK_BASE_FONT_PX = 12;
+const SHRINK_MIN_FONT_PX = 7;
+const SHRINK_CHAR_PX = 6.6;
+function shrinkFontSize(text: string, widthPx: number, innerPad = 12): number {
+  const innerPx = widthPx - innerPad;
+  const len = Math.max(text.length, 1);
+  const fit = innerPx / (len * (SHRINK_CHAR_PX / SHRINK_BASE_FONT_PX));
+  return Math.max(SHRINK_MIN_FONT_PX, Math.min(SHRINK_BASE_FONT_PX, fit));
+}
+
+// 2026-09-24新增：情景估值/腿位盈亏两处只读数值徽章，原来是没有固定宽度
+// 的<span>，宽度完全由内容撑开——"+2.40"（5字符）和"-23.94"（6字符）撑出
+// 的框宽不一样，导致同一个combo里、甚至同一行内后面的"..."菜单按钮，
+// 跟着每一行数字的位数一起左右晃动，看起来"位置不对齐"。改成跟NumField
+// 一样的固定宽度+字号自动收缩，宽度钉死、不随内容变化，这样菜单按钮在
+// 每一行的水平位置就完全一致了。
+function ValueBadge({
+  label,
+  value,
+  width,
+  title,
+}: {
+  label: string;
+  value: number;
+  width: string;
+  title?: string;
+}) {
+  const text = `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+  const widthPx = parseFloat(width) || 64;
+  const fontSize = shrinkFontSize(text, widthPx, 8);
+  return (
+    <div className="flex shrink-0 flex-col gap-0.5" style={{ width, minWidth: width }} title={title}>
+      <span className="whitespace-nowrap text-[8px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
+      <span
+        className={`block rounded border border-slate-700 bg-slate-800 px-1 py-1 text-center font-semibold tabular-nums ${value >= 0 ? "text-emerald-400" : "text-rose-400"}`}
+        style={{ fontSize }}
+      >
+        {text}
+      </span>
+    </div>
+  );
+}
+
 function NumField({
   label,
   value,
@@ -233,20 +282,10 @@ function NumField({
   // 滚动看内容"这条硬性要求是同一个问题，不能这么做。改成：框的宽度
   // (width/minWidth)保持不变，改由字号跟着输入内容的字符数动态收缩，
   // 保证任意长度的数字都能完整地、不滚动地显示在这个固定宽度的框里。
-  // BASE_FONT_PX是未收缩时的字号（对应原来text-xs=12px），CHAR_PX是
-  // tabular-nums数字在12px字号下的实测宽度近似值，MIN_FONT_PX是收缩下限
-  // （再小就不可读了，理论上极端情况下数字仍可能略微溢出，但rule.max
-  // 已经在数值层面钉死了每类字段的最大位数，实际不会走到这一步）。
-  const BASE_FONT_PX = 12;
-  const MIN_FONT_PX = 7;
-  const CHAR_PX = 6.6;
+  // 公式现在抽成上面的共用函数shrinkFontSize，ValueBadge（情景估值/腿
+  // 位盈亏徽章）复用同一份，不再各写一套。
   const widthPx = parseFloat(width) || 52;
-  const innerPx = widthPx - 12; // 扣掉input左右padding(px-1.5=6px*2)+边框
-  const fontSize = (() => {
-    const len = Math.max(field.text.length, 1);
-    const fit = innerPx / (len * (CHAR_PX / BASE_FONT_PX));
-    return Math.max(MIN_FONT_PX, Math.min(BASE_FONT_PX, fit));
-  })();
+  const fontSize = shrinkFontSize(field.text, widthPx, 12);
 
   return (
     <label className="relative flex shrink-0 flex-col gap-0" style={{ width, minWidth: width }}>
@@ -828,8 +867,10 @@ export default function LegRow({
             : "border-amber-700/40 bg-amber-950/20"
         }`}
       >
-        {selectHandle}
-        <span className="w-4 shrink-0 text-center text-[10px] font-semibold text-slate-500">{index + 1}</span>
+        <div className="flex shrink-0 items-center gap-0">
+          {selectHandle}
+          <span className="w-4 shrink-0 text-center text-[10px] font-semibold text-slate-500">{index + 1}</span>
+        </div>
         {linkBadge}
         <div className="flex shrink-0 flex-col gap-0.5">
           <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{t("leg.type")}</span>
@@ -869,8 +910,13 @@ export default function LegRow({
           : "border-slate-800 bg-slate-900/60"
       }`}
     >
-      {selectHandle}
-      <span className="w-4 shrink-0 text-center text-[10px] font-semibold text-slate-500">{index + 1}</span>
+      {/* 2026-09-24改：复选框和腿号紧挨在一起（gap-0代替父级gap-1），给
+          后面的行权价/到期日/情景估值/"..."菜单腾出几像素——xue反馈方案
+          对比时靠右的列会被挤到容器外面，需要横向滚动才看得到。 */}
+      <div className="flex shrink-0 items-center gap-0">
+        {selectHandle}
+        <span className="w-4 shrink-0 text-center text-[10px] font-semibold text-slate-500">{index + 1}</span>
+      </div>
       {linkBadge}
 
       <div className={`flex shrink-0 flex-col gap-0.5 ${disabled ? "opacity-40" : ""}`}>
@@ -898,11 +944,16 @@ export default function LegRow({
         />
       </div>
 
+      {/* 2026-09-24改：宽度从52px收窄到38px——xue反馈日常最多打两位数，
+          没必要按上限9999(4位)留出52px这么宽的框；框内数字仍然靠NumField
+          的动态字号收缩兜底极端情况（3~4位数时字号自动变小，不会破字/
+          不会滚动），只是把日常最常见的1~3位数场景下的框本身收窄，给
+          这一行后面挤得慌的列（行权价/到期日/情景估值/"..."菜单）腾空间。*/}
       <NumField
         label={t("leg.qty")}
         value={leg.qty ?? 1}
         step={1}
-        width="52px"
+        width="38px"
         onChange={(v) => onChange({ qty: v })}
         disabled={fieldsDisabled}
         rule={NUMBER_RULES.qty}
@@ -1007,13 +1058,13 @@ export default function LegRow({
         )}
       </div>
 
+      {/* 2026-09-24改：情景估值/腿位盈亏原来是没有固定宽度的<span>，框
+          宽跟着"+2.40"/"-23.94"这类不同长度的数字变化，导致同一个combo
+          里每一行的"..."菜单按钮水平位置跟着晃——xue反馈"三个点不在同一
+          位置"就是这个原因。改用ValueBadge（固定宽度+字号自动收缩，跟
+          张数框同一套逻辑），宽度钉死为56px，不再随内容变化。 */}
       {scenarioPrice !== undefined && !disabled && (
-        <div className="flex shrink-0 flex-col gap-0.5" title={t("leg.scenarioValueHint")}>
-          <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{t("leg.scenarioValue")}</span>
-          <span className={`rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-semibold tabular-nums ${scenarioPrice >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-            {scenarioPrice >= 0 ? "+" : ""}{scenarioPrice.toFixed(2)}
-          </span>
-        </div>
+        <ValueBadge label={t("leg.scenarioValue")} value={scenarioPrice} width="56px" title={t("leg.scenarioValueHint")} />
       )}
 
       {(() => {
@@ -1028,12 +1079,12 @@ export default function LegRow({
         if (displayPnl === undefined) return null;
         const closed = leg.closedPnl !== undefined;
         return (
-          <div className="flex shrink-0 flex-col gap-0.5" title={closed ? t("leg.closedPnlHint") : t("leg.legPnlHint")}>
-            <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{closed ? t("leg.closedPnlLabel") : t("leg.legPnl")}</span>
-            <span className={`rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-semibold tabular-nums ${displayPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-              {displayPnl >= 0 ? "+" : ""}{displayPnl.toFixed(2)}
-            </span>
-          </div>
+          <ValueBadge
+            label={closed ? t("leg.closedPnlLabel") : t("leg.legPnl")}
+            value={displayPnl}
+            width="56px"
+            title={closed ? t("leg.closedPnlHint") : t("leg.legPnlHint")}
+          />
         );
       })()}
 
