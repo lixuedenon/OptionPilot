@@ -1121,6 +1121,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                     <span>{t("stock.openPrice")}</span>
                     <input
                       type="number"
+                      inputMode="decimal"
                       step="0.01"
                       min={NUMBER_RULES.price.min}
                       max={NUMBER_RULES.price.max}

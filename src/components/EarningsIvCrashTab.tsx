@@ -160,6 +160,7 @@ export default function EarningsIvCrashTab({ onOpened }: Props) {
         <div className="flex items-center gap-2">
           <input
             type="number"
+            inputMode="decimal"
             min={0.5}
             max={20}
             step={0.5}

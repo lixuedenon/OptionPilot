@@ -40,6 +40,17 @@ export function collectBackupPayload(): ExportData {
   };
 }
 
+function backupTimestamp(): string {
+  const d = new Date();
+  return (
+    `${d.getFullYear()}` +
+    `${String(d.getMonth() + 1).padStart(2, "0")}` +
+    `${String(d.getDate()).padStart(2, "0")}` +
+    `_${String(d.getHours()).padStart(2, "0")}` +
+    `${String(d.getMinutes()).padStart(2, "0")}`
+  );
+}
+
 export function exportAllData(): void {
   const data: ExportData = collectBackupPayload();
 
@@ -47,18 +58,114 @@ export function exportAllData(): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  const d = new Date();
-  const ts =
-    `${d.getFullYear()}` +
-    `${String(d.getMonth() + 1).padStart(2, "0")}` +
-    `${String(d.getDate()).padStart(2, "0")}` +
-    `_${String(d.getHours()).padStart(2, "0")}` +
-    `${String(d.getMinutes()).padStart(2, "0")}`;
-  a.download = `optionpilot_backup_${ts}.json`;
+  a.download = `optionpilot_backup_${backupTimestamp()}.json`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+  markBackedUp();
+}
+
+// ── 分享备份 + 备份提醒（2026-09-26，移动端第一步）────────────────────────
+// 手机上File System Access API（autoSync.ts的"链接备份文件"）不可用，iOS
+// Safari还会把7天未访问网站的localStorage清空，所以手机用户需要一个顺手的
+// 备份方式：调用系统分享面板（Web Share API），用户选"邮件"就是把备份作为
+// 附件发到自己邮箱，也可以选微信/网盘/"存储到文件"。不经过任何服务器。
+//
+// 文件用.txt/text/plain而不是.json：Chrome（安卓/Windows）的Web Share只允
+// 许一份固定白名单里的文件类型，application/json不在里面，canShare会直接
+// 返回false。内容仍然是同一份JSON，导入入口（HomePage.tsx）同时接受.txt。
+
+const LAST_BACKUP_KEY = "optionpilot.lastBackupAt";
+const REMINDER_SNOOZE_KEY = "optionpilot.backupReminderSnoozedAt";
+const BACKUP_REMINDER_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function readTs(key: string): number | null {
+  try {
+    const v = Number(localStorage.getItem(key));
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 记录"刚刚完成了一次备份"——导出下载、分享成功、自动同步写文件成功都算。 */
+export function markBackedUp(): void {
+  try {
+    localStorage.setItem(LAST_BACKUP_KEY, String(Date.now()));
+  } catch {
+    // 存储不可用时静默跳过，不影响备份本身
+  }
+}
+
+export function getLastBackupAt(): number | null {
+  return readTs(LAST_BACKUP_KEY);
+}
+
+/** 有没有值得备份的用户数据（空白的新用户不提醒）。 */
+export function hasBackupableData(): boolean {
+  const d = collectBackupPayload();
+  return (
+    d.savedStrategies.length > 0 ||
+    d.customPresets.length > 0 ||
+    d.simAccount != null ||
+    (d.simPositions?.length ?? 0) > 0
+  );
+}
+
+/** 距离上次备份（或上次点"稍后提醒"）超过7天、且确实有数据时返回true。 */
+export function needsBackupReminder(now: number = Date.now()): boolean {
+  if (!hasBackupableData()) return false;
+  const last = Math.max(getLastBackupAt() ?? 0, readTs(REMINDER_SNOOZE_KEY) ?? 0);
+  return now - last > BACKUP_REMINDER_DAYS * DAY_MS;
+}
+
+export function snoozeBackupReminder(): void {
+  try {
+    localStorage.setItem(REMINDER_SNOOZE_KEY, String(Date.now()));
+  } catch {
+    // ignore
+  }
+}
+
+function buildBackupShareFile(): File {
+  const data = collectBackupPayload();
+  return new File([JSON.stringify(data, null, 2)], `optionpilot_backup_${backupTimestamp()}.txt`, {
+    type: "text/plain",
+  });
+}
+
+/** 当前浏览器能不能通过系统分享面板发送备份文件（手机基本都能，部分桌面浏览器不能）。 */
+export function canShareBackup(): boolean {
+  try {
+    if (typeof navigator === "undefined" || typeof navigator.canShare !== "function") return false;
+    const probe = new File(["{}"], "probe.txt", { type: "text/plain" });
+    return navigator.canShare({ files: [probe] });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 通过系统分享面板发送备份。浏览器不支持分享文件时退回普通下载。
+ * 返回值：shared=已分享、downloaded=退回下载、cancelled=用户关掉了分享面板。
+ */
+export async function shareBackup(): Promise<"shared" | "downloaded" | "cancelled"> {
+  if (!canShareBackup()) {
+    exportAllData();
+    return "downloaded";
+  }
+  try {
+    await navigator.share({ files: [buildBackupShareFile()], title: "OptionPilot backup" });
+    markBackedUp();
+    return "shared";
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") return "cancelled";
+    // 分享通道本身出错（少数浏览器canShare返回true但实际分享失败），退回下载
+    exportAllData();
+    return "downloaded";
+  }
 }
 
 export async function importAllData(file: File): Promise<ExportData> {

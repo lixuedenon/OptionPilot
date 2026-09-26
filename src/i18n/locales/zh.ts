@@ -17,6 +17,10 @@ const zh: Dict = {
   "toolbar.exportData": "导出数据",
   "toolbar.importData": "导入数据",
   "toolbar.importFail": "导入失败：文件格式不正确",
+  "toolbar.shareBackup": "分享备份（邮件/微信/网盘）",
+  "backup.reminderNever": "你的策略和模拟账户数据只保存在这个浏览器里，还没有备份过。",
+  "backup.reminderDays": "距离上次备份已经 {days} 天了。数据只保存在这个浏览器里，清理浏览器数据或更换设备都会丢失。",
+  "backup.later": "稍后提醒",
   "toolbar.noWritePerm": "未获得文件写入权限",
 
   // ── stock input ──

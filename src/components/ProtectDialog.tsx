@@ -173,6 +173,7 @@ export default function ProtectDialog({ leg, spot, symbol, onClose, onConfirm }:
                 <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">{t("protect.strike")}</span>
                 <input
                   type="number"
+                  inputMode="decimal"
                   step={0.5}
                   min={NUMBER_RULES.price.min}
                   max={NUMBER_RULES.price.max}
@@ -208,6 +209,7 @@ export default function ProtectDialog({ leg, spot, symbol, onClose, onConfirm }:
                 </span>
                 <input
                   type="number"
+                  inputMode="decimal"
                   step={0.01}
                   min={NUMBER_RULES.premium.min}
                   max={NUMBER_RULES.premium.max}

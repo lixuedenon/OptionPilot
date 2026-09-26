@@ -335,6 +335,7 @@ function NumField({
         className={disabled ? inpDisabled : inp}
         style={{ fontSize }}
         type="number"
+        inputMode={rule.decimals > 0 ? "decimal" : "numeric"}
         step={step}
         min={rule.min}
         max={rule.max}

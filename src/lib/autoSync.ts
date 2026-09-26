@@ -1,5 +1,5 @@
 // src/lib/autoSync.ts
-import { collectBackupPayload } from "./dataTransfer";
+import { collectBackupPayload, markBackedUp } from "./dataTransfer";
 
 const DB_NAME = "optionpilot_fsa";
 const STORE = "handles";
@@ -135,6 +135,7 @@ export async function autoSyncWrite(): Promise<void> {
     const writable = await fileHandle.createWritable();
     await writable.write(JSON.stringify(data, null, 2));
     await writable.close();
+    markBackedUp(); // 自动同步写文件成功也算一次备份，链接了备份文件的电脑用户不会收到7天备份提醒
   } catch {
     // File may be locked or unavailable — silently skip
   }

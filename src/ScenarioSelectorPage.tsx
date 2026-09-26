@@ -394,6 +394,7 @@ export default function ScenarioSelectorPage({ onBack, onUseCandidate, persisted
             <div className="flex items-center gap-2">
               <input
                 type="number"
+                inputMode="numeric"
                 min={1}
                 max={200}
                 value={ivPct}

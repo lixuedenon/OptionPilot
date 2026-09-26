@@ -75,6 +75,12 @@ export function blockInvalidNumberKey(
     "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End",
   ];
   if (allowedControl.includes(e.key)) return;
+  // 2026-09-26 移动端：安卓虚拟键盘（Gboard等）在keydown里经常不告诉网页
+  // 按的是哪个键——e.key报"Unidentified"、keyCode报229（IME合成中）。原来
+  // 这种情况会落到下面的preventDefault，结果安卓上一个数字都打不进去。
+  // 这里直接放行，非法字符由useClampedNumberField失焦时的clamp兜底（
+  // type="number"本身也会把非数字内容变成空串），桌面键盘行为不变。
+  if (e.key === "Unidentified" || e.key === "Process" || e.nativeEvent.isComposing || e.keyCode === 229) return;
   if (e.ctrlKey || e.metaKey) return;
   if (e.key >= "0" && e.key <= "9") return;
   if (e.key === "." && rule.decimals > 0) return;

@@ -1136,6 +1136,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
             <div className="mx-auto flex max-w-xs items-center gap-2">
               <input
                 type="number"
+                inputMode="decimal"
                 step={0.01}
                 min={NUMBER_RULES.capital.min}
                 max={NUMBER_RULES.capital.max}

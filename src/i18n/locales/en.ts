@@ -17,6 +17,10 @@ const en: Dict = {
   "toolbar.exportData": "Export Data",
   "toolbar.importData": "Import Data",
   "toolbar.importFail": "Import failed: invalid file format",
+  "toolbar.shareBackup": "Share Backup (email/cloud)",
+  "backup.reminderNever": "Your strategies and simulated account live only in this browser and have never been backed up.",
+  "backup.reminderDays": "It has been {days} days since your last backup. Data lives only in this browser and is lost if browser data is cleared or you switch devices.",
+  "backup.later": "Remind me later",
   "toolbar.noWritePerm": "File write permission not granted",
 
   // ── stock input ──

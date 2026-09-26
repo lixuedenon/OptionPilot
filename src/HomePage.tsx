@@ -1,10 +1,19 @@
 // src/HomePage.tsx
-import { TrendingUp, GitCompare, Wallet, Sparkles, Database, Download, Upload, FileSymlink, Unlink, RefreshCw, X } from "lucide-react";
+import { useState } from "react";
+import { TrendingUp, GitCompare, Wallet, Sparkles, Database, Download, Upload, FileSymlink, Unlink, RefreshCw, X, Share2, ShieldAlert } from "lucide-react";
 import { useI18n } from "@/i18n/I18nContext";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import DropdownMenu from "@/components/DropdownMenu";
 import { useAutoSync } from "@/hooks/useAutoSync";
-import { exportAllData, importAllData } from "@/lib/dataTransfer";
+import {
+  exportAllData,
+  importAllData,
+  shareBackup,
+  canShareBackup,
+  needsBackupReminder,
+  snoozeBackupReminder,
+  getLastBackupAt,
+} from "@/lib/dataTransfer";
 import { autoSyncWrite } from "@/lib/autoSync";
 import { AI_MODULE_ENABLED } from "@/lib/featureFlags";
 
@@ -98,6 +107,22 @@ export default function HomePage({ onSelectModule }: Props) {
     linkBackup,
   } = useAutoSync({ savedStrategies: null, customPresets: null, recentSymbols: null });
 
+  // 2026-09-26 移动端第一步：分享备份 + 7天备份提醒，见dataTransfer.ts同名小节。
+  // canShare只在挂载时判断一次（浏览器能力不会在会话中途改变）。
+  const [shareSupported] = useState(() => canShareBackup());
+  const [showBackupReminder, setShowBackupReminder] = useState(() => needsBackupReminder());
+  const lastBackupAt = getLastBackupAt();
+  const daysSinceBackup = lastBackupAt ? Math.floor((Date.now() - lastBackupAt) / 86400000) : null;
+  const handleBackupNow = async () => {
+    if (shareSupported) {
+      const result = await shareBackup();
+      if (result !== "cancelled") setShowBackupReminder(false);
+    } else {
+      exportAllData();
+      setShowBackupReminder(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
       <div className="mx-auto max-w-3xl px-4 py-8">
@@ -152,8 +177,16 @@ export default function HomePage({ onSelectModule }: Props) {
                       <div className="my-1 border-t border-slate-800" />
                     </>
                   )}
+                  {shareSupported && (
+                    <button
+                      onClick={() => { close(); void shareBackup().then((r) => { if (r !== "cancelled") setShowBackupReminder(false); }); }}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
+                    >
+                      <Share2 size={12} className="text-emerald-400" /> {t("toolbar.shareBackup")}
+                    </button>
+                  )}
                   <button
-                    onClick={() => { close(); exportAllData(); }}
+                    onClick={() => { close(); exportAllData(); setShowBackupReminder(false); }}
                     className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-slate-300 transition hover:bg-slate-800"
                   >
                     <Download size={12} className="text-sky-400" /> {t("toolbar.exportData")}
@@ -162,7 +195,7 @@ export default function HomePage({ onSelectModule }: Props) {
                     <Upload size={12} className="text-sky-400" /> {t("toolbar.importData")}
                     <input
                       type="file"
-                      accept=".json"
+                      accept=".json,.txt,application/json,text/plain" // .txt：手机"分享备份"发出去的文件（见dataTransfer.ts）
                       className="hidden"
                       onChange={async (e) => {
                         close();
@@ -195,6 +228,34 @@ export default function HomePage({ onSelectModule }: Props) {
             )}
           </div>
         </header>
+
+        {showBackupReminder && (
+          <div className="mb-4 flex flex-col gap-2 rounded-xl border border-amber-500/40 bg-amber-950/20 p-3 sm:flex-row sm:items-center">
+            <div className="flex flex-1 items-start gap-2">
+              <ShieldAlert size={16} className="mt-0.5 shrink-0 text-amber-400" />
+              <p className="text-[12px] leading-relaxed text-amber-200">
+                {daysSinceBackup === null
+                  ? t("backup.reminderNever")
+                  : t("backup.reminderDays", { days: daysSinceBackup })}
+              </p>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <button
+                onClick={() => void handleBackupNow()}
+                className="flex min-h-[36px] items-center gap-1.5 rounded-lg border border-emerald-600/60 bg-emerald-950/40 px-3 text-[12px] font-semibold text-emerald-300 transition hover:border-emerald-500"
+              >
+                {shareSupported ? <Share2 size={13} /> : <Download size={13} />}
+                {shareSupported ? t("toolbar.shareBackup") : t("toolbar.exportData")}
+              </button>
+              <button
+                onClick={() => { snoozeBackupReminder(); setShowBackupReminder(false); }}
+                className="min-h-[36px] rounded-lg border border-slate-700 px-3 text-[12px] text-slate-400 transition hover:border-slate-500"
+              >
+                {t("backup.later")}
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
           {MODULES.map((m) => (

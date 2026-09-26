@@ -1,9 +1,20 @@
 <!doctype html>
+<!-- index.html -->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <!-- iOS上的maximum-scale由src/main.tsx在运行时追加（只对iOS），用来阻止点输入框自动放大。
+         viewport-fit=cover（刘海/底部横条留白）留到第二步布局改造时连同safe-area留白一起加。 -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 2026-09-26 移动端：支持"添加到主屏幕"（PWA）。 -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#020617" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-title" content="OptionPilot" />
     <title>Option Strategy Calculator</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

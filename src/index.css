@@ -1,3 +1,4 @@
+/* src/index.css */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -14,4 +15,13 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 input[type="number"] {
   -moz-appearance: textfield;
+}
+
+/* 2026-09-26 移动端：手机浏览器的100vh按"地址栏收起"时的高度算，地址栏展开
+   时页面底部会被挡住。支持动态视口单位(dvh)的浏览器改用100dvh；不支持的老
+   浏览器仍然用Tailwind原本的100vh，不受影响。放在@tailwind utilities之后，
+   同优先级下靠源码顺序覆盖。 */
+@supports (height: 100dvh) {
+  .h-screen { height: 100dvh; }
+  .min-h-screen { min-height: 100dvh; }
 }

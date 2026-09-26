@@ -267,6 +267,7 @@ export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConf
               <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">{t("roll.strike")}</span>
               <input
                 type="number"
+                inputMode="decimal"
                 step={0.5}
                 min={NUMBER_RULES.price.min}
                 max={NUMBER_RULES.price.max}
@@ -286,6 +287,7 @@ export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConf
               </span>
               <input
                 type="number"
+                inputMode="decimal"
                 step={0.01}
                 min={NUMBER_RULES.premium.min}
                 max={NUMBER_RULES.premium.max}
