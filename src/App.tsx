@@ -17,6 +17,7 @@ import { useAutoSync } from "@/hooks/useAutoSync";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
 import { useSavedStrategies } from "@/hooks/useSavedStrategies";
 import { useLegEditing } from "@/hooks/useLegEditing";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { useLegBatchOps } from "@/hooks/useLegBatchOps";
 import { useComboAnalytics } from "@/hooks/useComboAnalytics";
 import { useCompareSlots, COMPARE_SLOT_COLORS, MAX_COMPARE_SLOT_LEGS, MAX_COMPARE_SLOTS, isSlotDirty } from "@/hooks/useCompareSlots";
@@ -58,6 +59,8 @@ interface AppProps {
 }
 
 export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSimOpen, onCancelSimOrigin, onAddToSimAccount, simOriginInitial }: AppProps = {}) {
+  // 手机布局开关（2026-09-26移动端第二步）。不依赖任何其它state，放在最前面，避免TDZ顺序问题。
+  const isMobile = useIsMobile();
   const [symbol, setSymbol] = useState(() => simOriginInitial?.symbol ?? "");
   const [spot, setSpot] = useState(() => simOriginInitial?.spot ?? 0);
   const [legs, setLegs] = useState<Leg[]>(() => simOriginInitial?.legs ?? []);
@@ -1030,7 +1033,11 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   );
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-slate-950 text-slate-200">
+    // 2026-09-26 移动端第二步：手机（竖屏，或横屏高度<=500的触屏设备）上把电脑版
+    // 的左右两栏改成上下排列——左栏（腿位/多方案对比）在上、右栏（图表+情景滑块）
+    // 在下，整页一起滚动，不再是"固定一屏高、左右各自内部滚动"。判断见
+    // src/hooks/useIsMobile.ts。电脑/iPad的布局一个class都没变。
+    <div className={isMobile ? "flex min-h-screen flex-col bg-slate-950 text-slate-200" : "flex h-screen flex-col overflow-hidden bg-slate-950 text-slate-200"}>
       {/* ── Header ── */}
       <AppHeader
         simOrigin={simOrigin}
@@ -1096,9 +1103,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       )}
 
       {/* ── Main two-column layout ── */}
-      <div className="flex min-h-0 flex-1 gap-0">
-        {/* LEFT: Leg inputs */}
-        <div className="flex shrink-0 flex-col overflow-y-auto border-r border-slate-800" style={{ width: "38%", minWidth: 380 }}>
+      <div className={isMobile ? "flex flex-col" : "flex min-h-0 flex-1 gap-0"}>
+        {/* LEFT: Leg inputs（手机上是"上半部分"，全宽、不单独滚动） */}
+        <div
+          className={isMobile ? "flex flex-col border-b border-slate-800" : "flex shrink-0 flex-col overflow-y-auto border-r border-slate-800"}
+          style={isMobile ? undefined : { width: "38%", minWidth: 380 }}
+        >
           <div className="sticky top-0 z-20 grid shrink-0 grid-cols-[auto_minmax(0,1fr)] grid-rows-[auto_auto] items-center gap-x-2 gap-y-1 border-b border-slate-800/60 bg-slate-950 px-3 py-1.5">
             <LegPanelTitleRow
               legsCount={legs.length}
@@ -1116,7 +1126,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 // 目前实测足够撑住一行；如果将来某个语言的翻译文字更长导致
                 // 又装不下，下一步应该继续"简化某个元素"（比如策略库也改
                 // 纯图标），而不是重新加回滚动。
-                <div className="col-span-2 row-start-2 flex min-w-0 flex-nowrap items-center gap-x-3 gap-y-1 pt-0.5">
+                <div className={`col-span-2 row-start-2 flex min-w-0 ${isMobile ? "flex-wrap" : "flex-nowrap"} items-center gap-x-3 gap-y-1 pt-0.5`}>{/* 手机上允许换行（2026-09-26）：电脑版"合并成一行"的要求不变，手机宽度放不下一整行 */}
                   <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] text-slate-500" title={t("stock.openPrice")}>
                     <span>{t("stock.openPrice")}</span>
                     <input
@@ -1349,9 +1359,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
         </div>
 
-        {/* RIGHT: Chart + sliders */}
-        <div className="flex min-w-0 flex-1 flex-col min-h-0">
-          <div className="min-h-0 flex-1 px-2 py-1.5">
+        {/* RIGHT: Chart + sliders（手机上是"下半部分"：图表给固定高度，
+            否则整页滚动时flex-1没有可分配的高度，图表会塌成0） */}
+        <div className={isMobile ? "flex flex-col" : "flex min-w-0 flex-1 flex-col min-h-0"}>
+          <div
+            className={isMobile ? "px-1 py-1.5" : "min-h-0 flex-1 px-2 py-1.5"}
+            style={isMobile ? { height: "min(62vh, 560px)", minHeight: 320 } : undefined}
+          >
             <ErrorBoundary>
               <PayoffChart
                 legs={activeLegs}

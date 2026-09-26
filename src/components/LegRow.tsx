@@ -22,6 +22,7 @@ import { dateFromDte, dteFromDate } from "@/lib/dateUtils";
 import { fetchLegPremium, getOptionChain, premiumFromQuote, type LegPremiumResult, type OptionChainResponse } from "@/lib/optionChain";
 import { useI18n } from "@/i18n/I18nContext";
 import { NUMBER_RULES, blockInvalidNumberKey, useClampedNumberField, type NumberInputRule } from "@/lib/numberInput";
+import { useIsMobile } from "@/hooks/useIsMobile";
 
 interface Props {
   leg: Leg;
@@ -560,6 +561,12 @@ export default function LegRow({
   // 见useNarrowLegRow自己的注释——窄窗口笔记本上收窄这一行各列的固定宽度
   // /padding/gap，配合已有的字号自动收缩，避免整行被挤到换行。
   const narrow = useNarrowLegRow();
+  // 2026-09-26 移动端第二步：手机上一行放不下全部列（约需450px，手机只有360–430），
+  // 改成两行——第一行"腿号/方向/类型/张数/行权价/到期日"，第二行"权利金/情景估值/
+  // 腿位盈亏/…菜单"（靠行内一个basis-full的空元素强制换行）。到期日框在手机上
+  // 用电脑版的宽度（84px），否则"2026-10-23"会被挤成两行。正股腿那一行本来就短，
+  // 只加flex-wrap兜底。
+  const isMobile = useIsMobile();
   const disabled = leg.disabled === true;
   // Combined gate for anything that would actually change this leg's data —
   // see Props.locked's comment. `disabled` alone still drives the "已屏蔽"
@@ -906,7 +913,7 @@ export default function LegRow({
   if (leg.kind === "stock") {
     return (
       <div
-        className={`flex items-center ${narrow ? "gap-0.5 px-1.5" : "gap-1 px-2"} rounded border py-1.5 transition ${
+        className={`flex items-center ${isMobile ? "flex-wrap gap-x-1 gap-y-1 px-1.5" : narrow ? "gap-0.5 px-1.5" : "gap-1 px-2"} rounded border py-1.5 transition ${
           disabled
             ? "border-slate-700/50 bg-slate-900/40"
             : "border-amber-700/40 bg-amber-950/20"
@@ -950,7 +957,7 @@ export default function LegRow({
 
   return (
     <div
-      className={`flex items-center ${narrow ? "gap-0.5 px-1.5" : "gap-1 px-2"} rounded border py-1.5 transition ${
+      className={`flex items-center ${isMobile ? "flex-wrap gap-x-1 gap-y-1 px-1.5" : narrow ? "gap-0.5 px-1.5" : "gap-1 px-2"} rounded border py-1.5 transition ${
         disabled
           ? "border-slate-700/50 bg-slate-900/40"
           : "border-slate-800 bg-slate-900/60"
@@ -1037,7 +1044,7 @@ export default function LegRow({
         )}
       </div>
       <div ref={expiryMenuRef} className="relative flex shrink-0 items-end gap-0.5">
-        <div className="flex flex-col gap-0" style={{ width: narrow ? "70px" : "84px" }}>
+        <div className="flex flex-col gap-0" style={{ width: narrow && !isMobile ? "70px" : "84px" }}>
           <span className="flex items-baseline gap-1 text-[8px] font-semibold uppercase tracking-wide text-slate-500">
             {t("leg.expiry")}
             <span className="text-[8px] font-medium normal-case text-amber-400/80">{t("leg.left")}{Math.round(leg.dte)}d</span>
@@ -1078,6 +1085,8 @@ export default function LegRow({
           </div>
         )}
       </div>
+      {isMobile && <div className="h-0 basis-full" aria-hidden />}
+      {isMobile && <div className="w-[34px] shrink-0" aria-hidden />}
       <div className="flex shrink-0 items-end gap-0.5">
         <NumField label={t("leg.premium")} value={leg.premium} step={0.01} width={narrow ? "62px" : "76px"} onChange={(v) => { setPriceError(null); setPriceNote(null); setPriceView("opening"); onChange({ premium: v }); }} disabled={fieldsDisabled} rule={NUMBER_RULES.premium} />
         {!disabled && !hidePriceRefresh && (

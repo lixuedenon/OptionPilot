@@ -885,7 +885,8 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
             {/* Y axis labels */}
             {yTicks.map((v) => (
               <text key={v} x={PAD.l - 4} y={toY(v) + 3.5} textAnchor="end" fontSize="9" fill="rgb(100 116 139)">
-                {v >= 0 ? "" : "-"}{Math.abs(v) < 1 ? v.toFixed(2) : v.toFixed(0)}
+                {/* 2026-09-26修：原来前面还手动拼了一个"-"，负数toFixed本身已带负号，显示成"--2" */}
+                {Math.abs(v) < 1 ? v.toFixed(2) : v.toFixed(0)}
               </text>
             ))}
 

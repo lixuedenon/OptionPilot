@@ -3,6 +3,7 @@
 import { RefreshCw, TrendingUp, TrendingDown, ChevronDown, HelpCircle, Target } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import type { PresetMeta } from "@/lib/presets";
 import type { CustomPreset } from "@/lib/customPresets";
 import type { StockQuote } from "@/lib/useStockQuote";
@@ -193,10 +194,20 @@ export default function AppHeader({
   locked = false,
 }: Props) {
   const { t } = useI18n();
+  const isMobile = useIsMobile();
 
   return (
-    <header className="flex shrink-0 items-center justify-between border-b border-slate-800 px-4 py-2">
-      <div className="flex items-center gap-3">
+    // 2026-09-26 移动端第二步：手机上左右两组都用display:contents"拆开"，所有
+    // 按钮按顺序在同一个可换行的flex里依次排列、放不下自动换行；logo缩小、时钟
+    // 隐藏、"使用说明"只留图标，不再把按钮文字挤成一字一行的竖排。电脑版class不变。
+    <header
+      className={
+        isMobile
+          ? "flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-slate-800 px-2 py-1.5"
+          : "flex shrink-0 items-center justify-between border-b border-slate-800 px-4 py-2"
+      }
+    >
+      <div className={isMobile ? "contents" : "flex items-center gap-3"}>
         <button
           onClick={() => {
             if (simOrigin) { onCancelSimOrigin?.(); return; }
@@ -209,7 +220,7 @@ export default function AppHeader({
           <img
             src="/image copy 2.png"
             alt="OptionPilot"
-            className="h-12 w-auto shrink-0 object-contain"
+            className={isMobile ? "h-8 w-auto shrink-0 object-contain" : "h-12 w-auto shrink-0 object-contain"}
           />
         </button>
 
@@ -285,7 +296,7 @@ export default function AppHeader({
                 ({changePct >= 0 ? "+" : ""}{changePct.toFixed(2)}%)
               </span>
             </div>
-          ) : (
+          ) : isMobile ? null : (
             <div className="w-[88px]" />
           )}
 
@@ -296,8 +307,8 @@ export default function AppHeader({
           ) : null}
       </div>
 
-      <div className="flex items-center gap-3">
-        <LiveClock />
+      <div className={isMobile ? "contents" : "flex items-center gap-3"}>
+        {!isMobile && <LiveClock />}
         <LanguageSwitcher />
         <button
           onClick={onOpenHelp}
@@ -305,7 +316,7 @@ export default function AppHeader({
           className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-[11px] font-semibold text-slate-400 transition hover:border-emerald-500/50 hover:text-emerald-300"
         >
           <HelpCircle size={12} />
-          <span>{t("toolbar.help")}</span>
+          {!isMobile && <span>{t("toolbar.help")}</span>}
         </button>
       </div>
     </header>
