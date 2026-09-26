@@ -1,3 +1,4 @@
+// supabase/functions/strategy-analysis/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { computeIndicators, type OhlcvRow } from "../_shared/technicalIndicators.ts";
 import { impliedVol } from "../_shared/deltaMatch.ts";
@@ -210,6 +211,19 @@ const GEMINI_OPTS: OpenAICompatibleOpts = {
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
+  }
+
+  // 服务端开关（2026-09-25，AI推荐模块屏蔽）：前端的AI_MODULE_ENABLED只挡住
+  // 界面入口，但anon key本来就打包在前端里，任何人都能绕过界面直接请求这个
+  // 函数、真实调用四个模型产生费用。这里默认拒绝，只有在Supabase项目的
+  // secrets里显式设置 AI_ANALYSIS_ENABLED=true 时才放行：
+  //   supabase secrets set AI_ANALYSIS_ENABLED=true   （重新开放）
+  //   supabase secrets unset AI_ANALYSIS_ENABLED      （屏蔽，默认状态）
+  if (Deno.env.get("AI_ANALYSIS_ENABLED") !== "true") {
+    return new Response(
+      JSON.stringify({ error: "AI strategy analysis is currently disabled" }),
+      { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   }
 
   try {

@@ -6,6 +6,7 @@ import DropdownMenu from "@/components/DropdownMenu";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { exportAllData, importAllData } from "@/lib/dataTransfer";
 import { autoSyncWrite } from "@/lib/autoSync";
+import { AI_MODULE_ENABLED } from "@/lib/featureFlags";
 
 export type ModuleId = "analysis" | "tracking" | "simulator" | "ai";
 
@@ -22,6 +23,9 @@ interface ModuleCard {
   titleKey: string;
   descKey: string;
   comingSoon: boolean;
+  // 为true时卡片照常显示但不可点击（按钮disabled）。跟comingSoon分开：
+  // comingSoon只控制徽章，disabled才真正决定能不能进入。
+  disabled?: boolean;
 }
 
 const MODULES: ModuleCard[] = [
@@ -67,6 +71,8 @@ const MODULES: ModuleCard[] = [
     titleKey: "home.aiTitle",
     descKey: "home.aiDesc",
     comingSoon: true,
+    // 2026-09-25屏蔽：见src/lib/featureFlags.ts
+    disabled: !AI_MODULE_ENABLED,
   },
 ];
 
@@ -194,8 +200,12 @@ export default function HomePage({ onSelectModule }: Props) {
           {MODULES.map((m) => (
             <button
               key={m.id}
-              onClick={() => onSelectModule(m.id)}
-              className={`group flex flex-col items-start rounded-xl border bg-slate-900/60 p-4 text-left transition ${m.borderColor}`}
+              onClick={() => { if (!m.disabled) onSelectModule(m.id); }}
+              disabled={m.disabled}
+              aria-disabled={m.disabled}
+              className={`group flex flex-col items-start rounded-xl border bg-slate-900/60 p-4 text-left transition ${
+                m.disabled ? "cursor-not-allowed border-slate-800 opacity-50" : m.borderColor
+              }`}
             >
               <div className={`mb-3 flex h-9 w-9 items-center justify-center rounded-lg ${m.iconBg} ${m.iconColor}`}>
                 {m.icon}

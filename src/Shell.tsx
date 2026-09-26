@@ -9,6 +9,7 @@ import ErrorBoundary from "@/components/ErrorBoundary";
 import { MarginErrorDialog } from "@/components/dialogs";
 import { openSimPosition, loadSimAccount, InsufficientMarginError, type MarginCheckResult } from "@/lib/simAccount";
 import type { Leg } from "@/lib/types";
+import { AI_MODULE_ENABLED } from "@/lib/featureFlags";
 
 type View = "home" | "workspace" | "simulator" | "simOrigin" | "ai" | "scenarioSelector";
 
@@ -50,9 +51,11 @@ export default function Shell() {
       setView("workspace");
     } else if (id === "simulator") {
       setView("simulator");
-    } else {
+    } else if (AI_MODULE_ENABLED) {
       setView("ai");
     }
+    // AI_MODULE_ENABLED为false时（2026-09-25起屏蔽），"ai"请求直接忽略、留在首页——
+    // 首页卡片本身已经disabled，这里是第二道保险，见src/lib/featureFlags.ts
   };
 
   const handleConfirmSimOpen = async (payload: { symbol: string; legs: Leg[]; spot: number }) => {
