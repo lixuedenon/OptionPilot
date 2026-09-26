@@ -2,7 +2,14 @@
 
 # OptionPilot 交接文档（整合版）
 
-**版本**：整合版，更新于 2026-09-19。本次更新：**"解释当前情况"对话框+图表提示条彻底整合成一套逻辑，见新增的"四、11"**——分析模式原来自己一套通用阈值提示（`actionHints`）跟对比模式的540格审查表具体建议是两套并行内容，已删除`actionHints`及其专用helper，分析模式改用跟对比模式完全相同的`buildLegAdviceSections`；图表`PayoffChart.tsx`内部原本还有第三套、完全独立的`getZone`/`zoneBands`提醒逻辑（按净收权利金固定比例判断，驱动`AlertCard.tsx`文字提示条+图表色带+盈亏点颜色三处UI），跟540格表各算各的、同一仓位能给出矛盾判断，本轮确认后三处一起换成读540格表的`action`字段（新增`AlertSeverity`/`severityFromAction`机制），`AlertCard.tsx`整个重写，图表色带渲染代码整段删除。顺带发现并删除了"解释当前情况"对话框里跟侧边栏`PnlAttributionPanel.tsx`重复展示的"盈亏来源"文字段落。`npm run typecheck`/`build`/`eslint`（4错误12警告基线不变）、zh/en key一致性检查（743/743）全部通过，端到端场景验证见"四、11.4"。此前的更新合并了2026-09-11（"持仓处置建议"KB检索方案彻底移除，见"四、10"归档指引）、2026-09-05~07几轮会话（预设风险揭示/到期盈亏小图、zh.ts/en.ts严重滞后事故修复与教训、对比模式健康度/Greeks修正、竞品调研落地四项功能、功能精简走查、UI布局微调）的成果。**这是当前最新、最权威的交接文档版本**，跟仓库其它文件一起push到GitHub main分支后，应视为项目当前状态的唯一事实来源（直到下一次更新）。**这份文档替代了之前"按会话追加"的版本**——旧版本是每轮会话在文末加一个新章节，越滚越长，找一个功能的现状要翻好几个章节、对着时间戳自己判断哪段是最新的。这份文档**按功能/模块组织，只描述"现在是什么样"，不按时间顺序记流水账**。
+**版本**：整合版，更新于 2026-09-25。本次更新：**修复"跟踪对比模式"里保存快照后仍误报未保存改动的bug + 补一处上轮遗漏的文档**——
+1. **保存快照后切到分析模式/点logo仍误报"有未保存改动"**：xue反馈"对比模式保存了快照之后，切换/退出仍然会问是否保存，确认了会存一份一模一样的重复快照"。根因：`trackedDirty`以前是手动true/false的state，散落在`useLegEditing.ts`（展期/保护/对冲/勾选/关闭/移动六处）和`useStrategyOrchestration.ts`的`updateTrackedLeg`里各自调用`setTrackedDirty(true)`，任何一处调用时机跟`trackedLegs`真实内容不完全同步，这个flag就可能跟真实"有没有改动"脱节而不自知（跟`serializeSlotLegs`/`isSlotDirty`——2026-09-24给A/B/C多方案对比加`baseline`字段时已经用过的同一类教训，见"五、19"）。改成派生计算：新增`serializeTrackedLegs`（`savedStrategies.ts`，只按腿位内容算指纹，不含`trackedSpot`——它会随实时报价轮询自动刷新，纳入会把股价波动也误判成改动）+ `trackedBaseline`（`App.tsx`新state，记"此刻视为已保存"那一份trackedLegs的指纹），`trackedDirty`现在是`trackedLegs!==null && serializeTrackedLegs(trackedLegs)!==trackedBaseline`的现算结果，不再是手动维护、可能跑偏的布尔值。原来分散在`useLegEditing.ts`/`updateTrackedLeg`里的`setTrackedDirty(true)`调用全部移除（不再需要，派生判断自动感知），所有原来`setTrackedDirty(false)`的地方（`saveTrackedSnapshotTo`/`handleTrack`/`handleSwitchToCompare`/`handleSelectSnapshot`/`applyPreset`/`doClearAll`）改成`setTrackedBaseline(serializeTrackedLegs(刚设置的trackedLegs))`或`setTrackedBaseline(null)`（trackedLegs本身被清空时）。
+2. **顺带修的另一个方向的bug——点logo退回首页，对比模式下完全不检查未保存改动**：排查过程中发现`AppHeader.tsx`点击logo的逻辑，`isCompareMode`为true时直接`onBackHome?.()`，压根没看`trackedDirty`，未保存的持仓编辑会被无声丢弃——这跟上面报告的"该不问却问"方向相反，但同属"没有用同一套可靠的脏检查"。改成退出图标点击统一调用`onRequestLeave`（不再由`AppHeader.tsx`自己按`isCompareMode`分支），`App.tsx`的`requestLeave`内部按模式分两条路径：跟踪对比模式下看`trackedDirty`（复用`clearAllLegs`已经在用的`confirmSaveTrackedOpen`/`ConfirmSaveTrackedDialog`，一个新的`pendingTrackedLeaveHome` ref区分这次答完该走`onBackHome`还是`doClearAll`），分析模式下走原有的A/B/C逐一确认队列（`leaveQueue`，2026-09-24"逐一提示"功能，见下条）。
+3. **补文档：2026-09-24"逐一提示"功能之前没写进这份文档**——多方案对比（A/B/C）退出时的"没有改动的组合不提示，有改动的逐一提示保存"机制（`CompareSlot.baseline`/`isSlotDirty`、`App.tsx`的`requestLeave`/`advanceLeaveQueue`/`leaveQueue`state、`ConfirmLeaveDialog`的`comboLabel`/`remainingCount`），上一轮实现完之后忘了同步进这份文档，这次和本轮的bug修复一起补上，见"四、3"。
+4. **"对比方案"（多方案对比A/B/C新建B/C槽位的那个按钮）在方案A腿位区域为空时应该不可用**：xue反馈的第二个问题——`ComboCompareSlots.tsx`里`onAddSlot`按钮原来`disabled={locked || slots.length >= MAX_COMPARE_SLOTS}`，没看`mainLegs.length`。B/C是拿来跟A对比的候选方案，A还没有任何腿位时新建一个对比方案没有意义，加了`mainLegs.length === 0`这个条件，并在按钮title里给出提示（新增`compare.addSlotNeedsMainLegs`翻译key，zh/en都加了，664/664对齐）。
+5. **小屏幕/窄窗口笔记本上，`LegRow.tsx`输入框内容显示不下、被挤到换行导致整行布局错乱**——见"四、1.2"新增小节的完整说明。轻量修复（跟xue确认过方向，不是"六、22"移动端适配那种整体重新设计），新增`useNarrowLegRow()`（≤1440px时`narrow=true`），窄窗口下把张数/行权价/权利金/到期日几个固定宽度框、情景估值/腿位盈亏两个`ValueBadge`、以及行内`gap`/`px`都按比例收窄几像素，配合已有的字号自动收缩兜底，两层收缩叠加应对更窄的窗口。
+
+`npm run typecheck`/`build`/`eslint`（5错误12警告基线不变，见"五、5"附近历次记录）、`npm run test`（15/15）全部通过。此前的更新合并了2026-09-24（两个"卡死"bug修复+一批数值输入/对齐类UI问题）、2026-09-19（"解释当前情况"对话框+图表提示条整合成一套逻辑，见"四、11"）、2026-09-11（"持仓处置建议"KB检索方案彻底移除，见"四、10"归档指引）、2026-09-05~07几轮会话（预设风险揭示/到期盈亏小图、zh.ts/en.ts严重滞后事故修复与教训、对比模式健康度/Greeks修正、竞品调研落地四项功能、功能精简走查、UI布局微调）的成果。**这是当前最新、最权威的交接文档版本**，跟仓库其它文件一起push到GitHub main分支后，应视为项目当前状态的唯一事实来源（直到下一次更新）。**这份文档替代了之前"按会话追加"的版本**——旧版本是每轮会话在文末加一个新章节，越滚越长，找一个功能的现状要翻好几个章节、对着时间戳自己判断哪段是最新的。这份文档**按功能/模块组织，只描述"现在是什么样"，不按时间顺序记流水账**。
 
 **维护方式（重要，后续会话都要遵守）**：
 - 做完一个功能改动或修复了一个bug，**直接去改对应的章节内容**，让它反映当前状态，不要在文末追加"2026-xx-xx又做了什么"这种新章节。
@@ -129,10 +136,10 @@ isCompareMode = trackedLegs !== null
 - `TrackedComboSection.tsx`（~245行，**2026-09-11起因移除持仓处置建议略微缩短**）——对比模式"今日组合"整块：快照选择器（含"(估)"估算标记，见"四、3.3"）、保存按钮、开仓vs当前统计网格（股价/时间流逝/隐含波动率/持仓盈亏四列——这是全项目现在唯一一份这样的统计网格，`LegListSection.tsx`原来那份三列的重复版本已删除）、腿位列表。**健康度徽章已不在这个组件里**（2026-09-07第三轮搬去了`PayoffChart.tsx`标题栏，见下）
 - `LegActionDialogs.tsx`（~159行）——leg级别弹窗集合（保存预设/清空确认/批量删除确认/丢弃追踪确认/展期/保护/对冲/决策对比/隐含现价说明），纯转发props给各自的真实弹窗组件
 - `StrategyPersistenceDialogs.tsx`（~133行）——策略保存/切换/离开相关弹窗集合（预设切换确认/替换确认/离开确认/模式切换确认/保存策略对话框/管理策略对话框）
-- `LegRow.tsx`（~752行，全项目最大的单个组件）——单条腿位的编辑行，含**期权链自动填充逻辑**（见"四、1.2"）
+- `LegRow.tsx`（~1080行，全项目最大的单个组件，2026-09-24因下述修复略微增长）——单条腿位的编辑行，含**期权链自动填充逻辑**（见"四、1.2"）。**数值输入统一走`numberInput.ts`的`useClampedNumberField`**（`NumField`内部，2026-09-24，见该文件条目）；**张数框/情景估值/腿位盈亏三处按xue"容器尺寸不能变、不能靠滚动"的硬性要求，改成固定宽度+字号自动收缩**（张数52px→38px，情景估值/腿位盈亏改用新增的`ValueBadge`组件，56px固定宽），公共的`shrinkFontSize`收缩公式两处共用，不是各写一份
 
 **分析模式的其他功能组件**：
-- `PayoffChart.tsx`（~1000行）——到期损益图，SVG绘制，含情景滑块联动、对比模式双线叠加。标题栏股票代码旁边渲染健康度徽章和分析↔对比模式切换按钮（`positionHealth`/`modeSwitchButton`，2026-09-07第三轮从`LegListSection.tsx`/`TrackedComboSection.tsx`和`legToolbar`搬过来的，两者都是可选prop，缺省不渲染）。**图表提示条/盈亏点颜色改用`alertSeverity`一个prop驱动，2026-09-19**——原来自己内部算的`getZone()`/`zoneBands`那套（按净收权利金固定比例算golden/danger/stop三档，跟"四、11"540格表各算各的、同一仓位能给出两个不一样的判断）已整个删除，改成接收`App.tsx`从`situationExplanation`里派生出的`alertSeverity?: "takeProfit"|"stopLoss"|"monitor"`，只用来决定当前盈亏点`<circle>`的填充色（三态色 vs 原有的`accent`盈亏符号色兜底），组件自己不再做任何提醒判断，见"四、11"。**仍然已知的重复实现问题**（未受本次改动影响），见"六、已知问题"第12条
+- `PayoffChart.tsx`（~1000行）——到期损益图，SVG绘制，含情景滑块联动、对比模式双线叠加。标题栏股票代码旁边渲染健康度徽章和分析↔对比模式切换按钮（`positionHealth`/`modeSwitchButton`，2026-09-07第三轮从`LegListSection.tsx`/`TrackedComboSection.tsx`和`legToolbar`搬过来的，两者都是可选prop，缺省不渲染）。**Y轴刻度生成的无上限步进循环，2026-09-24修复**——`step`原来的取值在跨度超过`500×6`后固定钉死在500不再放大，极端的qty×price组合（比如张数打到超大数字）下这个循环能迭代到百万级，直接卡死浏览器；改成`step`按跨度量级动态放大（10倍递增直到满足`span/step<=6`），并加`MAX_TICKS=20`硬上限兜底，跟全项目其它到期盈亏计算（`pricing.ts`的`payoffCurvePoints`等）一样，改成不受数值量级影响的有界循环。**图表提示条/盈亏点颜色改用`alertSeverity`一个prop驱动，2026-09-19**——原来自己内部算的`getZone()`/`zoneBands`那套（按净收权利金固定比例算golden/danger/stop三档，跟"四、11"540格表各算各的、同一仓位能给出两个不一样的判断）已整个删除，改成接收`App.tsx`从`situationExplanation`里派生出的`alertSeverity?: "takeProfit"|"stopLoss"|"monitor"`，只用来决定当前盈亏点`<circle>`的填充色（三态色 vs 原有的`accent`盈亏符号色兜底），组件自己不再做任何提醒判断，见"四、11"。**仍然已知的重复实现问题**（未受本次改动影响），见"六、已知问题"第12条
 - `PayoffSparkline.tsx`（~78行，2026-09-05新增）——预设悬浮框里的"到期盈亏形状"迷你曲线图，复用`pricing.ts`的`payoffCurvePoints`，不重新发明计算逻辑，见"四、2.2"
 - `PnlAttributionPanel.tsx`——P/L归因面板（滑块驱动/跟踪对比两种模式）。**分析模式"解释当前情况"对话框里原本还有一段文字复述同样的价格/时间/IV贡献数字（"盈亏来源"section），2026-09-19确认是真重复后已从对话框里删除**，这个面板本身没变，现在是唯一的展示位置，见"四、11"
 - `PositionHealthBadge.tsx`——组合健康度徽章。渲染位置2026-09-07第三轮搬到`PayoffChart.tsx`标题栏（股票代码旁边），组件本身没变，只是调用方从`LegListSection.tsx`/`TrackedComboSection.tsx`换成了`PayoffChart.tsx`
@@ -145,6 +152,7 @@ isCompareMode = trackedLegs !== null
 - `DropdownMenu.tsx`——通用下拉菜单（render-prop `children: (close) => ReactNode`）
 - `Term.tsx`（2026-09-07新增）——通用"点击查看术语解释"组件，见"四、1.6"。**接入范围2026-09-07下半收窄了**——原来App.tsx标题栏净Delta/Theta/Vega/Gamma四个标签用它，随着那个展示面板整体移除，这四处也一起没了，目前只剩`EarningsIvCrashTab.tsx`的"所需保证金"一处在用
 - `RollComparisonChart.tsx`（2026-09-07新增）——`RollDialog.tsx`专用的展期前/后到期盈亏对比迷你图，见"四、1.5"
+- `ComboCompareSlots.tsx`（2026-09-21新增，**这份文档之前一直没收录，2026-09-24补上**）——"多方案对比"（方案B/C）UI，只在分析模式渲染。跟主combo（`LegListSection.tsx`，方案A）并列展示，每个槽位独立的腿位列表+统计（策略识别/到期盈利+盈亏平衡/归因/情景估值），"激活"哪个槽位（点击容器任意区域）决定策略库预设应用去哪个combo，也决定批量操作工具栏/复选框是否显示（未激活的槽位仍可逐条编辑，只是没有全选/批量/统一操作）。**2026-09-24修过一个跟主combo缩进不一致的对齐bug**——外层容器原来`px-3`+每个卡片自己又`p-2`两层叠加，比主combo多出十几像素，导致同一屏里B/C的"..."菜单跟A对不上；改成外层去掉横向padding、只留卡片自己一层
 
 **财报策略专用**：
 - `EarningsTabRoot.tsx`——财报标签顶层导航（IV Crash vs 方向判断 vs 阈值档位选择）
@@ -187,7 +195,7 @@ isCompareMode = trackedLegs !== null
 - `bearCallSpreadTable.ts` / `bullPutSpreadTable.ts`（各约540个条目，2026-09-18新增）——熊市Call价差/牛市Put价差专用的审查表：5个价格区×9个时间段×12个盈亏档，每格`[action, desc, advice]`三元组。详见"四、11"
 
 **策略库/预设**：
-- `savedStrategies.ts`（~293行）——`SavedStrategy`/`TrackedSnapshot`数据模型+CRUD（localStorage存储），`TrackedSnapshot`新增`estimated?: boolean`字段，新增`backfillTrackedSnapshots()`自动回填函数，见"四、2.1"和"四、3.3"。**这张表会随时间无上限增长**（每个交易日一条快照，从不清理），见"四、4.4"容量隐患说明
+- `savedStrategies.ts`（~293行）——`SavedStrategy`/`TrackedSnapshot`数据模型+CRUD（localStorage存储），`TrackedSnapshot`新增`estimated?: boolean`字段，新增`backfillTrackedSnapshots()`自动回填函数，见"四、2.1"和"四、3.3"。**这张表会随时间无上限增长**（每个交易日一条快照，从不清理），见"四、4.4"容量隐患说明。**2026-09-25新增`serializeTrackedLegs(ls)`**——只按腿位内容算指纹（不含spot/shifts/openingAt），驱动`App.tsx`里`trackedDirty`的派生计算，见"四、3.1"
 - `presets.ts`（~786行）——内置策略预设库（42个模板，含`RiskLine`/`RiskSeverity`风险揭示数据），见"四、2.2"
 - `customPresets.ts`——用户自定义预设的类型+存储
 - `historicalBackfill.ts`（~85行，2026-09-06新增）——历史K线拉取+flat-vol理论重定价的共享逻辑，从`simAccount.ts`抽出，供模拟账户的`Timeline`回填和策略库的`backfillTrackedSnapshots`共用，避免第三份近似实现，见"四、3.3"
@@ -197,6 +205,9 @@ isCompareMode = trackedLegs !== null
 - `useStockQuote.ts`——实时现价hook+`fetchSpotPrice`
 - `historicalVolatility.ts`——历史波动率计算（`computeHV`）+ IV/HV比值判断（`computeIvHvNote`：`sellRich`/`buyCheap`/`stillRich`三分类）
 - `recentSymbols.ts`——最近查询过的标的记录（localStorage）
+
+**数值输入**：
+- `numberInput.ts`（2026-09-24新增，**这份文档之前一直没收录这个文件**）——`NumberInputRule`接口 + `NUMBER_RULES`（price/premium/qty/shares/capital/percent1dp各字段的min/max/小数位规则）+ `clampToRule`/`clamp`/`blockInvalidNumberKey`/`formatNumForDisplay`，以及核心的**`useClampedNumberField(value, rule, onChange)`hook**——修复"输入多位数就卡死"bug的权威实现：受控数值输入框如果每次keystroke都直接`onChange(clampToRule(...))`，清空框准备重打时会瞬间被clamp回`rule.min`，形成打字-弹回的死循环。这个hook把"框内正在打的字符串"（`text`，本地state）和"提交给外部的、真正clamp过的数值"（只在`onBlur`或已经是语法完整数字时才`onChange`）解耦，全项目所有同类数值输入框（`LegRow.tsx`的`NumField`、`HedgeDialog.tsx`/`RollDialog.tsx`/`ProtectDialog.tsx`的行权价/权利金字段）统一改用这一个hook，不再各自重复实现，同一时刻只有一份权威逻辑（见"五、19"同一条原则）
 
 **日期/工具**：
 - `dateUtils.ts`——`todayISO`/`dateFromDte`/`dteFromDate`/`nearestFridayDte`/`formatDateInput`/`parseDateInput`/`daysSince`/`daysBetweenLocalDates`/`calendarDaysSince`——统一的日历天数（而非24小时周期）算法，多处历史bug修复都落在这个文件的正确使用上，改动前先确认用的是这几个helper而不是自己手写日期运算
@@ -286,6 +297,18 @@ isCompareMode = trackedLegs !== null
 
 针对单条腿，用真实期权链数据对比"不动/平仓/展期"三种结果的盈亏。**没有"对冲"这第四个对比分支**，属于backlog（见"六"）。**"决策比较"弹窗里的展期分支是硬编码+30天**，见"六、已知问题"。
 
+### 1.8 窄窗口下的行布局收缩（`LegRow.tsx`的`useNarrowLegRow`，2026-09-25）
+
+`LegRow.tsx`每一行（复选框+腿号+方向/类型切换+张数/行权价/到期日/权利金四个输入框+情景估值/腿位盈亏两个徽章+"..."菜单）里所有列都是`shrink-0`——这是故意的（2026-09-24就定下的规则：数字不能因为容器变窄被截断或滚动查看，只能靠字号自动收缩，`shrinkFontSize`/`NumField`/`ValueBadge`），但列本身的固定宽度不会跟着变窄。窗口比设计基准（约1440px宽的笔记本）更窄时，这一整行会比左侧面板容器更宽，被挤到换行，整体布局跟着乱——xue反馈"大显示器上正常，换到小一点的笔记本上输入框内容显示不下、被迫换行导致结构错乱"就是这个。
+
+**轻量修复**（跟xue确认过方向，不是"六、22"移动端适配那种要整体重新设计核心组件布局的量级）：新增`useNarrowLegRow(breakpointPx = 1440)`——用`matchMedia('(max-width: 1440px)')`监听窗口宽度，返回一个`narrow: boolean`。`narrow`为`true`时：
+- 行容器的`gap-1 px-2`收窄到`gap-0.5 px-1.5`
+- 张数38→30px、行权价52→44px、权利金76→62px、到期日框84→70px（正股腿的买入价72→60px、股数56→46px）
+- 情景估值/腿位盈亏两个`ValueBadge`56→46px
+- `ToggleBtn`（方向/类型切换按钮）新增`compact?: boolean` prop，`px-2`收窄到`px-1`
+
+窄宽度收缩 + 已有的字号自动收缩两层叠加，让整行在更窄的窗口下也能不换行地放进去。**阈值1440px是常见笔记本原生分辨率的粗略估计，不是精确计算出来的**——如果后续发现某个具体分辨率下还是不够，直接调整这个数字或者上面各列收窄后的宽度即可，不需要改动`useNarrowLegRow`机制本身。`useNarrowLegRow`目前只在这一个文件里用（每个`LegRow`实例各自注册一个`matchMedia` listener，一屏最多10条腿位，代价可忽略）；如果以后有其它组件也需要同样的窄窗口判断，再考虑提出去做成共享hook。
+
 ## 2. 策略库（保存/加载/管理/预设）
 
 ### 2.1 数据模型（`savedStrategies.ts`）
@@ -308,7 +331,31 @@ isCompareMode = trackedLegs !== null
 
 ## 3. 跟踪对比模式（"今日组合"）
 
-（本节内容未变动，详见文件地图与前述章节引用；核心机制：三条进入路径、模式互相切换、保存快照/保存策略组合、快照自动回填、开仓组合↔今日组合腿位对应关系`openLegId`。"解释当前情况"内容2026-09-19起跟分析模式共用同一套逻辑，见"四、11"。完整细节保留在本文档历史版本描述中。）
+（核心机制未变动，详见文件地图与前述章节引用：三条进入路径、模式互相切换、保存快照/保存策略组合、快照自动回填、开仓组合↔今日组合腿位对应关系`openLegId`。"解释当前情况"内容2026-09-19起跟分析模式共用同一套逻辑，见"四、11"。完整细节保留在本文档历史版本描述中。）
+
+### 3.1 "有没有未保存改动"的判断——`trackedDirty`（2026-09-25改成派生计算）
+
+判断"今日组合（`trackedLegs`）相对上一次保存/加载有没有改动"，驱动两处提示：①"保存追踪快照"按钮的`disabled`；②切换/离开对比模式前"要不要先保存"的确认框（`handleSwitchToAnalysis`的`trackedDirty && source !== "current"`分支、`clearAllLegs`、`App.tsx`的`requestLeave`）。
+
+**`trackedDirty`不是手动维护的state**（2026-09-12~2026-09-25那段时间是，已改掉）——`App.tsx`里是一行派生计算：
+```
+const trackedDirty = trackedLegs !== null && serializeTrackedLegs(trackedLegs) !== trackedBaseline;
+```
+`serializeTrackedLegs`（`savedStrategies.ts`）只按腿位内容算一份指纹字符串（跟`serializeStrategyState`共用同一份leg级别字段清单，但不含symbol/shifts/openingAt），`trackedBaseline`是`App.tsx`的一个`string | null` state，记录"此刻视为已保存"那一份`trackedLegs`的指纹。任何真正改了`trackedLegs`内容的地方（展期/保护/对冲确认、逐条编辑、勾选/关闭/移动、换标的后的行权价重映射）**不需要**额外调用任何"标脏"的setter——这些地方本来就在调`setTrackedLegs`，派生判断会自动感知。只有"此刻应该视为已保存"的几个地方（`saveTrackedSnapshotTo`保存成功后、`handleTrack`/`handleSwitchToCompare`/`handleSelectSnapshot`进入/切换对比模式或选中某个快照时、`applyPreset`/`doClearAll`清空trackedLegs时）需要显式调用`setTrackedBaseline(serializeTrackedLegs(刚生效的trackedLegs))`（清空成null时传`null`）。
+
+**为什么不含`trackedSpot`**：`trackedSpot`会随实时报价轮询（`App.tsx`的quote effect）每隔几秒自动刷新一次，如果指纹里也带上它，用户完全没编辑任何腿位也会因为股价自然波动被判定成"有未保存改动"，反而制造新的误报——跟不该把它纳入是同一类考量。
+
+**这次修复的bug**：xue反馈"对比模式保存了快照之后，切换到分析模式（左上角下拉）仍然会问是否保存，确认了会存一份一模一样的重复快照"。旧的手动flag写法里，`useLegEditing.ts`（展期/保护/对冲/勾选/关闭/移动六处）和`useStrategyOrchestration.ts`的`updateTrackedLeg`各自调用`setTrackedDirty(true)`，任何一处的调用时机跟`trackedLegs`真实是否变化不完全对应，这个flag就可能跟真实内容脱节而没人能一眼看出是哪一处。改成派生计算后，这类bug整个类别都不再可能发生——`trackedDirty`不可能跟`trackedLegs`真实内容不一致，因为它就是现场比较出来的。
+
+同一轮顺带修了logo点击的对称bug：`AppHeader.tsx`以前对`isCompareMode`单独分支，点logo直接`onBackHome?.()`，完全不检查`trackedDirty`，未保存的持仓编辑会被无声丢弃。现在退出图标点击统一调用`onRequestLeave`，`App.tsx`的`requestLeave`内部按`isCompareMode`分两条路径处理（跟踪对比模式看`trackedDirty`并复用`clearAllLegs`已经在用的`ConfirmSaveTrackedDialog`，一个`pendingTrackedLeaveHome` ref区分这次答完该走`onBackHome`还是`doClearAll`；分析模式走"3.2"下面提到的A/B/C逐一确认队列），`AppHeader.tsx`不再自己判断该不该提示。
+
+### 3.2 退出/切换分析模式前的"逐一提示"（多方案对比A/B/C，2026-09-24）
+
+跟3.1是两个不同层面的"有没有改动"判断——3.1管的是"今日组合"（跟踪对比模式），这一节管的是"多方案对比"（分析模式下的A/B/C三个候选方案，`ComboCompareSlots.tsx`/`useCompareSlots.ts`），退出图标点击时的行为：**打开的对比方案里，没有任何改动的不提示，有改动的逐一提示保存**（xue的明确要求）。
+
+机制：`CompareSlot`（`useCompareSlots.ts`）新增`baseline: string`字段（`serializeSlotLegs(legs)`，跟`serializeTrackedLegs`同一种"只按leg内容算指纹"的思路），`isSlotDirty(slot)`现算比较；`addCompareSlot`/`applyPresetToSlot`/`applyStrategyToSlot`在创建/加载时设置baseline，`markSlotSaved(slotId)`在保存成功后更新baseline，逐条编辑（`updateCompareSlotLeg`等）故意不碰baseline（只有加载/保存才算"新的已保存基准"）。
+
+`App.tsx`的`requestLeave`（分析模式分支）一次性算出当前有哪些combo脏了（0=A/主combo，用`canSaveStrategy`；1/2=`compareSlots[0]/[1]`，用`isSlotDirty`），全干净直接`onBackHome`，否则把脏combo的索引灌进`leaveQueue` state，弹出队首那个的确认框（`ConfirmLeaveDialog`，标题旁带`comboLabel`——"方案A/B/C"——和`remainingCount`——"还有几个待确认"，避免看起来像同一个提示弹了两次）。`advanceLeaveQueue()`在队首那个被处理完（跳过不保存，或保存成功）后调用，队列空了才真正`onBackHome`。"保存"分支会临时把`activeComboIndex`切到目标combo（B/C时），让`SaveStrategyDialog`读到正确的槽位。
 
 ## 4. 模拟账户（`SimulatorPage.tsx` + `simAccount.ts`）
 
@@ -421,6 +468,7 @@ xue针对熊市Call价差（例：卖100call/买110call）逐条审查了540种�
 18. **文档说"已修复"/"已实现"不等于代码真的这样**——2026-09-11发现过一次真实反例：文档描述的止损/止盈信号修复细节（`entryNetPremium`+双窗口扫描）在GitHub主分支代码里完全不存在。关键判断（尤其是"这个bug是不是真修了"这类）优先直接读GitHub实际代码核实，不要只信文档描述，哪怕文档写得再具体
 19. **一个组合形状/一套判断逻辑，同一时刻只应该有一份权威实现**——"四、11"是这条原则的一次实践：旧`getZone`（按净收权利金固定比例）、旧`actionHints`（按dte/delta固定阈值）、新540格表三套逻辑曾经并存，同一仓位能给出互相矛盾的建议。以后任何新的"提醒/建议"类需求，先确认是否已有类似判断逻辑，优先扩展/复用而不是并行新增一套；确认某套逻辑要被取代时，**连同它驱动的所有UI（文字/色带/图标颜色等）一次性一起换掉**，不要只换掉看得见的那一处、留下背后逻辑或其它UI表现继续用旧的
 20. **一个数字/一段结论如果已经在另一处UI固定展示，新增的解释性文案不要重复陈述同一组数字**——"盈亏来源"归因数字在侧边栏`PnlAttributionPanel.tsx`和"解释当前情况"对话框里重复展示过，2026-09-19删除了对话框里那份。新增"解释当前情况"类文案前，先确认要说的内容是不是已经在页面其它地方常驻展示
+21. **"这个东西有没有改动/脏了"这类判断，优先用"现场比较内容指纹 vs 上次已保存指纹"（派生值），不要用手动到处调用的true/false state**——`trackedDirty`（2026-09-25之前）、以及更早的分析模式`canSaveStrategy`都踩过/绕开过同一个坑：手动flag散落在好几个调用点各自维护，一旦某处调用时机跟真实内容不完全同步，flag就会跟"真实有没有改动"脱节，且很难从代码上一眼看出是哪一处。`serializeStrategyState`/`serializeSlotLegs`/`serializeTrackedLegs`+现场`!==`比较是这个项目里验证过可靠的写法，新增任何类似"未保存改动"判断，优先复用这个模式而不是再引入一个手动flag
 
 ---
 

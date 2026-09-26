@@ -43,6 +43,7 @@ const en: Dict = {
   // ── combo compare (multi-plan comparison, 2026-09-21) ──
   "compare.title": "Compare Plans",
   "compare.addSlot": "Add Plan",
+  "compare.addSlotNeedsMainLegs": "Add at least one leg on the left before adding a comparison plan",
   "compare.hint": "Add up to 2 more candidate plans for the same underlying (e.g. Buy Call vs. spread vs. Sell Put) — their payoff curves overlay on the chart for a direct comparison.",
   "compare.remove": "Remove",
   "compare.emptySlot": "No legs yet — click \"Add Leg\" below to start",

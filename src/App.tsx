@@ -11,7 +11,7 @@ import PayoffChart from "@/components/PayoffChart";
 import { useStockQuote } from "@/lib/useStockQuote";
 import { useEpsEstimate } from "@/hooks/useEpsEstimate";
 import { loadRecentSymbols, addRecentSymbol } from "@/lib/recentSymbols";
-import { serializeStrategyState, computeOpeningSimBasis, saveStrategy, overwriteStrategy, type SavedStrategy, type OpeningSimBasis } from "@/lib/savedStrategies";
+import { serializeStrategyState, serializeTrackedLegs, computeOpeningSimBasis, saveStrategy, overwriteStrategy, type SavedStrategy, type OpeningSimBasis } from "@/lib/savedStrategies";
 import DropdownMenu from "@/components/DropdownMenu";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
@@ -98,7 +98,18 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const [trackedDaysElapsed, setTrackedDaysElapsed] = useState<number>(0);
   const [trackingStrategyId, setTrackingStrategyId] = useState<string | null>(null);
   const [activeSnapshotId, setActiveSnapshotId] = useState<string | null>(null);
-  const [trackedDirty, setTrackedDirty] = useState(false);
+  // 2026-09-25修复：trackedDirty以前是手动true/false的state，散落在
+  // useLegEditing.ts/useStrategyOrchestration.ts好几处调用
+  // setTrackedDirty(true)/(false)——真实bug：保存快照之后点"切换到分析模
+  // 式"仍然误报"有未保存改动"，确认再点保存会存一份一模一样的重复快照。
+  // 改成派生计算：trackedBaseline记的是"此刻视为已保存"那一份trackedLegs
+  // 的指纹（serializeTrackedLegs，见savedStrategies.ts），trackedDirty现
+  // 场比较trackedLegs的指纹跟它是否相同，不可能跟真实内容脱节。
+  // trackedLegs为null（不在对比模式）时直接短路成false。故意不比较
+  // trackedSpot——它会随实时报价轮询自动刷新，纳入比较会把"股价自然波
+  // 动"也误判成"未保存改动"。
+  const [trackedBaseline, setTrackedBaseline] = useState<string | null>(null);
+  const trackedDirty = trackedLegs !== null && serializeTrackedLegs(trackedLegs) !== trackedBaseline;
   const [confirmSaveTrackedOpen, setConfirmSaveTrackedOpen] = useState(false);
   // "多方案对比"（方案B/C，见useCompareSlots.ts/ComboCompareSlots.tsx）——
   // 完全独立于legs/trackedLegs的一份新state，只在分析模式下渲染（见下方
@@ -299,7 +310,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     moveTrackedLeg,
     toggleTrackedLeg,
     closeTrackedLeg,
-  } = useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs, setTrackedDirty });
+  } = useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs });
   // Which combo's "添加到预设" last opened the shared SavePresetDialog (see
   // LegActionDialogs' `activeLegs` prop below) — "开仓组合" (legs) and
   // "今日组合" (trackedLegs) are different arrays that both need to reach
@@ -329,6 +340,15 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // actual navigation only fires once the save has genuinely succeeded,
   // same lifecycle as pendingPresetReplace above.
   const pendingLeaveAfterSave = useRef(false);
+  // 2026-09-25新增：点击header logo退回首页时，如果当前在"跟踪对比模式"
+  // 且trackedLegs有未保存改动，复用clearAllLegs已经在用的
+  // confirmSaveTrackedOpen/ConfirmSaveTrackedDialog问一遍"要不要先保存"，
+  // 而不是像以前那样（见AppHeader.tsx旧版逻辑）直接静默调onBackHome、把
+  // 未保存的改动丢掉——那其实是反方向的bug（该问不问），跟"切换到分析模
+  // 式"那个bug（不该问却问）性质不同，但都是"没有用同一套可靠的脏检查"
+  // 的表现。这个ref标记"这次confirmSaveTrackedOpen是从requestLeave触发
+  // 的，答完之后该走onBackHome，不是doClearAll那条路"。
+  const pendingTrackedLeaveHome = useRef(false);
   const [confirmLeaveOpen, setConfirmLeaveOpen] = useState(false);
   // 2026-09-24新增："退出时按每个有未保存改动的组合逐一提示"——xue明确要
   // 求：打开的对比组合（A/B/C）里，只要有改动的就要在退出前逐一提示保
@@ -396,7 +416,9 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     if (trackedLegsRef.current) {
       setTrackedLegs((prev) => (prev ? rescale(prev) : prev));
       setTrackedSpot(newSpot);
-      setTrackedDirty(true);
+      // trackedDirty现在是派生值（见上面state声明处的注释）——这次
+      // setTrackedLegs真的改了行权价/权利金，派生比较会自动感知，不需要
+      // 再手动置true。
     }
     setSpot(newSpot);
     legBaseSpot.current = newSpot;
@@ -709,7 +731,22 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // 编号），全干净直接走onBackHome，否则把队列灌进leaveQueue、弹出队首那
   // 个的确认框——AppHeader点击退出图标时统一调这个，不再由AppHeader自己
   // 判断"要不要提示"（那样只能看到A，看不到B/C）。
+  // 2026-09-25新增isCompareMode分支：以前AppHeader.tsx自己判断"对比模式下
+  // 点logo直接onBackHome，不问"——完全不看trackedDirty，跟踪对比模式下有
+  // 未保存改动也会被无声丢弃。现在退出图标点击统一先落到这里
+  // （AppHeader.tsx不再自己分支，见其onClick），对比模式下按trackedDirty
+  // 决定要不要弹confirmSaveTrackedOpen（复用clearAllLegs已经在用的同一个
+  // 对话框），分析模式下走原来的A/B/C逐一确认队列。
   const requestLeave = () => {
+    if (isCompareMode) {
+      if (trackedDirty) {
+        pendingTrackedLeaveHome.current = true;
+        setConfirmSaveTrackedOpen(true);
+      } else {
+        onBackHome?.();
+      }
+      return;
+    }
     const dirty: number[] = [];
     if (canSaveStrategy) dirty.push(0);
     compareSlots.forEach((s, i) => { if (isSlotDirty(s)) dirty.push(i + 1); });
@@ -763,7 +800,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     setSymbol, setLegs, setSpot, setShifts, setOpeningAt, setOpeningAtSimOverride,
     setExpiredStrategyPrompt, setExpiredConfirmed, setExpiredTrackPrompt, setCorrectedSpot, setCorrecting,
     isCompareMode, trackedLegs, trackedSpot, trackedDirty, effectiveTrackedSpot,
-    setTrackedLegs, setTrackedSpot, setTrackedDaysElapsed, setTrackedDirty, setActiveSnapshotId, setConfirmSaveTrackedOpen,
+    setTrackedLegs, setTrackedSpot, setTrackedDaysElapsed, setTrackedBaseline, setActiveSnapshotId, setConfirmSaveTrackedOpen,
     savedStrategies, trackingStrategyId, trackedStrategy,
     setSavedStrategies, setTrackingStrategyId, setStrategyBaseline, setSaveStrategyOpen, setManageStrategyOpen,
     setConfirmClearOpen, setConfirmSwitchOpen,
@@ -1425,10 +1462,18 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         onConfirmBulkDelete={confirmBulkDelete}
         onCancelBulkDelete={() => setConfirmBulkDeleteOpen(false)}
         confirmSaveTrackedOpen={confirmSaveTrackedOpen}
-        onDontSaveTracked={() => { setConfirmSaveTrackedOpen(false); doClearAll(); }}
+        // 2026-09-25起，这个对话框有两个来源：clearAllLegs（原有的"清空组
+        // 合"）和requestLeave（新增的"点logo退回首页"）——pendingTrackedLeaveHome
+        // 标记这次是哪一种，答完之后走对应的收尾动作。
+        onDontSaveTracked={() => {
+          setConfirmSaveTrackedOpen(false);
+          if (pendingTrackedLeaveHome.current) { pendingTrackedLeaveHome.current = false; onBackHome?.(); return; }
+          doClearAll();
+        }}
         onSaveTrackedThenClear={async () => {
           setConfirmSaveTrackedOpen(false);
           await handleSaveTracked();
+          if (pendingTrackedLeaveHome.current) { pendingTrackedLeaveHome.current = false; onBackHome?.(); return; }
           doClearAll();
         }}
         rollTarget={rollTarget}

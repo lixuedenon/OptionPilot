@@ -361,6 +361,30 @@ export function serializeStrategyState(sym: string, ls: Leg[], sh: Shifts, oa: n
   return `${sym}|${ls.map(norm).join("|")}|${sh.dS}|${sh.dT}|${sh.dV}|${oa}`;
 }
 
+// 2026-09-25新增，修复"跟踪对比模式"里保存快照之后切到分析模式仍然误报
+// "有未保存改动"的bug。根因：trackedDirty以前是一个手动true/false的
+// state，散落在useLegEditing.ts（展期/保护/对冲/勾选/关闭/移动六处）和
+// useStrategyOrchestration.ts的updateTrackedLeg里各自调用
+// setTrackedDirty(true)，任何一处漏调用/多调用、或者被别的effect意外碰
+// 到，都会让这个flag跟trackedLegs真实内容脱节而不自知（跟App.tsx
+// requestLeave那一节2026-09-24之前canSaveStrategy已经在用的"序列化对比"
+// 模式是同一类教训）。改成跟CompareSlot.baseline/isSlotDirty（
+// useCompareSlots.ts，同一天新增）同样的思路——不再手动维护一个会跑偏的
+// 布尔值，而是保存"上一次视为已保存"那一刻trackedLegs的指纹
+// （trackedBaseline，App.tsx里的state），每次要判断"现在到底有没有未保
+// 存的改动"时，用这个函数现算一遍trackedLegs的指纹跟trackedBaseline比
+// 较——只要没人显式调用了setTrackedBaseline，判断结果就不可能跟真实内
+// 容脱节。
+//
+// 故意只按腿位内容算（跟serializeStrategyState共用同一份leg级别字段清
+// 单），不包含trackedSpot——trackedSpot会随实时报价轮询每隔几秒自动刷新
+// 一次（App.tsx里的quote effect），如果指纹里也带上它，用户完全没编辑
+// 任何腿位也会因为股价自然波动被判定成"有未保存改动"，反而制造新的误报。
+export function serializeTrackedLegs(ls: Leg[]): string {
+  const norm = (l: Leg) => `${l.action}-${l.type}-${l.strike}-${l.dte}-${l.premium}-${l.kind ?? "option"}-${l.shares ?? 100}-${l.qty ?? 1}-${l.disabled ?? false}`;
+  return ls.map(norm).join("|");
+}
+
 export function findDuplicate(
   candidate: { symbol: string; spot: number; legs: Leg[]; shifts: Shifts },
   existing: SavedStrategy[],

@@ -43,6 +43,7 @@ const zh: Dict = {
   // ── combo compare (多方案对比, 2026-09-21) ──
   "compare.title": "多方案对比",
   "compare.addSlot": "对比方案",
+  "compare.addSlotNeedsMainLegs": "请先在左侧添加至少一条腿位，再新增对比方案",
   "compare.hint": "同一个标的，最多可以再加2个候选方案（比如Buy Call vs 价差 vs Sell Put），到期损益曲线会叠加在图表上直接对比。",
   "compare.remove": "移除",
   "compare.emptySlot": "还没有腿位，点击下方「添加腿位」开始",

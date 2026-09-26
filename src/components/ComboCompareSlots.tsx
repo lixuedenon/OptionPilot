@@ -153,8 +153,13 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
         <span className="text-[11px] font-bold text-slate-300">{t("compare.title")}</span>
         <button
           onClick={onAddSlot}
-          disabled={locked || slots.length >= MAX_COMPARE_SLOTS}
-          title={t("compare.addSlot")}
+          // 2026-09-25新增mainLegs.length===0这个条件——xue反馈分析模式刚
+          // 进来、腿位区域还是空的（方案A还没有任何腿位）时，"对比方案"
+          // 按钮应该是不可用的：B/C是拿去跟A对比的候选方案，A本身还没有
+          // 内容时新建一个对比方案没有意义（这一点上跟策略库预设选择器
+          // 不同——预设是往A或B/C里"填"东西，不需要A先有内容）。
+          disabled={locked || slots.length >= MAX_COMPARE_SLOTS || mainLegs.length === 0}
+          title={mainLegs.length === 0 ? t("compare.addSlotNeedsMainLegs") : t("compare.addSlot")}
           className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Plus size={11} />

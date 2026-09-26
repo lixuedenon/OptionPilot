@@ -120,6 +120,13 @@ interface Props {
   // 里做判断，退出图标点击时无条件调用`onRequestLeave`，由App.tsx的
   // requestLeave统一算"到底有没有东西没保存、需不需要弹、弹哪几个"——包
   // 括"什么都没改，直接调onBackHome、不弹任何东西"这个分支也移到那边了。
+  // 2026-09-25再次修复：这个组件以前对isCompareMode（跟踪对比模式，不是
+  // 上面说的A/B/C多方案对比）单独分支，点logo直接onBackHome、完全不检查
+  // trackedLegs有没有未保存改动——对比模式下有未保存的持仓编辑，点logo
+  // 会被无声丢弃，这本身是一个真实bug。现在不再区分isCompareMode，退出
+  // 图标点击统一调用onRequestLeave，App.tsx的requestLeave内部自己按
+  // isCompareMode分两条路径判断（跟踪对比模式看trackedDirty，分析模式看
+  // A/B/C），这个组件不用再关心是哪种模式。
   onRequestLeave: () => void; // App.tsx still owns the confirm dialog(s)' rendering and outcome handlers
 
   // presets
@@ -193,8 +200,7 @@ export default function AppHeader({
         <button
           onClick={() => {
             if (simOrigin) { onCancelSimOrigin?.(); return; }
-            if (!isCompareMode) { onRequestLeave(); return; }
-            onBackHome?.();
+            onRequestLeave();
           }}
           disabled={!onBackHome && !onCancelSimOrigin}
           title={simOrigin ? t("sim.cancelOrigin") : t("home.backToHome")}

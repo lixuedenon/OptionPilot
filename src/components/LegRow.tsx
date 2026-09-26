@@ -132,6 +132,42 @@ const inp =
 const inpDisabled =
   "w-full rounded border border-slate-700/40 bg-slate-800/60 px-1.5 py-1 text-xs text-slate-400 tabular-nums cursor-not-allowed";
 
+// 2026-09-25新增：小屏幕/窄窗口笔记本上，这一整行（复选框+腿号+方向/类
+// 型切换+张数/行权价/到期日/权利金四个输入框+情景估值/腿位盈亏两个徽章+
+// "..."菜单）全部是`shrink-0`，没有一个会被flexbox压缩——这是故意的（见
+// NumField/ValueBadge上面的注释：数字不能因为容器变窄而被截断/滚动查
+// 看，只能靠字号自动收缩），但列的固定宽度本身不会跟着变窄，窗口比设计
+// 基准（约1440px宽的笔记本）更窄时，这一整行就会比左侧面板容器更宽，被
+// 挤到换行、整体布局跟着乱掉——xue反馈的"小屏幕上输入框内容显示不下、
+// 换行导致结构错乱"就是这个。
+//
+// 轻量修复（跟xue确认过方向）：不重新设计布局（那是"六、22"移动端适配
+// 那个量级的独立工作），而是在窗口宽度低于这个阈值时，把每一列的固定宽
+// 度本身也按比例收窄几像素（张数/行权价/权利金/情景估值/腿位盈亏/到期
+// 日框，以及外层gap/padding），跟"字号自动收缩"配合，两层收缩叠加起来
+// 让整行在更窄的窗口下也能不换行地放进去。阈值1440px是常见笔记本原生分
+// 辨率的一个粗略下限估计，不是精确计算出来的——如果后续发现某个具体分
+// 辨率下还是不够，调这个数字或者下面各列收窄后的宽度即可，不需要改动
+// 这里的机制本身。
+//
+// 用matchMedia而不是resize事件+innerWidth，浏览器原生支持
+// change事件、不需要自己节流；每个LegRow实例都会各自注册一个
+// listener，一屏最多10条腿位、代价可忽略。
+function useNarrowLegRow(breakpointPx = 1440): boolean {
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== "undefined" && window.innerWidth <= breakpointPx,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia(`(max-width: ${breakpointPx}px)`);
+    const handler = () => setNarrow(mq.matches);
+    handler();
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, [breakpointPx]);
+  return narrow;
+}
+
 function useClickOutside(active: boolean, onClose: () => void) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -161,12 +197,17 @@ function ToggleBtn({
   color,
   onClick,
   disabled,
+  compact,
 }: {
   value: string;
   next: string;
   color: string;
   onClick: () => void;
   disabled?: boolean;
+  // 2026-09-25新增：窄窗口下（见useNarrowLegRow）把左右padding从px-2收窄
+  // 到px-1，方向/类型两个切换按钮各省1~2px，给这一行其它更紧张的列腾地
+  // 方；不影响按钮本身的可点击文字内容。
+  compact?: boolean;
 }) {
   const { t } = useI18n();
   return (
@@ -174,7 +215,7 @@ function ToggleBtn({
       onClick={onClick}
       disabled={disabled}
       title={disabled ? t("leg.blocked") : `${t("leg.clickSwitch")} ${next}`}
-      className={`rounded px-2 py-1 text-[10px] font-bold uppercase text-white transition hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed ${color}`}
+      className={`rounded ${compact ? "px-1" : "px-2"} py-1 text-[10px] font-bold uppercase text-white transition hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed ${color}`}
     >
       {value}
     </button>
@@ -515,6 +556,9 @@ export default function LegRow({
   locked = false,
 }: Props) {
   const { t, lang } = useI18n();
+  // 见useNarrowLegRow自己的注释——窄窗口笔记本上收窄这一行各列的固定宽度
+  // /padding/gap，配合已有的字号自动收缩，避免整行被挤到换行。
+  const narrow = useNarrowLegRow();
   const disabled = leg.disabled === true;
   // Combined gate for anything that would actually change this leg's data —
   // see Props.locked's comment. `disabled` alone still drives the "已屏蔽"
@@ -861,7 +905,7 @@ export default function LegRow({
   if (leg.kind === "stock") {
     return (
       <div
-        className={`flex items-center gap-1 rounded border px-2 py-1.5 transition ${
+        className={`flex items-center ${narrow ? "gap-0.5 px-1.5" : "gap-1 px-2"} rounded border py-1.5 transition ${
           disabled
             ? "border-slate-700/50 bg-slate-900/40"
             : "border-amber-700/40 bg-amber-950/20"
@@ -884,10 +928,11 @@ export default function LegRow({
             color={leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"}
             onClick={() => onChange({ action: leg.action === "buy" ? "sell" : "buy" })}
             disabled={fieldsDisabled}
+            compact={narrow}
           />
         </div>
-        <NumField label={t("leg.buyPrice")} value={leg.strike} step={0.5} width="72px" onChange={(v) => onChange({ strike: v })} disabled={fieldsDisabled} rule={NUMBER_RULES.price} />
-        <NumField label={t("leg.sharesLabel")} value={leg.shares ?? 100} step={1} width="56px" onChange={(v) => onChange({ shares: v })} disabled={fieldsDisabled} rule={NUMBER_RULES.shares} />
+        <NumField label={t("leg.buyPrice")} value={leg.strike} step={0.5} width={narrow ? "60px" : "72px"} onChange={(v) => onChange({ strike: v })} disabled={fieldsDisabled} rule={NUMBER_RULES.price} />
+        <NumField label={t("leg.sharesLabel")} value={leg.shares ?? 100} step={1} width={narrow ? "46px" : "56px"} onChange={(v) => onChange({ shares: v })} disabled={fieldsDisabled} rule={NUMBER_RULES.shares} />
         <div className="flex flex-col gap-0.5">
           <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">Delta</span>
           <span className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-semibold text-emerald-400">
@@ -904,7 +949,7 @@ export default function LegRow({
 
   return (
     <div
-      className={`flex items-center gap-1 rounded border px-2 py-1.5 transition ${
+      className={`flex items-center ${narrow ? "gap-0.5 px-1.5" : "gap-1 px-2"} rounded border py-1.5 transition ${
         disabled
           ? "border-slate-700/50 bg-slate-900/40"
           : "border-slate-800 bg-slate-900/60"
@@ -927,6 +972,7 @@ export default function LegRow({
           color={leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"}
           onClick={() => onChange({ action: leg.action === "buy" ? "sell" : "buy" })}
           disabled={fieldsDisabled}
+          compact={narrow}
         />
       </div>
 
@@ -941,6 +987,7 @@ export default function LegRow({
             onChange({ type: next });
           }}
           disabled={fieldsDisabled}
+          compact={narrow}
         />
       </div>
 
@@ -953,14 +1000,14 @@ export default function LegRow({
         label={t("leg.qty")}
         value={leg.qty ?? 1}
         step={1}
-        width="38px"
+        width={narrow ? "30px" : "38px"}
         onChange={(v) => onChange({ qty: v })}
         disabled={fieldsDisabled}
         rule={NUMBER_RULES.qty}
       />
 
       <div ref={strikeMenuRef} className="relative flex shrink-0 items-end gap-0.5">
-        <NumField label={t("leg.strike")} value={leg.strike} step={0.5} width="52px" onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ strike: v }); }} disabled={fieldsDisabled} rule={NUMBER_RULES.price} />
+        <NumField label={t("leg.strike")} value={leg.strike} step={0.5} width={narrow ? "44px" : "52px"} onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ strike: v }); }} disabled={fieldsDisabled} rule={NUMBER_RULES.price} />
         {!disabled && (
           <button
             onClick={() => setStrikeMenuOpen((v) => !v)}
@@ -989,7 +1036,7 @@ export default function LegRow({
         )}
       </div>
       <div ref={expiryMenuRef} className="relative flex shrink-0 items-end gap-0.5">
-        <div className="flex flex-col gap-0" style={{ width: "84px" }}>
+        <div className="flex flex-col gap-0" style={{ width: narrow ? "70px" : "84px" }}>
           <span className="flex items-baseline gap-1 text-[8px] font-semibold uppercase tracking-wide text-slate-500">
             {t("leg.expiry")}
             <span className="text-[8px] font-medium normal-case text-amber-400/80">{t("leg.left")}{Math.round(leg.dte)}d</span>
@@ -1031,7 +1078,7 @@ export default function LegRow({
         )}
       </div>
       <div className="flex shrink-0 items-end gap-0.5">
-        <NumField label={t("leg.premium")} value={leg.premium} step={0.01}  width="76px" onChange={(v) => { setPriceError(null); setPriceNote(null); setPriceView("opening"); onChange({ premium: v }); }} disabled={fieldsDisabled} rule={NUMBER_RULES.premium} />
+        <NumField label={t("leg.premium")} value={leg.premium} step={0.01} width={narrow ? "62px" : "76px"} onChange={(v) => { setPriceError(null); setPriceNote(null); setPriceView("opening"); onChange({ premium: v }); }} disabled={fieldsDisabled} rule={NUMBER_RULES.premium} />
         {!disabled && !hidePriceRefresh && (
           <button
             onClick={handleTogglePrice}
@@ -1064,7 +1111,7 @@ export default function LegRow({
           位置"就是这个原因。改用ValueBadge（固定宽度+字号自动收缩，跟
           张数框同一套逻辑），宽度钉死为56px，不再随内容变化。 */}
       {scenarioPrice !== undefined && !disabled && (
-        <ValueBadge label={t("leg.scenarioValue")} value={scenarioPrice} width="56px" title={t("leg.scenarioValueHint")} />
+        <ValueBadge label={t("leg.scenarioValue")} value={scenarioPrice} width={narrow ? "46px" : "56px"} title={t("leg.scenarioValueHint")} />
       )}
 
       {(() => {
@@ -1082,7 +1129,7 @@ export default function LegRow({
           <ValueBadge
             label={closed ? t("leg.closedPnlLabel") : t("leg.legPnl")}
             value={displayPnl}
-            width="56px"
+            width={narrow ? "46px" : "56px"}
             title={closed ? t("leg.closedPnlHint") : t("leg.legPnlHint")}
           />
         );

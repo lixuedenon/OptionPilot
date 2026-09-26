@@ -9,6 +9,7 @@ import {
   deleteTrackedSnapshot,
   backfillTrackedSnapshots,
   serializeStrategyState,
+  serializeTrackedLegs,
   findDuplicate,
   computeOpeningSimBasis,
   type SavedStrategy,
@@ -92,12 +93,21 @@ export function useStrategyOrchestration(params: {
   isCompareMode: boolean;
   trackedLegs: Leg[] | null;
   trackedSpot: number | null;
+  // 2026-09-25起，trackedDirty不再是一个手动维护的state——App.tsx用
+  // serializeTrackedLegs(trackedLegs) !== trackedBaseline现算，这里仍然
+  // 当一个普通只读boolean接进来用（handleSwitchToAnalysis/clearAllLegs的
+  // 判断逻辑不用变），但"标脏"这半件事不再需要任何人显式调用，"标干净"
+  // 那半件事改成调用下面的setTrackedBaseline，见它自己的注释。
   trackedDirty: boolean;
   effectiveTrackedSpot: number;
   setTrackedLegs: React.Dispatch<React.SetStateAction<Leg[] | null>>;
   setTrackedSpot: React.Dispatch<React.SetStateAction<number | null>>;
   setTrackedDaysElapsed: React.Dispatch<React.SetStateAction<number>>;
-  setTrackedDirty: React.Dispatch<React.SetStateAction<boolean>>;
+  // 取代原来的setTrackedDirty(false)——把"此刻视为已保存"那一份
+  // trackedLegs的指纹存起来（null表示尚未进入/已经离开对比模式，此时无
+  // 论trackedLegs是什么，App.tsx那边的派生判断都直接短路成false，不看这
+  // 个值）。见savedStrategies.ts的serializeTrackedLegs。
+  setTrackedBaseline: React.Dispatch<React.SetStateAction<string | null>>;
   setActiveSnapshotId: React.Dispatch<React.SetStateAction<string | null>>;
   setConfirmSaveTrackedOpen: React.Dispatch<React.SetStateAction<boolean>>;
   // Saved-strategy library
@@ -136,7 +146,7 @@ export function useStrategyOrchestration(params: {
     setSymbol, setLegs, setSpot, setShifts, setOpeningAt, setOpeningAtSimOverride,
     setExpiredStrategyPrompt, setExpiredConfirmed, setExpiredTrackPrompt, setCorrectedSpot, setCorrecting,
     isCompareMode, trackedLegs, trackedSpot, trackedDirty, effectiveTrackedSpot,
-    setTrackedLegs, setTrackedSpot, setTrackedDaysElapsed, setTrackedDirty, setActiveSnapshotId, setConfirmSaveTrackedOpen,
+    setTrackedLegs, setTrackedSpot, setTrackedDaysElapsed, setTrackedBaseline, setActiveSnapshotId, setConfirmSaveTrackedOpen,
     savedStrategies, trackingStrategyId, trackedStrategy,
     setSavedStrategies, setTrackingStrategyId, setStrategyBaseline, setSaveStrategyOpen, setManageStrategyOpen,
     setConfirmClearOpen, setConfirmSwitchOpen,
@@ -264,7 +274,7 @@ export function useStrategyOrchestration(params: {
     setTrackingStrategyId(null);
     setTrackedSpot(null);
     setActiveSnapshotId(null);
-    setTrackedDirty(false);
+    setTrackedBaseline(null);
     setTrackedDaysElapsed(0);
     setOpeningAt(Date.now());
     setExpiredStrategyPrompt(null);
@@ -284,7 +294,7 @@ export function useStrategyOrchestration(params: {
     setTrackedSpot(null);
     setActiveSnapshotId(null);
     setCorrectedSpot(null);
-    setTrackedDirty(false);
+    setTrackedBaseline(null);
     setOpeningAt(Date.now());
     setExpiredStrategyPrompt(null);
     setExpiredConfirmed(false);
@@ -296,7 +306,10 @@ export function useStrategyOrchestration(params: {
 
   const updateTrackedLeg = (id: string, patch: Partial<Leg>) => {
     setTrackedLegs((prev) => prev?.map((l) => (l.id === id ? { ...l, ...patch } : l)) ?? null);
-    setTrackedDirty(true);
+    // trackedDirty不再在这里手动置true——App.tsx现在用serializeTrackedLegs
+    // 现算trackedLegs跟trackedBaseline的差异，这次setTrackedLegs调用本身
+    // 已经足够让派生判断自动感知到。见savedStrategies.ts的
+    // serializeTrackedLegs注释。
     if (patch.premium !== undefined) setCorrectedSpot(null);
   }
 
@@ -363,8 +376,11 @@ export function useStrategyOrchestration(params: {
     const newSnaps = updatedStrategy?.trackedSnapshots ?? [];
     if (newSnaps.length > 0) setActiveSnapshotId(newSnaps[newSnaps.length - 1].id);
     setTrackedLegs(lockedLegs);
-    setTrackedDirty(false);
-  }, [trackedLegs, trackedSpot, spot, setActiveSnapshotId, setSavedStrategies, setTrackedDirty, setTrackedLegs, setOpeningAtSimOverride]);
+    // 保存成功=这份lockedLegs现在就是"已保存"的基准，记下它的指纹而不是
+    // 简单置一个布尔值——2026-09-25修复见savedStrategies.ts的
+    // serializeTrackedLegs注释。
+    setTrackedBaseline(serializeTrackedLegs(lockedLegs));
+  }, [trackedLegs, trackedSpot, spot, setActiveSnapshotId, setSavedStrategies, setTrackedBaseline, setTrackedLegs, setOpeningAtSimOverride]);
 
   const handleSaveStrategy = useCallback(async (filename: string) => {
     setOpeningAtSimOverride(null);
@@ -499,6 +515,12 @@ export function useStrategyOrchestration(params: {
     // logic this mirrors).
     const snaps = refreshed.trackedSnapshots ?? [];
     const latestSnap = snaps.length > 0 ? snaps[snaps.length - 1] : null;
+    // 2026-09-25新增：两条分支各自算出的trackedLegs也是这次新的"已保存"
+    // 基准（handleTrack一进对比模式，trackedLegs跟这条基准天然一致，不
+    // 该被判定成"有未保存改动"）——用一个函数体内的局部变量接住两条分支
+    // 各自算出的数组，分支结束后统一往下算一次指纹，不在每条分支里重复
+    // 这行。
+    let newTrackedLegsForBaseline: Leg[];
     if (latestSnap) {
       // Two different "days" here, easy to conflate (2026-09-04 bug): the
       // snapshot's own legs were already decayed once, up to whatever
@@ -523,13 +545,12 @@ export function useStrategyOrchestration(params: {
       // dateUtils.ts's comment on daysBetweenLocalDates for the full story.
       const snapshotDecay = calendarDaysSince(latestSnap.savedAt);
       setTrackedDaysElapsed(calendarDaysSince(s.openingAt ?? s.createdAt));
-      setTrackedLegs(
-        latestSnap.legs.map((l) => ({
-          ...l,
-          id: uid(),
-          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - snapshotDecay),
-        })),
-      );
+      newTrackedLegsForBaseline = latestSnap.legs.map((l) => ({
+        ...l,
+        id: uid(),
+        dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - snapshotDecay),
+      }));
+      setTrackedLegs(newTrackedLegsForBaseline);
       setTrackedSpot(latestSnap.spot);
       setActiveSnapshotId(latestSnap.id);
     } else {
@@ -539,23 +560,22 @@ export function useStrategyOrchestration(params: {
       // is a fresh copy of legs with no snapshot yet, so it needs the
       // identical decay).
       setTrackedDaysElapsed(openDaysElapsed);
-      setTrackedLegs(
-        s.legs.map((l) => ({
-          ...l,
-          id: uid(),
-          // Record which opening leg (s.legs, about to become `legs`) this
-          // tracked leg was derived from — see types.ts's comment on
-          // openLegId. Must be captured before `id` above overwrites it.
-          openLegId: l.id,
-          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - legsDecayDays),
-        })),
-      );
+      newTrackedLegsForBaseline = s.legs.map((l) => ({
+        ...l,
+        id: uid(),
+        // Record which opening leg (s.legs, about to become `legs`) this
+        // tracked leg was derived from — see types.ts's comment on
+        // openLegId. Must be captured before `id` above overwrites it.
+        openLegId: l.id,
+        dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - legsDecayDays),
+      }));
+      setTrackedLegs(newTrackedLegsForBaseline);
       setTrackedSpot(s.spot);
       setActiveSnapshotId(null);
     }
     setCorrectedSpot(null);
     setTrackingStrategyId(s.id);
-    setTrackedDirty(false);
+    setTrackedBaseline(serializeTrackedLegs(newTrackedLegsForBaseline));
     setManageStrategyOpen(false);
     setStrategyBaseline(serializeStrategyState(s.symbol, s.legs, { dS: 0, dT: 0, dV: 0 }, s.openingAt ?? s.createdAt));
     clearLegSelection();
@@ -566,7 +586,7 @@ export function useStrategyOrchestration(params: {
     // 真实、干净的仓位不该被误判成"已过期"）。
     setExpiredStrategyPrompt(null);
     setExpiredConfirmed(false);
-  }, [clearLegSelection, legBaseSpot, legBaseSymbol, setActiveSnapshotId, setCorrectedSpot, setExpiredConfirmed, setExpiredStrategyPrompt, setExpiredTrackPrompt, setLegs, setManageStrategyOpen, setOpeningAt, setOpeningAtSimOverride, setSavedStrategies, setShifts, setSpot, setStrategyBaseline, setSymbol, setTrackedDaysElapsed, setTrackedDirty, setTrackedLegs, setTrackedSpot, setTrackingStrategyId, spotManuallySet]);
+  }, [clearLegSelection, legBaseSpot, legBaseSymbol, setActiveSnapshotId, setCorrectedSpot, setExpiredConfirmed, setExpiredStrategyPrompt, setExpiredTrackPrompt, setLegs, setManageStrategyOpen, setOpeningAt, setOpeningAtSimOverride, setSavedStrategies, setShifts, setSpot, setStrategyBaseline, setSymbol, setTrackedDaysElapsed, setTrackedBaseline, setTrackedLegs, setTrackedSpot, setTrackingStrategyId, spotManuallySet]);
 
   const handleSaveTracked = useCallback(async () => {
     if (!trackedLegs) return;
@@ -604,18 +624,17 @@ export function useStrategyOrchestration(params: {
     // was saved recently.
     const snapshotDecay = calendarDaysSince(snap.savedAt);
     setTrackedDaysElapsed(calendarDaysSince(openingAt));
-    setTrackedLegs(
-      snap.legs.map((l) => ({
-        ...l,
-        id: uid(),
-        dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - snapshotDecay),
-      })),
-    );
+    const newTrackedLegs = snap.legs.map((l) => ({
+      ...l,
+      id: uid(),
+      dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - snapshotDecay),
+    }));
+    setTrackedLegs(newTrackedLegs);
     setTrackedSpot(snap.spot);
     setCorrectedSpot(null);
     setActiveSnapshotId(snap.id);
-    setTrackedDirty(false);
-  }, [openingAt, setActiveSnapshotId, setCorrectedSpot, setTrackedDaysElapsed, setTrackedDirty, setTrackedLegs, setTrackedSpot]);
+    setTrackedBaseline(serializeTrackedLegs(newTrackedLegs));
+  }, [openingAt, setActiveSnapshotId, setCorrectedSpot, setTrackedDaysElapsed, setTrackedBaseline, setTrackedLegs, setTrackedSpot]);
 
   const handleDeleteSnapshot = useCallback(async (snapshotId: string) => {
     if (!trackingStrategyId) return;
@@ -756,6 +775,9 @@ export function useStrategyOrchestration(params: {
     }
     const snaps = existing?.trackedSnapshots ?? [];
     const latestSnap = snaps.length > 0 ? snaps[snaps.length - 1] : null;
+    // 见handleTrack里同名变量的注释——两条分支各自算出的trackedLegs就是
+    // 这次新的"已保存"基准。
+    let newTrackedLegsForBaseline: Leg[];
     if (latestSnap) {
       // The matched strategy already has real tracked history — open on
       // THAT (same decay-from-savedAt logic handleTrack/handleSelectSnapshot
@@ -776,13 +798,12 @@ export function useStrategyOrchestration(params: {
       // was saved, but "已过X天" belongs to the real opening date.
       const snapshotDecay = calendarDaysSince(latestSnap.savedAt);
       setTrackedDaysElapsed(calendarDaysSince(openingAt));
-      setTrackedLegs(
-        latestSnap.legs.map((l) => ({
-          ...l,
-          id: uid(),
-          dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - snapshotDecay),
-        })),
-      );
+      newTrackedLegsForBaseline = latestSnap.legs.map((l) => ({
+        ...l,
+        id: uid(),
+        dte: l.kind === "stock" ? l.dte : Math.max(0, l.dte - snapshotDecay),
+      }));
+      setTrackedLegs(newTrackedLegsForBaseline);
       setTrackedSpot(latestSnap.spot);
       setActiveSnapshotId(latestSnap.id);
     } else {
@@ -821,25 +842,24 @@ export function useStrategyOrchestration(params: {
       // was wrong.)
       const daysElapsed = calendarDaysSince(openingAt);
       setTrackedDaysElapsed(daysElapsed);
-      setTrackedLegs(
-        legs.map((l) => ({
-          ...l,
-          id: uid(),
-          // See types.ts's comment on openLegId — same reasoning as
-          // handleTrack's no-snapshot branch above, just deriving directly
-          // from the in-editor `legs` instead of a persisted SavedStrategy.
-          openLegId: l.id,
-          dte: l.dte,
-        })),
-      );
+      newTrackedLegsForBaseline = legs.map((l) => ({
+        ...l,
+        id: uid(),
+        // See types.ts's comment on openLegId — same reasoning as
+        // handleTrack's no-snapshot branch above, just deriving directly
+        // from the in-editor `legs` instead of a persisted SavedStrategy.
+        openLegId: l.id,
+        dte: l.dte,
+      }));
+      setTrackedLegs(newTrackedLegsForBaseline);
       setTrackedSpot(spot);
       setActiveSnapshotId(null);
     }
     setCorrectedSpot(null);
     setTrackingStrategyId(existing ? existing.id : null);
-    setTrackedDirty(false);
+    setTrackedBaseline(serializeTrackedLegs(newTrackedLegsForBaseline));
     clearLegSelection();
-  }, [isCompareMode, legs, spot, symbol, shifts, savedStrategies, openingAt, clearLegSelection, setActiveSnapshotId, setCorrectedSpot, setOpeningAtSimOverride, setSavedStrategies, setTrackedDaysElapsed, setTrackedDirty, setTrackedLegs, setTrackedSpot, setTrackingStrategyId]);
+  }, [isCompareMode, legs, spot, symbol, shifts, savedStrategies, openingAt, clearLegSelection, setActiveSnapshotId, setCorrectedSpot, setOpeningAtSimOverride, setSavedStrategies, setTrackedDaysElapsed, setTrackedBaseline, setTrackedLegs, setTrackedSpot, setTrackingStrategyId]);
 
   // Direct switch from compare mode back into plain analysis mode. Which
   // data becomes the new (single) analysis-mode baseline depends on
