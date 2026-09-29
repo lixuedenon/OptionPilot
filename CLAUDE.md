@@ -2,7 +2,18 @@
 
 # OptionPilot 交接文档（整合版）
 
-**版本**：整合版，更新于 2026-09-25。本次更新：**修复"跟踪对比模式"里保存快照后仍误报未保存改动的bug + 补一处上轮遗漏的文档**——
+**版本**：整合版，更新于 2026-09-29。**本轮：新用户引导 + 配对腿显示方式**——
+- **空白处引导**：分析模式组合还空着时，左边提示改成"输入代码后自动获取现价，再添加期权腿位：点击 + 逐条添加，或从 预设策略 / 策略库 添加策略组合。"（`guide.emptyHint`），其中"+/预设策略/策略库"是链接样式（手型、下划线），点了直接点页面上带`data-guide`属性的原始控件（`lib/guide.ts`的`clickGuideTarget`），下拉菜单在原位置展开、行为跟直接点原控件完全一样。右边图表空白提示：没代码时"请先在左上角输入股票代码"，有代码没腿时"左边的策略组合添加好之后，分析图形会在这里出现"（手机上说"上面"）。两边提示文字从slate-600调亮到slate-400。
+- **步骤编号**（`StepBadge.tsx`）：1=代码框、2=预设策略/+/策略库（琥珀色，组合空着时显示，加了腿就消失）；3=开仓价/开仓日期、4=保存策略组合按钮（灰色=可选；每次都当新用户：组合空着时出现，保存或打开已存策略后消失，组合再清空又出现——`App.tsx`的`guideSaved`）。悬停立即显示说明、手机上点一下显示（自绘浮层，不用原生title；`guide.step1..4`）。总开关`featureFlags.ts`的`STEP_GUIDE_ENABLED`，以后"设置"里加"是否显示使用步骤提示"时改成读用户设置。手机上只有1、2。`DropdownMenu`新增`guideId`/`badge`，`PresetPicker`新增`badge`。
+- **展期/保护配对**：新腿不再加到列表最后，而是紧跟在原腿后面插入（`useLegEditing.ts`的`insertAfter`）；去掉腿号旁的配对小图标，改成一组配对的两条腿铺同色背景+同色边框（`legLinks.ts`按出现顺序给每组分配颜色，6色循环；A展期成B、B再展期成C算同一组同一色），悬停仍显示"由第N条腿展期而来"等说明。被展期的原腿照旧屏蔽变暗；保护的原腿不变暗。对冲针对整个组合、没有配对腿，不变。
+- **图表"净"值旁的盈亏改成百分比**（`PayoffChart.tsx`）：右上角已有盈亏金额，这里改显示盈亏÷开仓权利金的百分比，方便对照"盈利50%/亏损50%平仓"；含正股腿或开仓权利金≈0时退回显示金额。
+新增8个翻译key、改了2个（678/678）。typecheck/build/eslint（5/12基线）/test 15/15通过。**上一版（2026-09-28）**：**本轮：滑块锁定时盈亏归因的"?"说明也打不开**（xue反馈的老bug）——盈亏归因只在滑块离开原点后才有内容，正好是左栏被锁的时候，结果它的说明永远点不开。原则：锁定只管能改数据的东西，只读说明不锁。`LockedOverlay`改为：不再用`inert`；遮罩点击时用`elementFromPoint`看下面是什么，在`data-lock-exempt`区域里（目前只有`PnlAttributionPanel`根节点，B/C卡片里的归因面板自动包含）就把mousedown和click转发过去（mousedown也要转发，否则说明弹窗的"点外面就关"会先把它关掉），否则在点击处弹"请先重置"；键盘焦点进入非豁免区域时`onFocusCapture`直接blur并弹提示，代替原来inert对键盘的拦截。以后再有"锁定时也要能看"的只读说明，给它的容器加`data-lock-exempt`即可。typecheck/build/eslint（5/12基线）/test 15/15通过。**上一版（2026-09-26第四轮）**：**第四轮：手机精简版**——xue真机测试反馈"内容太多、字很小、放不下"，确认手机上只保留主要功能（判断统一用`useIsMobile()`，电脑/iPad完全不变）：
+- **分析页**：保留logo/预设策略/标的+现价、腿位的方向/类型/张数/行权价/到期日/权利金（自动填价保留）、"+"/清空/策略库/加入模拟账户、盈亏曲线+当前盈亏+到期盈利/盈亏平衡、三个情景滑块。隐藏：多方案对比B/C、盈亏归因、全选/批量操作、每腿情景估值/腿位盈亏、"⋮"里除屏蔽和删除以外的项（LegRow在手机上不传这些handler）、开仓价/开仓日期（开仓价跟随实时报价、开仓日期=今天）、图表各腿明细/时间衰减开关/缩放提示/底部图例（PayoffChart新增`compact`）、模式切换按钮、header的涨跌幅/EPS/时钟/语言/使用说明。腿位行手机上改为"方向/类型/张数/⋮"+"行权价/到期日/权利金"两行，到期日下拉箭头隐藏（点日期框本身就能选）。页面底部显示"手机版为精简版，完整功能请在电脑上使用"（`mobile.fullFeaturesHint`）。
+- **字号**：`index.css`里`.op-mobile`（App.tsx/SimulatorPage.tsx手机时加在根节点）把`text-[8px]`→11px、`[9px]`/`[10px]`→12px、`[11px]`→13px、`text-xs`→14px、输入框15px，SVG图表文字按font-size属性分档放大——集中在一处，不逐个改组件。
+- **跟踪对比**：只看不改——不显示开仓组合腿位（统计网格里已有开仓vs当前）、统计网格改2列、今日组合的腿`inert`+提示"手机上只能查看"（`mobile.viewOnlyHint`）、不能存快照/删快照、冻结的滑块不显示；快照选择器保留（可以切换查看）。
+- **模拟账户**：看持仓+平仓——隐藏交易统计面板、搜索框、新建仓位/从场景开始、全选/批量平仓、表格的开仓价/现价/市值/盈亏%/代码/操作列（只留到期日/行权价/类型/数量/盈亏）、走势/对比按钮、删除按钮、复盘按钮、重置账户、使用说明、时钟。开新仓从分析页"加入模拟账户"。
+- 顺带：`ManageStrategiesDialog`/`SavePresetDialog`加`max-w-[94vw]`（手机上原来会超出屏幕）；`ShiftSliders`手机上数值列加宽、副数值换行；模拟账户"平仓"按钮不再被挤成竖排。
+新增2个翻译key（670/670）。typecheck/build/eslint（5/12基线）/test 15/15通过；Playwright实测360/393竖屏、844×390横屏无横向溢出，电脑1440和iPad 768保持完整功能。****第三轮：①滑块锁定改成一处统一处理**——xue反馈"滑动滑块后左边锁死，但点盈亏归因/对比方案没有任何提示，用户会以为出了问题"。现在App.tsx左侧整栏（腿位/盈亏归因/多方案对比/工具栏）只包一层`LockedOverlay`：`isExploring`时内容设为`inert`（鼠标/触屏/键盘都进不去），上面盖透明遮罩，点任意位置都在点击处弹"请先点重置"提示。原来分散在`LegListSection.tsx`/`ComboCompareSlots.tsx`里的两层LockedOverlay、以及App工具栏/LegListSection/ComboCompareSlots/LegRow里二十多处`disabled={locked}`/`|| isExploring`已全部删除；`locked`这个prop现在只剩一个用途——透传给LegRow暂停自动拉价（`canAutoPrice`）。header里的预设/标的输入（在左栏外）和图表标题栏的模式切换按钮仍按原样用`isExploring`禁用。**②注释大清理**——xue指出文件每次改都在变大，主要是注释里堆了大量"2026-xx-xx改/xue反馈/原来是…"的修改历史。按"五、22"的新规则清理了App.tsx（1666→1290行）、useStrategyOrchestration.ts（968→736）、LegRow.tsx（1133→983）、PayoffChart.tsx（990→955）、SimulatorPage.tsx（1701→1657）、LegListSection.tsx（427→369）、ComboCompareSlots.tsx（415→332）：纯历史的删掉，带警告/约束的（TDZ顺序、不能这样改的原因、xue的硬性要求）压缩成一两行保留。**每个文件都做了"去掉注释后代码完全一致"的机器校验**，只动了注释。typecheck/build/eslint（5/12基线）/test 15/15通过。**第二轮（同日）**：移动端第二步手机上下排列布局。**第一轮（同日）**：移动端第一步地基——手机上能正常输入、数据不丢；分析页的手机布局还没改（第二步）。①`numberInput.ts`的`blockInvalidNumberKey`放行安卓虚拟键盘的`Unidentified`/keyCode 229（原来会拦掉所有数字键），全部11个数值输入框加`inputMode`（整数字段`numeric`、其余`decimal`）；②`main.tsx`只在iOS上给viewport追加`maximum-scale=1`阻止点输入框自动放大（iOS对网页只把它用于禁自动放大，双指缩放仍可用；不改输入框字号是为了不撑坏LegRow固定宽度），并调用`navigator.storage.persist()`；③`index.css`在支持dvh的浏览器里把`.h-screen`/`.min-h-screen`覆盖成`100dvh`（组件里的类名没动）；④`tailwind.config.js`开`hoverOnlyWhenSupported`；⑤PWA：`public/manifest.webmanifest`+从logo罗盘裁出的图标（`icon-192/512`、`icon-maskable-512`、`apple-touch-icon`、`favicon.png`），`index.html`加对应标签，**没有加service worker**（避免缓存旧代码干扰调试）；⑥分享备份+7天备份提醒，见"四、9"。新增4个翻译key（`toolbar.shareBackup`、`backup.reminderNever`/`reminderDays`/`later`），zh/en 668/668。`typecheck`/`build`/`eslint`（5错误12警告基线不变）/`test`（15/15）通过。**上一版（2026-09-25）**：AI推荐模块屏蔽（见"四、7"）、移动端研究方案（见"六、22"）、跟踪对比模式`trackedDirty`改派生计算等。
 1. **保存快照后切到分析模式/点logo仍误报"有未保存改动"**：xue反馈"对比模式保存了快照之后，切换/退出仍然会问是否保存，确认了会存一份一模一样的重复快照"。根因：`trackedDirty`以前是手动true/false的state，散落在`useLegEditing.ts`（展期/保护/对冲/勾选/关闭/移动六处）和`useStrategyOrchestration.ts`的`updateTrackedLeg`里各自调用`setTrackedDirty(true)`，任何一处调用时机跟`trackedLegs`真实内容不完全同步，这个flag就可能跟真实"有没有改动"脱节而不自知（跟`serializeSlotLegs`/`isSlotDirty`——2026-09-24给A/B/C多方案对比加`baseline`字段时已经用过的同一类教训，见"五、19"）。改成派生计算：新增`serializeTrackedLegs`（`savedStrategies.ts`，只按腿位内容算指纹，不含`trackedSpot`——它会随实时报价轮询自动刷新，纳入会把股价波动也误判成改动）+ `trackedBaseline`（`App.tsx`新state，记"此刻视为已保存"那一份trackedLegs的指纹），`trackedDirty`现在是`trackedLegs!==null && serializeTrackedLegs(trackedLegs)!==trackedBaseline`的现算结果，不再是手动维护、可能跑偏的布尔值。原来分散在`useLegEditing.ts`/`updateTrackedLeg`里的`setTrackedDirty(true)`调用全部移除（不再需要，派生判断自动感知），所有原来`setTrackedDirty(false)`的地方（`saveTrackedSnapshotTo`/`handleTrack`/`handleSwitchToCompare`/`handleSelectSnapshot`/`applyPreset`/`doClearAll`）改成`setTrackedBaseline(serializeTrackedLegs(刚设置的trackedLegs))`或`setTrackedBaseline(null)`（trackedLegs本身被清空时）。
 2. **顺带修的另一个方向的bug——点logo退回首页，对比模式下完全不检查未保存改动**：排查过程中发现`AppHeader.tsx`点击logo的逻辑，`isCompareMode`为true时直接`onBackHome?.()`，压根没看`trackedDirty`，未保存的持仓编辑会被无声丢弃——这跟上面报告的"该不问却问"方向相反，但同属"没有用同一套可靠的脏检查"。改成退出图标点击统一调用`onRequestLeave`（不再由`AppHeader.tsx`自己按`isCompareMode`分支），`App.tsx`的`requestLeave`内部按模式分两条路径：跟踪对比模式下看`trackedDirty`（复用`clearAllLegs`已经在用的`confirmSaveTrackedOpen`/`ConfirmSaveTrackedDialog`，一个新的`pendingTrackedLeaveHome` ref区分这次答完该走`onBackHome`还是`doClearAll`），分析模式下走原有的A/B/C逐一确认队列（`leaveQueue`，2026-09-24"逐一提示"功能，见下条）。
 3. **补文档：2026-09-24"逐一提示"功能之前没写进这份文档**——多方案对比（A/B/C）退出时的"没有改动的组合不提示，有改动的逐一提示保存"机制（`CompareSlot.baseline`/`isSlotDirty`、`App.tsx`的`requestLeave`/`advanceLeaveQueue`/`leaveQueue`state、`ConfirmLeaveDialog`的`comboLabel`/`remainingCount`），上一轮实现完之后忘了同步进这份文档，这次和本轮的bug修复一起补上，见"四、3"。
@@ -59,7 +70,7 @@
 | 模拟账户（"四、4"） | ✅ 成熟，个别子功能待打磨 | 动态保证金（TIMS式插值）、趋势/悔棋面板（B侧"复盘"已统一改造，A侧"如果没平仓"还没有，见backlog第15条）、仓位管理提醒+交易统计面板、财报IV Crash端到端集成。**备份/自动同步的序列化逻辑已去重**（2026-09-07下半），但底层仍是localStorage单一JSON大对象，见"四、4.4"的容量隐患说明 |
 | 财报IV Crash策略（"四、5"） | ✅ 90%档完整 | 80%/70%阈值档、"方向判断"分支目前只有UI占位，没有内容 |
 | 场景选择器（"四、6"） | ✅ 方向判断分支完成 | "待定"标签仍是占位，**按xue的决定暂时保留，等做出真内容再考虑要不要先隐藏**（2026-09-07确认，见backlog第19-b条） |
-| AI策略推荐（`AIStrategyPage.tsx`，"四、7"） | 🚧 开发预览阶段，**当前最大的未完成模块** | 四模型（Claude/GPT-4o/Grok/Gemini）分析雏形已有，但"每天跑一次Cron+存DB+用户只读缓存"这套正式架构还没搭，现在是"点一下现触发一次"的临时占位行为。**2026-09-11起，这套四模型基础设施也是未来"直接分析现有持仓"方案的候选落地位置**，见"四、10" |
+| AI策略推荐（`AIStrategyPage.tsx`，"四、7"） | ⛔ **已屏蔽（2026-09-25）**，开发预览阶段，**当前最大的未完成模块** | 首页卡片禁用+路由拦截+Edge Function服务端开关三层屏蔽，代码原样保留，见"四、7"。 四模型（Claude/GPT-4o/Grok/Gemini）分析雏形已有，但"每天跑一次Cron+存DB+用户只读缓存"这套正式架构还没搭，现在是"点一下现触发一次"的临时占位行为。**2026-09-11起，这套四模型基础设施也是未来"直接分析现有持仓"方案的候选落地位置**，见"四、10" |
 | 持仓处置建议（原KB检索方案，"四、10"） | ❌ **已彻底移除，2026-09-11** | 原计划检索`position_management_kb`知识库给持仓处置建议，后端一度上线，真实测试暴露两个系统性bug后，xue权衡样本维护成本与大模型灵活性，决定放弃整个方案。前后端代码、Edge Function、数据库表均已/待删除，改为将来直接调用大模型（沿用"四、7"范式），设计尚未开始 |
 | "怎么办"建议系统 / 图表提示条（`situationExplainer.ts`，"四、11"） | ✅ 分析+对比模式已统一，仅覆盖两种价差 | 按腿角色分类给建议，熊市Call价差/牛市Put价差两种形状有xue逐条审查过的540格判断表（价格区×时间段×盈亏档），驱动"解释当前情况"对话框、图表顶部提示条、图表内盈亏点颜色三处UI，三处读同一份`action`字段，不会互相矛盾。其它组合形状仍是占位文案，不显示图表提示条 |
 
@@ -150,6 +161,7 @@ isCompareMode = trackedLegs !== null
 - `SavePresetDialog.tsx` / `PresetPicker.tsx`（~343行）——自定义预设保存/选择；`PresetPicker.tsx`悬浮框里还渲染风险揭示`RiskDisclosure`和`PayoffSparkline`（见"四、2.2"）
 - `SaveStrategyDialog.tsx` / `ManageStrategiesDialog.tsx`——保存策略/管理已存策略（含跟踪、置顶、重命名、删除）
 - `DropdownMenu.tsx`——通用下拉菜单（render-prop `children: (close) => ReactNode`）
+- `LockedOverlay.tsx`——情景滑块离开原点（`isExploring`）时锁定App.tsx整个左栏的唯一实现：透明遮罩+点击处弹"请先重置"提示+键盘焦点拦截；带`data-lock-exempt`的只读区域（盈亏归因面板）点击会被转发、不受锁定。子组件不再各自处理锁定
 - `Term.tsx`（2026-09-07新增）——通用"点击查看术语解释"组件，见"四、1.6"。**接入范围2026-09-07下半收窄了**——原来App.tsx标题栏净Delta/Theta/Vega/Gamma四个标签用它，随着那个展示面板整体移除，这四处也一起没了，目前只剩`EarningsIvCrashTab.tsx`的"所需保证金"一处在用
 - `RollComparisonChart.tsx`（2026-09-07新增）——`RollDialog.tsx`专用的展期前/后到期盈亏对比迷你图，见"四、1.5"
 - `ComboCompareSlots.tsx`（2026-09-21新增，**这份文档之前一直没收录，2026-09-24补上**）——"多方案对比"（方案B/C）UI，只在分析模式渲染。跟主combo（`LegListSection.tsx`，方案A）并列展示，每个槽位独立的腿位列表+统计（策略识别/到期盈利+盈亏平衡/归因/情景估值），"激活"哪个槽位（点击容器任意区域）决定策略库预设应用去哪个combo，也决定批量操作工具栏/复选框是否显示（未激活的槽位仍可逐条编辑，只是没有全选/批量/统一操作）。**2026-09-24修过一个跟主combo缩进不一致的对齐bug**——外层容器原来`px-3`+每个卡片自己又`p-2`两层叠加，比主combo多出十几像素，导致同一屏里B/C的"..."菜单跟A对不上；改成外层去掉横向padding、只留卡片自己一层
@@ -225,13 +237,16 @@ isCompareMode = trackedLegs !== null
 **场景引擎**：
 - `scenarioEngine.ts`（~697行）——固定查表式场景推荐（`SCENARIO_RULES`覆盖30种桶组合）、`computeBucketBounds`、`rankPresetsForScenario`
 
+**功能开关**：
+- `featureFlags.ts`（2026-09-25新增）——`AI_MODULE_ENABLED`（当前`false`），临时屏蔽模块时只改这一处，见"四、7"
+
 **数据备份/同步**：
 - `dataTransfer.ts`——导出/导入整个应用数据（`ExportData`，含策略库/自定义预设/最近标的/模拟账户，version 1→2 演进过）。**2026-09-07下半新增`collectBackupPayload()`**——把"从localStorage六个key读出并拼成`ExportData`"这段逻辑收敛成一个导出函数，`exportAllData`和`autoSync.ts`的`autoSyncWrite`都改成调用它，不再各自维护一份一模一样的读取代码，见"四、4.4"
 - `autoSync.ts`——File System Access API自动同步到本地文件（IndexedDB存文件句柄）。写入内容现在来自`dataTransfer.ts`的`collectBackupPayload()`，不再是自己手写的第二份序列化代码
 
 ## `src/i18n/`
 
-`I18nContext.tsx`（`useI18n()` hook + `t(key, vars?)`，插值用`{varName}`占位符+`Record<string, string|number>`）、`translations.ts`、`locales/zh.ts`+`locales/en.ts`（各~745行，键值对翻译文件，**改动前必读上面的"语言文件维护须知"独立章节**）。**当前key总数743/743（zh/en对齐）**，见"四、11"里这一轮的具体增删明细。
+`I18nContext.tsx`（`useI18n()` hook + `t(key, vars?)`，插值用`{varName}`占位符+`Record<string, string|number>`）、`translations.ts`、`locales/zh.ts`+`locales/en.ts`（各~745行，键值对翻译文件，**改动前必读上面的"语言文件维护须知"独立章节**）。**当前key总数668/668（zh/en对齐，2026-09-26）**，见"四、11"里这一轮的具体增删明细。
 
 ## `supabase/`
 
@@ -369,7 +384,15 @@ const trackedDirty = trackedLegs !== null && serializeTrackedLegs(trackedLegs) !
 
 （本节内容未变动，见前述章节。）
 
-## 7. AI策略推荐（`AIStrategyPage.tsx`）——开发预览阶段
+## 7. AI策略推荐（`AIStrategyPage.tsx`）——开发预览阶段，2026-09-25起屏蔽
+
+**屏蔽状态（2026-09-25，xue的要求："先屏蔽掉，不让人使用"）**——重新开放时几层都要打开：
+1. **前端开关**`src/lib/featureFlags.ts`：`AI_MODULE_ENABLED = false`。唯一的前端开关位置，不要在别处另加判断。
+2. **首页卡片**（`HomePage.tsx`）：`ModuleCard`新增`disabled?: boolean`字段（跟只控制徽章的`comingSoon`分开），AI卡片`disabled: !AI_MODULE_ENABLED`——卡片仍然显示（"规划中"徽章、半透明、`cursor-not-allowed`），按钮`disabled`点不进去。**刻意没有整个隐藏**，遵守"五、8"。
+3. **路由拦截**（`Shell.tsx`）：`handleSelectModule`里`"ai"`分支加了`AI_MODULE_ENABLED`判断，关闭时直接忽略、留在首页。
+4. **服务端开关**（`supabase/functions/strategy-analysis/index.ts`）：OPTIONS预检之后、任何数据拉取/模型调用之前，`Deno.env.get("AI_ANALYSIS_ENABLED") !== "true"`就返回503。**这一层才是真正防花钱的**——anon key打包在前端，任何人都能绕过界面直接请求这个函数。默认（没设这个secret）就是屏蔽状态，需要`supabase functions deploy strategy-analysis`部署后生效。重新开放：`supabase secrets set AI_ANALYSIS_ENABLED=true`（不用重新部署）。
+
+`AIStrategyPage.tsx`、`strategy-analysis`其余代码、`_shared/buildPrompt.ts`等全部原样保留。
 
 （本节内容未变动，见前述章节：当前最大的未完成模块，每日Cron+DB缓存架构还没搭。**2026-09-11新增待办**：这套四模型基础设施是未来"直接调用大模型分析现有持仓"方案的候选落地位置——见下面"四、10"——设计时可以考虑是否跟"新开仓策略推荐"共用同一套模型调用/展示基础设施，还是做成独立的第二个入口，这个还没决定。）
 
@@ -378,6 +401,8 @@ const trackedDirty = trackedLegs !== null && serializeTrackedLegs(trackedLegs) !
 （本节内容未变动，见前述章节：已拆出的六个子组件+`useLegEditing.ts`，故意没拆的策略管理handler集群+计算useMemo集群，TDZ风险提醒。）
 
 ## 9. 模块使用说明书 + 首页数据管理
+
+**分享备份 + 7天备份提醒（2026-09-26，`dataTransfer.ts` + `HomePage.tsx`）**：手机上"链接备份文件"（File System Access API）不可用，iOS Safari还会清空7天未访问网站的localStorage，所以加了手机友好的备份方式。`shareBackup()`用Web Share API调起系统分享面板（选邮件=附件发到自己邮箱，也可选微信/网盘/存储到文件），不经过服务器；浏览器不支持分享文件时退回普通下载。**分享的文件是`.txt`/`text/plain`（内容仍是同一份JSON）**——Chrome的Web Share文件类型白名单不含`application/json`；导入入口因此同时接受`.json`/`.txt`。`markBackedUp()`在导出下载、分享成功、`autoSyncWrite`写文件成功时记录`optionpilot.lastBackupAt`；`needsBackupReminder()`在有用户数据且距上次备份/上次"稍后提醒"超过7天时为true，首页显示提醒条（"分享备份"或"导出数据" + "稍后提醒"）。"数据"菜单里的"分享备份"只在`canShareBackup()`为true时出现（手机基本都有，部分桌面浏览器没有）。⚠️ iOS上"添加到主屏幕"的应用和Safari里的网页**存储是分开的**，用户第一次从Safari换到主屏幕图标时，需要在Safari里导出、在主屏幕应用里导入一次。
 
 （本节内容未变动，见前述章节：`HelpPanel.tsx`按模块拆分、gate/info两种variant、"不再显示"持久化、首页「数据」下拉菜单。）
 
@@ -470,6 +495,8 @@ xue针对熊市Call价差（例：卖100call/买110call）逐条审查了540种�
 20. **一个数字/一段结论如果已经在另一处UI固定展示，新增的解释性文案不要重复陈述同一组数字**——"盈亏来源"归因数字在侧边栏`PnlAttributionPanel.tsx`和"解释当前情况"对话框里重复展示过，2026-09-19删除了对话框里那份。新增"解释当前情况"类文案前，先确认要说的内容是不是已经在页面其它地方常驻展示
 21. **"这个东西有没有改动/脏了"这类判断，优先用"现场比较内容指纹 vs 上次已保存指纹"（派生值），不要用手动到处调用的true/false state**——`trackedDirty`（2026-09-25之前）、以及更早的分析模式`canSaveStrategy`都踩过/绕开过同一个坑：手动flag散落在好几个调用点各自维护，一旦某处调用时机跟真实内容不完全同步，flag就会跟"真实有没有改动"脱节，且很难从代码上一眼看出是哪一处。`serializeStrategyState`/`serializeSlotLegs`/`serializeTrackedLegs`+现场`!==`比较是这个项目里验证过可靠的写法，新增任何类似"未保存改动"判断，优先复用这个模式而不是再引入一个手动flag
 
+22. **代码注释只写"为什么"和"坑"，不写修改历史**（2026-09-26，xue的要求）——修改日期、谁反馈的、原来是什么样、这一轮改了什么，这些写进这份CLAUDE.md（或commit信息），不写进代码注释。注释控制在一两行：这段代码为什么要这样写、改它时会踩什么坑（TDZ顺序、不能这样做的原因、xue定下的硬性约束）。改代码时顺手把跟改动相关的过期注释删掉或更新，不要在旧注释后面继续追加一段新的。大规模清理注释时，用"TypeScript printer去掉注释后前后输出完全一致"来校验没碰到代码
+
 ---
 
 # 六、当前已知问题 / backlog
@@ -491,14 +518,14 @@ xue针对熊市Call价差（例：卖100call/买110call）逐条审查了540种�
 13. **年化收益率（Return on Margin）没有算**——`SimPosition`需要先新增"开仓当时的保证金占用"持久化字段，这也是`simStats.ts`（"四、4.5"）v1没做资金效率类指标的同一个卡点
 14. **IV/HV比值目前只在场景选择器里用**——手动在分析模式搭建自定义组合时看不到
 15. **悔棋模式（Regret Mode A，"如果没平仓"按钮）**——用户反馈"问题比较大"，下次动手前要先问清楚设计诉求
-16. **AI策略推荐（`AIStrategyPage.tsx`）的每日Cron+缓存基础设施还没搭**——当前最大的未完成模块。**2026-09-11新增**：这套基础设施同时也是未来"直接调用大模型分析现有持仓"方案的候选落地位置，设计时可以一并考虑
+16. **AI策略推荐（`AIStrategyPage.tsx`）的每日Cron+缓存基础设施还没搭**——当前最大的未完成模块。**2026-09-25起整个模块已屏蔽**（见"四、7"），重新开放前需要先把这套基础设施搭好，否则开放后每次点击都是真实的四模型调用费用。**2026-09-11新增**：这套基础设施同时也是未来"直接调用大模型分析现有持仓"方案的候选落地位置，设计时可以一并考虑
 17. **`App.tsx`还有约400-480行策略管理handler+计算useMemo没有拆分**——风险较高，需要单独一轮细致处理
 18. **claude.ai项目的GitHub同步白名单持续滞后于main分支实际文件**
 19. **展期会留下永久的"幽灵腿"，占用10腿上限的名额**
 20. **竞品调研（2026-09-06/07）里发现、backlog没提过的剩余建议**：模拟账户组合级保证金/Greeks汇总；仓位管理提醒未来可以跟AI四模型联动；历史期权链回放（thinkBack式）。
     - **20-b. 场景选择器"待定"标签页**——xue确认暂时保留，不算独立待办
 21. **localStorage容量隐患**——见"四、4.4"，建议路径按投入递增：`autoSyncWrite`失败提示 → 迁移到IndexedDB → 更长期视多端同步需求决定要不要上Supabase
-22. **移动端（手机浏览器）适配（2026-09-10/11评估阶段，未开始）**——xue提出想做一个绝大部分手机能用的竖屏版本，讨论后达成的方向：不做设备识别/不做独立手机代码库，走Tailwind响应式断点（同一份组件按屏幕宽度切换布局），这样能保持"改一次bug两边都好"这个当前架构的优点（逻辑层`src/lib/`+`src/hooks/`完全不用动）。**代价评估**：现在的UI几乎是纯桌面思路，全代码库目前只有3处用了响应式断点类，246处依赖鼠标hover的交互、47处原生hover提示框（手机上都要换成点击展开，`Term.tsx`的点击式popover是现成的可参考先例，见"四、1.6"）、多个写死420-640px宽度的弹窗（手机屏幕通常375-430px宽会溢出）、多处3-5列并排的网格布局需要收窄成1-2列，最关键的`LegRow.tsx`（752行，全项目最高频组件）是一整条横向平铺的输入框，大概率要重新设计成竖向堆叠的卡片，`PayoffChart.tsx`（~1000行）的鼠标悬停十字线交互也要改成手指点/拖动。这是一次"重新设计核心组件在窄屏下的布局"的独立工作量，不是简单加几个CSS断点能完成的，还没有决定要不要启动，也还没挑选试点组件。
+22. **移动端（手机浏览器）适配（进行中，第一步已完成2026-09-26）**——完整方案见项目文档`claude/mobile-adaptation-plan-2026-09-25.md`。方向：不做设备识别/独立手机代码库，同一份组件按屏幕宽度/方向切换布局，`src/lib/`+`src/hooks/`不动。**2026-09-25实测结论**（Playwright 360/375/393/430/768/1024）：真正坏掉的只有工作区`App.tsx`——左栏`minWidth: 380`把手机屏幕占满、图表被挤成十几像素；首页/模拟账户基本可用；iPad工作区已可用；LegRow在左栏全宽后基本放得下，不需要重写成卡片。**2026-09-26 xue确认的设计**：①手机竖屏和横屏都上下排列（电脑版左栏在上、右栏图表+滑块在下），图表固定约六成屏高——横屏原计划的"左右两栏+紧凑模式+⇔切换"xue真机试过后否掉（太窄），已不做；③悬停提示：点击直接执行，需要解释的地方加"ⓘ"点开看说明（`Term.tsx`模式），纯图标按钮手机上补文字；预设策略例外，先点开预览（风险揭示+迷你图）再点"使用"；不用长按（跟系统长按菜单冲突、不可发现）；④邮件备份走系统分享面板，不做服务器发邮件（数据只在浏览器里服务器读不到，任意收件人发信接口会被滥用）。**分期**：1地基（✅2026-09-26）→2布局（✅2026-09-26：上下排/整页滚动/header合并换行/LegRow两行；`viewport-fit=cover`+safe-area留白还没加）→**手机精简版（✅2026-09-26，见开头版本说明：分析页只留核心、跟踪对比只看、模拟账户看+平仓、字号整体放大）**→3触屏交互（`PayoffChart`/`SimulatorPage`趋势图改Pointer Events且`touch-action: pan-y`、`PresetPicker`/`StrategyBadge`点击化、关键`title=`改ⓘ、`ManageStrategiesDialog`的HTML5拖放排序改上移/下移按钮、常用小按钮44px触控区）→4真机收尾（模拟账户有持仓时的表格、滑块重算若卡顿用rAF节流）。
 23. **未来"直接调用大模型分析现有持仓"方案设计（2026-09-11新增）**——见"四、10"，落地位置候选是"四、7"AI策略推荐的四模型基础设施，需要重新设计prompt（保留xue对KB样本提过的"零市场叙事、不判断支撑压力位强弱"约束）、决定是否复用本地信号计算（DTE/盈亏区间/权利金倍数）当模型上下文，还没开始。**注意跟"四、11"的区别**——"四、11"是规则表驱动、已经上线的独立路线，不是这一条的落地
 24. **借方价差/卖出跨式仍是旧版共用阈值逻辑，没有540格级别的细化**（2026-09-19新增，见"四、11.2"）——熊市Call/牛市Put价差这两种信用价差已经有xue逐条审查过的540格表，其它形状（借方价差、卖出跨式、裸卖出单腿）还是原来那套更粗粒度的判断。是否要为这些形状也做同等粒度的细化，xue还没提出明确诉求，暂不列入进行中工作
 25. **牛市Put价差540格表没有经过人工逐条复核**（2026-09-19新增，见"四、11.3"）——是从熊市Call价差程序化镜像过去的，理论上应该对称正确，但没有像熊市Call价差那样一条条人工审查过。以后如果发现该形状的建议文案有问题，用审查熊市Call价差同样的方法（分组交叉核对）去查

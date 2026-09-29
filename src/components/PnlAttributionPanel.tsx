@@ -1,5 +1,5 @@
 // src/components/PnlAttributionPanel.tsx
-import { TrendingUp, Clock, Activity, HelpCircle } from "lucide-react";
+import { TrendingUp, Clock, Activity, HelpCircle, GitMerge } from "lucide-react";
 import type { PnlAttribution } from "@/lib/pricing";
 import { useI18n } from "@/i18n/I18nContext";
 import Term from "@/components/Term";
@@ -76,7 +76,8 @@ export default function PnlAttributionPanel({ attribution, maxAbs }: Props) {
   };
 
   return (
-    <div className="mt-1.5 rounded-lg border border-slate-800 bg-slate-900/40 p-2.5">
+    // data-lock-exempt：只读说明，情景滑块锁定左栏时这里的"?"仍可点开（见LockedOverlay）。
+    <div data-lock-exempt className="mt-1.5 rounded-lg border border-slate-800 bg-slate-900/40 p-2.5">
       <div className="mb-2 flex items-center gap-1.5">
         <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{t("attribution.title")}</span>
         <Term titleKey="attribution.panelTitle" descKey="attribution.panelExplain" iconTrigger>
@@ -98,16 +99,20 @@ export default function PnlAttributionPanel({ attribution, maxAbs }: Props) {
           </div>
         ))}
         <div className="flex items-center gap-2 text-[10px] opacity-70">
-          <Term
-            titleKey="attribution.residualTitle"
-            descKey="attribution.residualExplain"
-            descVars={residualVars}
-            iconTrigger
-            className="text-slate-500 hover:text-slate-300"
-          >
-            <HelpCircle size={11} />
-          </Term>
-          <span className="w-14 shrink-0 text-slate-500">{t("attribution.residual")}</span>
+          {/* 交叉项图标（几个因素相互作用的部分）；说明"?"放在文字右边，跟标题"盈亏归因"一致 */}
+          <GitMerge size={11} className="shrink-0 text-pink-400" />
+          <span className="flex w-14 shrink-0 items-center gap-1 text-slate-500">
+            {t("attribution.residual")}
+            <Term
+              titleKey="attribution.residualTitle"
+              descKey="attribution.residualExplain"
+              descVars={residualVars}
+              iconTrigger
+              className="text-slate-500 hover:text-slate-300"
+            >
+              <HelpCircle size={11} />
+            </Term>
+          </span>
           <div className="flex-1">
             <Bar value={residual} maxAbs={scale} />
           </div>

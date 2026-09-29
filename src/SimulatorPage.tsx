@@ -40,6 +40,7 @@ import SimStatsPanel from "@/components/SimStatsPanel";
 import LiveClock from "@/components/LiveClock";
 import { computeSimStats } from "@/lib/simStats";
 import { NUMBER_RULES, clampToRule, blockInvalidNumberKey } from "@/lib/numberInput";
+import { useIsMobile } from "@/hooks/useIsMobile";
 
 interface Props {
   onBack: () => void;
@@ -79,23 +80,10 @@ function nearestDteRemaining(p: SimPosition): number | null {
   return candidates.length > 0 ? Math.min(...candidates) : null;
 }
 
-// Position management alerts (2026-09, xue's proposal #7): a lightweight
-// "this position might be worth looking at" signal, not a push notification
-// — just a badge in the position row. Two independent triggers:
-// - DTE alert: nearestDteRemaining(p) at or below the classic "21 DTE"
-//   management convention.
-// - Delta alert: the worst (largest-magnitude) short leg's current Delta
-//   has drifted past a threshold, meaning that leg has moved closer to
-//   ITM/assignment than it was when opened. Only computable once the
-//   position has a live mark (mark.legs/mark.spot from refreshLegs) — those
-//   legs already carry LIVE current dte/premium (see refreshLegs above), so
-//   legGreekBreakdown on them with a neutral (zero) Shifts gives today's
-//   actual Delta, not the frozen opening-day Delta. No mark yet → no data →
-//   no alert, same "can't compute yet" convention the unrealized-P&L
-//   display already follows a few lines down.
-// Thresholds are conventional defaults (tastytrade-style "manage around 21
-// DTE / 30 delta"), not derived from xue's own rules — she may want to
-// tune these later, ideally as a setting rather than a hardcoded constant.
+// 持仓管理提醒（持仓行里的小徽章）：
+// - DTE：最近到期≤21天
+// - Delta：最危险的卖出腿当前Delta超过阈值（要有实时标价才能算，没有就不提醒）
+// 阈值是通用惯例（21 DTE / 30 delta），以后可能做成设置。
 const DTE_ALERT_THRESHOLD = 21;
 const DELTA_ALERT_THRESHOLD = 0.30;
 
@@ -140,10 +128,7 @@ function plannedSpanDays(p: SimPosition): number {
   return dtes.length > 0 ? Math.max(1, Math.round(Math.min(...dtes))) : 1;
 }
 
-// Local calendar date `days` (possibly fractional — always rounded) after
-// `iso` — used to label the Timeline chart's x-axis ticks with an actual
-// date rather than just a day count, without needing a snapshot to exist
-// exactly on that day.
+// iso之后第days天的本地日期，给趋势图x轴刻度用。
 function isoPlusDays(iso: string, days: number): string {
   const base = parseDateInput(iso);
   if (base == null) return iso;
@@ -556,16 +541,15 @@ async function refreshLegs(symbol: string, legs: Leg[], openedAt: number): Promi
 }
 
 export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenario }: Props) {
+  // 手机精简版：看持仓和盈亏、可以平仓；开新仓、批量操作、展期/保护/对冲、统计、走势图等在电脑上做。
+  const isMobile = useIsMobile();
+  const hm = isMobile ? "hidden" : "";
   const { t } = useI18n();
   const [account, setAccount] = useState<SimAccount | null>(null);
   const [positions, setPositions] = useState<SimPosition[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [startingCapitalInput, setStartingCapitalInput] = useState("10000");
-  // 2026-09-24新增：这个输入框之前是纯文本state，只在点击"创建账户"提交
-  // 那一刻才parseFloat+v<=0校验，校验失败按钮直接静默不动作，用户会以
-  // 为按钮坏了；也完全没有上限，能建一个9999999999999美元的账户。现在
-  // 用NUMBER_RULES.capital（1~1亿，2位小数）在提交时clamp，并给出可见
-  // 的错误提示，键盘层面也拦掉字母/符号，跟全项目其它数值输入框统一。
+  // 起始资金：提交时按NUMBER_RULES.capital clamp，并显示可见的错误提示。
   const [startingCapitalError, setStartingCapitalError] = useState(false);
   const [marks, setMarks] = useState<Record<string, MarkState>>({});
   const [regrets, setRegrets] = useState<Record<string, RegretState>>({});
@@ -573,13 +557,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
   const [expandedTimeline, setExpandedTimeline] = useState<Record<string, boolean>>({});
   const [expandedCompare, setExpandedCompare] = useState<Record<string, boolean>>({});
   const [timelines, setTimelines] = useState<Record<string, PositionSnapshot[]>>({});
-  // Calendar day (local, yyyy-mm-dd) each entry in `timelines` was fetched
-  // on — lets toggleTimeline tell "still fresh" apart from "loaded a while
-  // ago and the position has aged since." Without this, a position whose
-  // Timeline panel got expanded once (e.g. the day it was opened) would
-  // show that same frozen slice of history forever: `timelines[pos.id]`
-  // being merely *present* was previously treated as "nothing to do,"
-  // so the curve never grew past whatever day it happened to load on.
+  // timelines各条是哪天加载的，用来判断缓存是否已过期（跨天后要重新加载，否则曲线停在第一次加载那天）。
   const [timelinesDate, setTimelinesDate] = useState<Record<string, string>>({});
   const [timelineLoading, setTimelineLoading] = useState<Record<string, boolean>>({});
   const [rollTarget, setRollTarget] = useState<{ pos: SimPosition; leg: Leg; spot: number } | null>(null);
@@ -592,10 +570,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
   const [bulkCloseLoading, setBulkCloseLoading] = useState(false);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
   const [justReset, setJustReset] = useState(false);
-  // Module guide (2026-09-06): shown once as a blocking gate on first entry
-  // into the simulator, mirroring analysis/compare mode's showAnalysisGuide/
-  // showCompareGuide in App.tsx; helpOpen is the dismissible re-open via the
-  // header's new "使用说明" button (this module had no such button before).
+  // 模块首次进入引导；helpOpen是header"使用说明"按钮重新打开。
   const [showGuide, setShowGuide] = useState(() => !isGuideDismissed("simulator"));
   const [helpOpen, setHelpOpen] = useState(false);
 
@@ -754,11 +729,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
     setExpandedCompare((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
-  // Renders the "查看历史走势"/"添加到对比模式" button pair — identical
-  // markup was found copy-pasted between the open-position row and the
-  // closed-position row (2026-09-17 dead-code audit); factored out here. A
-  // plain render function rather than its own component so it doesn't get
-  // a distinct component identity/remount on every render.
+  // "查看历史走势"/"添加到对比模式"按钮组，持仓行和已平仓行共用。普通函数而不是组件，避免每次渲染重新挂载。
   const renderTimelineCompareButtons = (pos: SimPosition) => (
     <>
       <button
@@ -819,9 +790,6 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
   const openHedge = async (pos: SimPosition, triggeringLegId: string) => {
     setLegActionLoading(triggeringLegId);
     try {
-      // Was a hand-rolled Promise.all duplicating refreshLegs's own fetch
-      // loop (same skip-stock/skip-disabled logic) — reuse the shared
-      // helper instead of maintaining a second copy of it.
       const { spot, legs: liveLegs } = await refreshLegs(pos.symbol, pos.legs, pos.openedAt);
       setHedgeTarget({ pos, legs: liveLegs, spot });
     } catch (e) {
@@ -996,13 +964,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
       for (const posId of selectedPositionIds) {
         const pos = positions.find((p) => p.id === posId);
         if (!pos || pos.status !== "open") continue;
-        // Was a hand-rolled loop that dropped disabled legs entirely
-        // instead of passing them through unrefreshed — inconsistent with
-        // handleClose (single-position close), which stores whatever
-        // refreshLegs last put in `marks[pos.id].legs`, disabled legs
-        // included (computeMarkValue/ComparePanel already filter them back
-        // out wherever it matters). Reusing refreshLegs here fixes that
-        // inconsistency along with the duplication.
+        // 复用refreshLegs：已屏蔽的腿原样保留（不刷新），跟单个平仓的处理一致。
         const { spot, legs: liveLegs } = await refreshLegs(pos.symbol, pos.legs, pos.openedAt);
         const { account: a, positions: p } = await closeSimPosition(posId, liveLegs, spot);
         setAccount(a);
@@ -1082,14 +1044,13 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
     .filter((p) => p.status === "closed")
     .reduce((acc, p) => acc + (p.realizedPnl ?? 0), 0);
   const totalEquity = (account?.cash ?? 0) + totalMarkValue;
-  // Trade-quality stats (胜率/盈亏比/最大回撤/连胜连亏) — see simStats.ts and
-  // SimStatsPanel.tsx for scope notes (2026-09, xue's proposal #6).
+  // 交易统计（胜率/盈亏比/最大回撤/连胜连亏），见simStats.ts。
   const simStats = useMemo(() => computeSimStats(positions), [positions]);
 
   if (!loaded) return null;
 
   return (
-    <div className="min-h-screen bg-slate-950 px-4 py-6 text-slate-200">
+    <div className={`min-h-screen bg-slate-950 text-slate-200 ${isMobile ? "op-mobile px-3 py-3" : "px-4 py-6"}`}>
       <div className="mx-auto max-w-5xl">
         <header className="mb-6 flex items-center gap-3">
           <button
@@ -1107,12 +1068,12 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
           <button
             onClick={() => setHelpOpen(true)}
             title={t("toolbar.help")}
-            className={`flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-slate-500 transition hover:border-slate-500 hover:text-slate-300 ${account ? "" : "ml-auto"}`}
+            className={`${hm} flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-slate-500 transition hover:border-slate-500 hover:text-slate-300 ${account ? "" : "ml-auto"}`}
           >
             <HelpCircle size={11} />
             {t("toolbar.help")}
           </button>
-          {account && (
+          {account && !isMobile && (
             <button
               onClick={() => setConfirmResetOpen(true)}
               title={t("sim.resetAccount")}
@@ -1122,7 +1083,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
               {t("sim.resetAccount")}
             </button>
           )}
-          <LiveClock />
+          {!isMobile && <LiveClock />}
         </header>
 
         {!account ? (
@@ -1198,12 +1159,12 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
               </div>
             </div>
 
-            <SimStatsPanel stats={simStats} />
+            {!isMobile && <SimStatsPanel stats={simStats} />}
 
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-[12px] font-bold text-slate-300">{t("sim.openPositions")} ({openPositions.length})</h2>
               <div className="flex items-center gap-2">
-                <div className="relative">
+                <div className={`relative ${hm}`}>
                   <Search size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-slate-600" />
                   <input
                     value={symbolFilter}
@@ -1224,7 +1185,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                 </button>
                 <button
                   onClick={onNewPosition}
-                  className="flex items-center gap-1 rounded border border-emerald-600/60 bg-emerald-950/30 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-300 transition hover:border-emerald-500"
+                  className={`${hm} flex items-center gap-1 rounded border border-emerald-600/60 bg-emerald-950/30 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-300 transition hover:border-emerald-500`}
                 >
                   <Plus size={12} />
                   {t("sim.newPosition")}
@@ -1232,7 +1193,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                 <button
                   onClick={onStartFromScenario}
                   title={t("sim.templateEntryDesc")}
-                  className="flex items-center gap-1 rounded border border-violet-600/60 bg-violet-950/30 px-2.5 py-1.5 text-[11px] font-semibold text-violet-300 transition hover:border-violet-500"
+                  className={`${hm} flex items-center gap-1 rounded border border-violet-600/60 bg-violet-950/30 px-2.5 py-1.5 text-[11px] font-semibold text-violet-300 transition hover:border-violet-500`}
                 >
                   <Compass size={12} />
                   {t("sim.templateEntryTitle")}
@@ -1240,7 +1201,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
               </div>
             </div>
 
-            {openPositions.length > 0 && (
+            {openPositions.length > 0 && !isMobile && (
               <div className="mb-2 flex items-center gap-2 rounded border border-slate-800 bg-slate-900/40 px-2 py-1.5">
                 <label className="flex shrink-0 items-center gap-1.5 text-[10px] text-slate-400">
                   <input
@@ -1269,7 +1230,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
               </div>
             )}
 
-            {allClosableLegKeys.length > 0 && (
+            {allClosableLegKeys.length > 0 && !isMobile && (
               <div className="mb-3 flex items-center gap-2 rounded border border-slate-800 bg-slate-900/40 px-2 py-1.5">
                 <label className="flex shrink-0 items-center gap-1.5 text-[10px] text-slate-400">
                   <input
@@ -1321,7 +1282,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                             checked={posList.every((p) => selectedPositionIds.has(p.id))}
                             onChange={() => togglePositionGroupSelection(posList)}
                             title={t("sim.selectPosition")}
-                            className="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500"
+                            className={`h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500 ${hm}`}
                           />
                           <span className="flex h-5 w-5 items-center justify-center rounded bg-slate-800 text-[9px] font-bold text-slate-400">
                             {symbol.slice(0, 2)}
@@ -1334,18 +1295,18 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                       <table className="w-full border-collapse text-[10px]">
                         <thead>
                           <tr className="bg-slate-900/60 text-slate-500">
-                            <th className="px-1 py-1"></th>
+                            <th className={`px-1 py-1 ${hm}`}></th>
                             <th className="px-2 py-1 text-left font-medium">{t("sim.colExp")}</th>
                             <th className="px-2 py-1 text-left font-medium">{t("sim.colStrike")}</th>
                             <th className="px-2 py-1 text-left font-medium">{t("sim.colType")}</th>
                             <th className="px-2 py-1 text-right font-medium">{t("sim.colQty")}</th>
-                            <th className="px-2 py-1 text-right font-medium">{t("sim.colOpenPrice")}</th>
-                            <th className="px-2 py-1 text-right font-medium">{t("sim.colMark")}</th>
-                            <th className="px-2 py-1 text-right font-medium">{t("sim.colMarkValue")}</th>
+                            <th className={`px-2 py-1 text-right font-medium ${hm}`}>{t("sim.colOpenPrice")}</th>
+                            <th className={`px-2 py-1 text-right font-medium ${hm}`}>{t("sim.colMark")}</th>
+                            <th className={`px-2 py-1 text-right font-medium ${hm}`}>{t("sim.colMarkValue")}</th>
                             <th className="px-2 py-1 text-right font-medium">{t("sim.colPnl")}</th>
-                            <th className="px-2 py-1 text-right font-medium">{t("sim.colPnlPct")}</th>
-                            <th className="px-2 py-1 text-left font-medium">{t("sim.colCode")}</th>
-                            <th className="px-1 py-1"></th>
+                            <th className={`px-2 py-1 text-right font-medium ${hm}`}>{t("sim.colPnlPct")}</th>
+                            <th className={`px-2 py-1 text-left font-medium ${hm}`}>{t("sim.colCode")}</th>
+                            <th className={`px-1 py-1 ${hm}`}></th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1362,7 +1323,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                               const legPnl = legMarkValue !== null ? legMarkValue - legCost : null;
                               return (
                                 <tr key={l.id} className="border-t border-slate-800/60 text-slate-300 hover:bg-slate-900/40">
-                                  <td className="px-1 py-1 text-center">
+                                  <td className={`px-1 py-1 text-center ${hm}`}>
                                     {l.kind !== "stock" && !l.disabled && (
                                       <input
                                         type="checkbox"
@@ -1376,21 +1337,21 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                                   <td className="px-2 py-1 tabular-nums">{l.kind === "stock" ? t("sim.stockRow") : l.strike}</td>
                                   <td className="px-2 py-1 uppercase text-slate-500">{l.kind === "stock" ? "STK" : l.type}</td>
                                   <td className={`px-2 py-1 text-right tabular-nums ${signedQty < 0 ? "text-rose-400" : "text-slate-300"}`}>{signedQty}</td>
-                                  <td className="px-2 py-1 text-right tabular-nums text-slate-400">{(l.kind === "stock" ? l.strike : l.premium).toFixed(2)}</td>
-                                  <td className="px-2 py-1 text-right tabular-nums text-slate-200">{currentPrice !== null ? currentPrice.toFixed(2) : "—"}</td>
-                                  <td className="px-2 py-1 text-right tabular-nums text-slate-200">
+                                  <td className={`px-2 py-1 text-right tabular-nums text-slate-400 ${hm}`}>{(l.kind === "stock" ? l.strike : l.premium).toFixed(2)}</td>
+                                  <td className={`px-2 py-1 text-right tabular-nums text-slate-200 ${hm}`}>{currentPrice !== null ? currentPrice.toFixed(2) : "—"}</td>
+                                  <td className={`px-2 py-1 text-right tabular-nums text-slate-200 ${hm}`}>
                                     {legMarkValue !== null ? (legMarkValue < 0 ? `(${Math.abs(legMarkValue).toFixed(2)})` : legMarkValue.toFixed(2)) : "—"}
                                   </td>
                                   <td className={`px-2 py-1 text-right tabular-nums font-semibold ${legPnl !== null ? pnlColorClass(legPnl) : "text-slate-600"}`}>
                                     {legPnl !== null ? fmt(legPnl) : "—"}
                                   </td>
-                                  <td className={`px-2 py-1 text-right tabular-nums ${legPnl !== null ? pnlColorClass(legPnl) : "text-slate-600"}`}>
+                                  <td className={`px-2 py-1 text-right tabular-nums ${hm} ${legPnl !== null ? pnlColorClass(legPnl) : "text-slate-600"}`}>
                                     {legPnl !== null ? fmtPct(legPnl, legCost) : "—"}
                                   </td>
-                                  <td className="px-2 py-1 font-mono text-[9px] text-slate-600">
+                                  <td className={`px-2 py-1 font-mono text-[9px] text-slate-600 ${hm}`}>
                                     {l.kind === "stock" ? t("sim.stockRow") : optionCode(p.symbol, l.dte, l.type, l.strike)}
                                   </td>
-                                  <td className="px-1 py-1 text-right">
+                                  <td className={`px-1 py-1 text-right ${hm}`}>
                                     {l.kind !== "stock" && (
                                       legActionLoading === l.id ? (
                                         <RefreshCw size={11} className="mx-auto animate-spin text-slate-600" />
@@ -1458,19 +1419,19 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                                 )}
                               </div>
                               <div className="flex items-center gap-1">
-                                {renderTimelineCompareButtons(p)}
+                                {!isMobile && renderTimelineCompareButtons(p)}
                                 <button
                                   onClick={() => handleClose(p)}
                                   disabled={!mark?.legs || mark.spot === null}
                                   title={!mark?.legs ? t("sim.refreshFirst") : undefined}
-                                  className="rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-slate-400 transition hover:border-rose-500/50 hover:text-rose-300 disabled:opacity-40"
+                                  className="shrink-0 whitespace-nowrap rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-slate-400 transition hover:border-rose-500/50 hover:text-rose-300 disabled:opacity-40"
                                 >
                                   {t("sim.close")}
                                 </button>
                                 <button
                                   onClick={() => handleDelete(p.id)}
                                   title={t("sim.deletePosition")}
-                                  className="rounded p-1 text-slate-600 transition hover:bg-rose-950/40 hover:text-rose-400"
+                                  className={`rounded p-1 ${hm} text-slate-600 transition hover:bg-rose-950/40 hover:text-rose-400`}
                                 >
                                   <Trash2 size={11} />
                                 </button>
@@ -1538,8 +1499,8 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                             <span className={`text-[11px] font-bold ${pnlColorClass(p.realizedPnl ?? 0)}`}>
                               {fmt(p.realizedPnl ?? 0)}
                             </span>
-                            {renderTimelineCompareButtons(p)}
-                            <button
+                            {!isMobile && renderTimelineCompareButtons(p)}
+                            {!isMobile && <button
                               onClick={() => refreshRegret(p)}
                               disabled={regret?.loading}
                               title={t("sim.regretCheck")}
@@ -1547,10 +1508,10 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
                             >
                               <Undo2 size={10} className={regret?.loading ? "animate-spin" : ""} />
                               {t("sim.regretCheck")}
-                            </button>
+                            </button>}
                             <button
                               onClick={() => handleDelete(p.id)}
-                              className="rounded p-1 text-slate-600 transition hover:bg-rose-950/40 hover:text-rose-400"
+                              className={`rounded p-1 text-slate-600 transition hover:bg-rose-950/40 hover:text-rose-400 ${hm}`}
                             >
                               <X size={11} />
                             </button>
@@ -1694,6 +1655,7 @@ export default function SimulatorPage({ onBack, onNewPosition, onStartFromScenar
           onCancel={() => setConfirmResetOpen(false)}
         />
       )}
+      {isMobile && account && <div className="py-4 text-center text-[11px] text-slate-500">{t("mobile.fullFeaturesHint")}</div>}
       {showGuide && <HelpPanel moduleId="simulator" variant="gate" onClose={() => setShowGuide(false)} />}
       {helpOpen && <HelpPanel moduleId="simulator" variant="info" onClose={() => setHelpOpen(false)} />}
     </div>

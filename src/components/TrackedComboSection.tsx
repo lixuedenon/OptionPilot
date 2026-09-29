@@ -8,6 +8,7 @@ import type { SavedStrategy, TrackedSnapshot } from "@/lib/savedStrategies";
 import { computeLegLinks } from "@/lib/legLinks";
 import LegRow from "@/components/LegRow";
 import { useI18n } from "@/i18n/I18nContext";
+import { useIsMobile } from "@/hooks/useIsMobile";
 
 // Compare mode's "今日组合" (today's combo) block — snapshot picker/save
 // button header, the opening-vs-current stats grid, and the tracked legs
@@ -106,6 +107,8 @@ export default function TrackedComboSection({
   contractsExpired = false,
 }: Props) {
   const { t } = useI18n();
+  // 手机上跟踪对比只看不改：不能删快照/存快照，今日组合的腿不能编辑。
+  const isMobile = useIsMobile();
 
   // Roll/Protect pairing badges (see lib/legLinks.ts), scoped to the
   // tracked-combo leg list — same helper LegListSection.tsx uses for the
@@ -143,7 +146,7 @@ export default function TrackedComboSection({
                 ))}
               </select>
               <span className="text-[9px] text-slate-500">({snaps.length} {t("compare.snapshots")})</span>
-              <button
+              {!isMobile && <button
                 onClick={() => {
                   if (activeSnap && snaps.length > 1) onDeleteSnapshot(activeSnap.id);
                 }}
@@ -152,11 +155,11 @@ export default function TrackedComboSection({
                 className="text-slate-500 transition hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-30"
               >
                 <Trash2 size={11} />
-              </button>
+              </button>}
             </div>
           );
         })()}
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        {!isMobile && <div className="ml-auto flex shrink-0 items-center gap-2">
           <button
             onClick={onSaveTracked}
             disabled={!trackedDirty}
@@ -166,7 +169,7 @@ export default function TrackedComboSection({
             <Save size={11} />
             {t("toolbar.saveTracked")}
           </button>
-        </div>
+        </div>}
       </div>
       {trackedResult && (() => {
         const openIV = spot > 0 ? weightedAvgIV(activeLegs, spot) : 0;
@@ -188,7 +191,7 @@ export default function TrackedComboSection({
         // feeds back into trackedResult/the chart.
         const totalChange = trackedChange + realizedPnl;
         return (
-          <div className="mb-1 grid grid-cols-4 gap-1.5 rounded-lg border border-sky-800/40 bg-sky-950/20 p-2 text-[10px]">
+          <div className={`mb-1 grid ${isMobile ? "grid-cols-2 gap-3" : "grid-cols-4 gap-1.5"} rounded-lg border border-sky-800/40 bg-sky-950/20 p-2 text-[10px]`}>
             <div className="flex flex-col gap-0.5">
               <span className="text-slate-500">{t("compare.spotChange")}</span>
               <span className="tabular-nums text-slate-300">{t("compare.openLabel")} <span className="font-semibold text-emerald-400">{spot.toFixed(2)}</span></span>
@@ -229,7 +232,8 @@ export default function TrackedComboSection({
           </div>
         );
       })()}
-      <div className="p-2 space-y-1">
+      {isMobile && <div className="px-2 pt-1 text-[10px] text-slate-500">{t("mobile.viewOnlyHint")}</div>}
+      <div className="p-2 space-y-1" {...(isMobile ? ({ inert: "" } as Record<string, string>) : {})}>
         {trackedLegs.map((leg, i) => (
           <LegRow
             key={leg.id}

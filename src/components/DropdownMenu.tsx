@@ -10,9 +10,13 @@ interface Props {
   // 2026-09-17新增：外部（分析模式滑块锁定等）禁用整个下拉，连触发按钮都
   // 点不开——不只是隐藏菜单项。
   disabled?: boolean;
+  // 新用户引导：给触发按钮加data-guide，引导文字里的链接据此点它（见StepBadge.tsx的clickGuideTarget）。
+  guideId?: string;
+  // 触发按钮右上角的附加内容（引导步骤编号）。
+  badge?: ReactNode;
 }
 
-export default function DropdownMenu({ label, icon, menuClassName, children, disabled }: Props) {
+export default function DropdownMenu({ label, icon, menuClassName, children, disabled, guideId, badge }: Props) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -28,6 +32,7 @@ export default function DropdownMenu({ label, icon, menuClassName, children, dis
   return (
     <div ref={ref} className="relative">
       <button
+        data-guide={guideId}
         onClick={() => setOpen((v) => !v)}
         disabled={disabled}
         className={`flex items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
@@ -40,6 +45,7 @@ export default function DropdownMenu({ label, icon, menuClassName, children, dis
         {label}
         <ChevronDown size={10} className={`transition ${open ? "rotate-180" : ""}`} />
       </button>
+      {badge}
       {open && (
         <div className={`absolute right-0 top-full z-50 mt-1 w-32 rounded-lg border border-slate-700 bg-slate-900 py-1 shadow-2xl ${menuClassName ?? ""}`}>
           {children(() => setOpen(false))}

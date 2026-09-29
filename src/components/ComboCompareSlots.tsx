@@ -1,7 +1,5 @@
 // src/components/ComboCompareSlots.tsx
-// "多方案对比"功能的UI——2026-09-21新增，见useCompareSlots.ts的设计说明。
-// 只在分析模式（!isCompareMode）渲染，App.tsx负责这个前提判断，本组件
-// 自己不重复判断。
+// "多方案对比"（方案B/C）的UI，只在分析模式渲染（由App.tsx判断）。
 import { useMemo } from "react";
 import { Plus, X, Ban, Trash2, Hash, Crosshair, CalendarClock, Save } from "lucide-react";
 import type { Leg, Shifts } from "@/lib/types";
@@ -11,7 +9,6 @@ import { priceCombo, maxProfitLoss, findBreakevens, probabilityOfProfit, attribu
 import { COMPARE_SLOT_COLORS, MAX_COMPARE_SLOTS, type CompareSlot } from "@/hooks/useCompareSlots";
 import type { LegBatchOps } from "@/hooks/useLegBatchOps";
 import LegRow from "@/components/LegRow";
-import LockedOverlay from "@/components/LockedOverlay";
 import PnlAttributionPanel from "@/components/PnlAttributionPanel";
 import StrategyBadge from "@/components/StrategyBadge";
 import PopBreakevenBadge from "@/components/PopBreakevenBadge";
@@ -23,35 +20,16 @@ interface Props {
   customPresets: CustomPreset[];
   mainLegs: Leg[]; // 方案A，即App.tsx的`legs`
   slots: CompareSlot[];
-  locked?: boolean; // 跟主combo共用isExploring这套"滑块没归位就锁编辑"的规则
-  // 2026-09-22新增：每个候选方案自己的盈亏归因（见下面useComboAttribution
-  // 注释）要跟主combo一样跟随情景滑块，所以需要analyticsSpot/
-  // analyticsShifts——不能直接复用上面的`spot`，那个是给LegRow/静态统计
-  // 表（到期结果类指标，按设计不跟滑块）用的，语义不同，见App.tsx里
-  // analyticsSpot/analyticsShifts自己的注释。
+  locked?: boolean; // 滑块离开原点时为true，只透传给LegRow暂停自动拉价；界面锁定由App.tsx的LockedOverlay统一负责
+  // 每个方案的盈亏归因要跟随情景滑块，所以用analyticsSpot/analyticsShifts（spot是给到期结果类指标用的，不跟滑块）。
   analyticsSpot: number;
   analyticsShifts: Shifts;
-  // 2026-09-22新增，"A/B/C完全对等"这轮改动：activeComboIndex跟App.tsx里
-  // 那份state同一个编码（0=A主combo，1=第一个对比槽位/B，2=第二个/C），
-  // 用来给当前"激活"的槽位画高亮边框；onActivate(i+1)在点击某个槽位容器
-  // 时把它设为激活对象（i是slots数组下标，B是0→激活值1，C是1→激活值2）。
-  // 同一时刻只有一个combo处于激活状态（跟主combo共用同一个state），激活
-  // 状态目前只驱动"策略库"预设应用去哪个combo（见App.tsx的onSelectPreset
-  // 分支）和这里的视觉高亮，不影响这个组件自己已有的逐槽位加腿/删腿/复
-  // 选等操作。
+  // 当前激活的combo（0=A，1=B，2=C），用于高亮；点击槽位容器调用onActivate(i+1)。
   activeComboIndex: number;
   onActivate: (comboIndex: number) => void;
-  // 2026-09-22新增："批量选择/全选/批量屏蔽/批量删除/统一数量-行权价-到
-  // 期日"对B/C同等生效（xue明确要求）——按slots数组的位置对应，
-  // slotBatchOps[0]是B，[1]是C，跟useLegBatchOps.ts里App.tsx固定调用两
-  // 次的顺序一致。只在对应槽位处于"激活"状态时渲染这套工具栏（跟主combo
-  // 一样，同一时刻只操作一个combo），未激活时槽位仍然正常显示腿位，只
-  // 是没有批量工具栏/复选框。
+  // B/C的批量操作（slotBatchOps[0]=B，[1]=C），只在该槽位激活时显示工具栏和复选框。
   slotBatchOps: LegBatchOps[];
-  // 2026-09-22新增：批量工具栏里的"保存策略组合"按钮——不带参数，因为
-  // App.tsx已经通过activeComboIndex知道当前点的是哪个槽位，不需要这里
-  // 再传slotId。可选是因为这个prop只在xue确认要做这个功能之后才会被
-  // App.tsx传入；调用方没传时按钮不渲染。
+  // 批量工具栏里的"保存策略组合"，App.tsx通过activeComboIndex知道是哪个槽位；不传时不显示。
   onSaveSlot?: () => void;
   onAddSlot: () => void;
   onRemoveSlot: (slotId: string) => void;
@@ -77,14 +55,7 @@ function useComboStats(legs: Leg[], spot: number, customPresets: CustomPreset[])
   }, [legs, spot, customPresets]);
 }
 
-// 2026-09-22新增：每个候选方案（B/C）自己的"情景估值"（每条腿在当前情景
-// 滑块位置下的权利金），喂给下面每条LegRow的scenarioPrice prop——之前
-// 这里根本没算这份数据，B/C的LegRow收到的scenarioPrice永远是undefined，
-// 这条腿旁边的情景估值徽章（LegRow.tsx里`scenarioPrice !== undefined`那
-// 段）就一直不出现，xue发现"新的方案没有出现情景估值"就是这个原因。跟
-// 主combo的scenarioPriceById（useComboAnalytics.ts）算法完全一致——用
-// priceCombo在analyticsSpot/analyticsShifts下重新定价，取每条腿的
-// perLeg.shifted，只是换成这个slot自己的legs。
+// 每个方案自己的情景估值（跟主combo的scenarioPriceById同一算法，换成该槽位的legs）。
 function useSlotScenarioPriceById(legs: Leg[], analyticsSpot: number, analyticsShifts: Shifts) {
   return useMemo(() => {
     const active = legs.filter((l) => !l.disabled);
@@ -96,12 +67,8 @@ function useSlotScenarioPriceById(legs: Leg[], analyticsSpot: number, analyticsS
   }, [legs, analyticsSpot, analyticsShifts]);
 }
 
-// 2026-09-22新增：每个候选方案（B/C）自己的盈亏归因——跟主combo的
-// analysisAttribution（useComboAnalytics.ts）完全同一套算法，只是换成这个
-// slot自己的legs。xue明确要求"不能放在一起"，所以这里不是共享一份归因、
-// 而是每个slot各算各的，各自用自己的active/analyticsSpot/analyticsShifts
-// 求值，互不影响。跟analysisAttribution一样，只有情景滑块真的偏离原点时
-// 才有意义——静止在(0,0,0)时没有可归因的变化，返回null不渲染。
+// 每个方案自己的盈亏归因（跟主combo的analysisAttribution同一算法），各算各的，不合并（xue的要求）。
+// 滑块在原点时没有可归因的变化，返回null。
 function useComboAttribution(legs: Leg[], analyticsSpot: number, analyticsShifts: Shifts) {
   return useMemo(() => {
     const active = legs.filter((l) => !l.disabled);
@@ -138,27 +105,15 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
   const scenarioSlot1 = useSlotScenarioPriceById(slots[1]?.legs ?? [], analyticsSpot, analyticsShifts);
   const slotScenarioPriceById = [scenarioSlot0, scenarioSlot1];
 
-  // 2026-09-24改：根容器原来是px-3（12px）+下面每个方案卡片自己又是
-  // p-2（8px）+1px边框，两层padding叠加，腿位行的实际起始缩进比方案A
-  // （LegListSection.tsx，只有外层LockedOverlay一层p-2=8px）多出十几像
-  // 素——xue反馈B/C两个对比方案的"..."菜单跟原始组合对不齐，根因就是这
-  // 层多出来的缩进，不是LegRow.tsx内部列宽的问题（那部分上一轮已经改成
-  // 固定宽度，combo内部自己是对齐的）。改法：根容器去掉横向padding，只
-  // 留纵向的py-2；标题行/空提示文字各自单独补上px-2（它们不是LegRow，
-  // 不需要跟A的缩进对齐，只是要有呼吸空间）；方案卡片自己的p-2保持不
-  // 变，这样卡片内LegRow的缩进就变成单一的8px，跟A完全一致。
+  // 根容器不加横向padding，保证卡片内LegRow的缩进跟方案A一致（"..."菜单对齐）；标题行/提示文字自己加px-2。
   return (
     <div className="border-t border-slate-800/60 py-2">
       <div className="mb-1.5 flex items-center justify-between px-2">
         <span className="text-[11px] font-bold text-slate-300">{t("compare.title")}</span>
         <button
           onClick={onAddSlot}
-          // 2026-09-25新增mainLegs.length===0这个条件——xue反馈分析模式刚
-          // 进来、腿位区域还是空的（方案A还没有任何腿位）时，"对比方案"
-          // 按钮应该是不可用的：B/C是拿去跟A对比的候选方案，A本身还没有
-          // 内容时新建一个对比方案没有意义（这一点上跟策略库预设选择器
-          // 不同——预设是往A或B/C里"填"东西，不需要A先有内容）。
-          disabled={locked || slots.length >= MAX_COMPARE_SLOTS || mainLegs.length === 0}
+          // 方案A还没有腿位时不能新建对比方案（B/C是用来跟A对比的）。
+          disabled={slots.length >= MAX_COMPARE_SLOTS || mainLegs.length === 0}
           title={mainLegs.length === 0 ? t("compare.addSlotNeedsMainLegs") : t("compare.addSlot")}
           className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 disabled:cursor-not-allowed disabled:opacity-40"
         >
@@ -179,9 +134,8 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
         const isActive = activeComboIndex === comboIndex;
         const batch = slotBatchOps[i];
         return (
-          <LockedOverlay
+          <div
             key={slot.id}
-            locked={locked}
             onClick={() => onActivate(comboIndex)}
             className={`mb-2 cursor-pointer rounded border p-2 transition ${
               isActive ? "border-sky-500/70 bg-slate-900/60 ring-1 ring-sky-500/40" : "border-slate-800 bg-slate-900/40"
@@ -194,16 +148,13 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
                 {stats?.label && (
                   <StrategyBadge name={stats.label} customPresets={customPresets} />
                 )}
-                {/* 2026-09-22新增：这份方案自己的"到期盈利+盈亏平衡"——跟
-                    主combo（LegListSection.tsx）同一套挪动逻辑，见App.tsx
-                    里那处改动的注释和PopBreakevenBadge.tsx。 */}
+                {/* 这个方案自己的到期盈利+盈亏平衡 */}
                 {stats && (
                   <PopBreakevenBadge pop={stats.pop} breakevens={stats.breakevens} />
                 )}
               </div>
               <button
                 onClick={(e) => { e.stopPropagation(); onRemoveSlot(slot.id); }}
-                disabled={locked}
                 title={t("compare.remove")}
                 className="rounded p-0.5 text-slate-600 transition hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-40"
               >
@@ -215,13 +166,8 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
               <p className="mb-1 text-[9px] text-slate-600">{t("compare.emptySlot")}</p>
             )}
 
-            {/* 2026-09-22新增：批量操作工具栏，样式/文案跟LegListSection.tsx
-                主combo那份完全一致（复用同一批i18n key，不新造一套文案）
-                ——只在这个槽位"激活"且有腿位时渲染，未激活的槽位仍然可以
-                正常逐条编辑/删除/屏蔽，只是没有全选/批量/统一这几个动作。 */}
-            {/* 2026-09-24改：跟LegListSection.tsx主combo同一份修复——全选
-                后这一行装不下会被压成逐字竖排文字，改成flex-wrap兜底+
-                下面按钮全部收窄成纯图标+悬浮提示。 */}
+            {/* 批量操作工具栏（跟主combo同一套样式和文案），只在该槽位激活且有腿位时显示 */}
+            {/* 放不下就换行；按钮纯图标 */}
             {isActive && batch && slot.legs.length > 0 && (
               <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1 rounded border border-slate-800 bg-slate-900/40 px-2 py-1">
                 <label className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[10px] text-slate-400">
@@ -237,7 +183,6 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
                       else batch.selectAllLegs();
                     }}
                     onClick={(e) => e.stopPropagation()}
-                    disabled={locked}
                     className="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
                   />
                   {batch.selectedCount > 0 ? t("leg.selectedCount", { count: batch.selectedCount }) : t("leg.selectAll")}
@@ -247,7 +192,6 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
                     <>
                     <button
                       onClick={(e) => { e.stopPropagation(); batch.bulkToggleDisable(); }}
-                      disabled={locked}
                       title={batch.allSelectedDisabled ? t("leg.bulkUnblock") : t("leg.bulkBlock")}
                       className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-amber-400 transition hover:border-amber-500/50 hover:bg-amber-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                     >
@@ -255,7 +199,6 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); batch.requestBulkDelete(); }}
-                      disabled={locked}
                       title={t("leg.bulkDelete")}
                       className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-rose-400 transition hover:border-rose-500/50 hover:bg-rose-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                     >
@@ -263,7 +206,7 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); batch.unifyQty(); }}
-                      disabled={!batch.canUnifyLegs || locked}
+                      disabled={!batch.canUnifyLegs}
                       title={`${t("leg.unifyQty")} · ${t("leg.unifyHint")}`}
                       className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                     >
@@ -271,7 +214,7 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); batch.unifyStrike(); }}
-                      disabled={!batch.canUnifyLegs || locked}
+                      disabled={!batch.canUnifyLegs}
                       title={`${t("leg.unifyStrike")} · ${t("leg.unifyHint")}`}
                       className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                     >
@@ -279,7 +222,7 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); batch.unifyDte(); }}
-                      disabled={!batch.canUnifyLegs || locked}
+                      disabled={!batch.canUnifyLegs}
                       title={`${t("leg.unifyDte")} · ${t("leg.unifyHint")}`}
                       className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-sky-400 transition hover:border-sky-500/50 hover:bg-sky-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                     >
@@ -287,18 +230,10 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
                     </button>
                     </>
                   )}
-                  {/* 2026-09-22新增："保存策略组合"——xue确认"激活哪个容器
-                      就保存哪个，都存进同一个策略库"之后加的，位置/样式
-                      照搬LegListSection.tsx主combo那颗同名按钮。这个槽位
-                      存进去的是一条独立的新SavedStrategy记录（跟主combo
-                      共用savedStrategies.ts那份storage，不是单独一套），
-                      不要求先"转正"成主combo——onSaveSlot由App.tsx传入，
-                      实际写入逻辑见App.tsx里handleSaveStrategyForActive/
-                      handleOverwriteStrategyForActive的注释。 */}
+                  {/* 保存这个方案为一条新策略（跟主combo共用同一个策略库），写入逻辑见App.tsx的handleSaveStrategyForActive */}
                   {onSaveSlot && (
                     <button
                       onClick={(e) => { e.stopPropagation(); onSaveSlot(); }}
-                      disabled={locked}
                       title={t("toolbar.saveStrategy")}
                       className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-emerald-400 transition hover:border-emerald-500/50 hover:bg-emerald-950/30 disabled:cursor-not-allowed disabled:opacity-40"
                     >
@@ -319,25 +254,11 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
                   symbol={symbol}
                   spot={spot}
                   locked={locked}
-                  // 2026-09-22新增：情景估值，见上面useSlotScenarioPriceById
-                  // 的注释——之前这里没传这个prop，B/C的腿位旁边永远不会
-                  // 出现情景估值徽章。
                   scenarioPrice={slotScenarioPriceById[i].get(leg.id)}
                   onChange={(patch) => onUpdateLeg(slot.id, leg.id, patch)}
                   onToggleDisable={() => onToggleLeg(slot.id, leg.id)}
                   onDelete={() => onDeleteLeg(slot.id, leg.id)}
-                  // 对比槽位是临时候选方案，v1不接"添加到预设"这个动作
-                  // （那套流程是给主combo的SavePresetDialog设计的，接进来
-                  // 要多传一层presetSaveSource变体，v1先跳过——选定某个
-                  // 方案后把它的legs整个搬进主combo，就能正常走现有的
-                  // "添加到预设"/保存策略）。2026-09-22修复：之前这里传
-                  // 的是一个静默no-op（点了没有任何反应），xue审查B/C跟A
-                  // 的操作差异时发现——改成不传这个prop，LegRow.tsx现在
-                  // 把它当可选prop处理，不传时菜单项直接不出现，跟
-                  // onRoll/onHedge/onProtect/onCompare这几个B/C同样未接
-                  // 的动作保持一致的"不适用就不显示"处理方式。
-                  // 2026-09-22：复选框只在这个槽位被激活时显示——未激活时
-                  // 不该让人以为可以勾选一个当前操作不了的组合。
+                  // B/C不接"添加到预设"（不传，菜单项就不显示）；复选框只在该槽位激活时显示。
                   selectable={isActive}
                   selected={batch?.selectedLegIds.has(leg.id) ?? false}
                   onToggleSelect={() => batch?.toggleLegSelection(leg.id)}
@@ -345,25 +266,15 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
               ))}
             </div>
 
-            {/* 2026-09-22移除：这里原来有一个槽位自己的"+添加腿位"按钮——
-                xue指出顶部工具栏那个"+"（legToolbar，App.tsx的
-                handleToolbarAddLeg）本来就已经会加到当前激活的容器，激活
-                某个B/C槽位后再点顶部"+"效果完全一样，这颗按钮是纯冗余，
-                直接删掉，不额外保留禁用态或其它形式。 */}
 
-            {/* 2026-09-22新增：这份方案自己的盈亏归因，画在它自己的卡片
-                里面——不是共享面板，也不进下面的对比表，跟xue的要求一致
-                ("盈亏归因是要单独在每个组合组里边体现的，不能放在一起")。
-                gate在slotAttributions[i]非null上，即情景滑块已偏离原点且
-                这个slot有活跃腿位时才渲染，跟主combo的
-                analysisAttribution显示逻辑一致。 */}
+            {/* 这个方案自己的盈亏归因，显示在它自己的卡片里（不合并） */}
             {slotAttributions[i] && (
               <PnlAttributionPanel
                 attribution={slotAttributions[i]!}
                 maxAbs={Math.max(Math.abs(stats?.maxProfit ?? 0), Math.abs(stats?.maxLoss ?? 0), 0.01)}
               />
             )}
-          </LockedOverlay>
+          </div>
         );
       })}
 

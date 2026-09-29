@@ -1,3 +1,4 @@
+// src/components/ManageStrategiesDialog.tsx
 import { useState, useEffect, useRef } from "react";
 import { Settings2, X, Trash2, Star, Radar, Pencil, Check, GripVertical, FolderOpen } from "lucide-react";
 import type { SavedStrategy } from "@/lib/savedStrategies";
@@ -61,7 +62,7 @@ export default function ManageStrategiesDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="flex max-h-[85vh] w-[560px] flex-col rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+      <div className="flex max-h-[85vh] w-[560px] max-w-[94vw] flex-col rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Settings2 size={16} className="text-amber-400" />

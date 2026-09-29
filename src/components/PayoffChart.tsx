@@ -18,19 +18,10 @@ interface Props {
   spot: number;
   shifts: Shifts;
   symbol: string;
-  // Mode-switch button (2026-09-07, per xue's request) — used to live buried
-  // in the left panel (first in legToolbar) and moved here to sit right next
-  // to the ticker symbol instead, since that's what the eye actually goes to
-  // first. App.tsx still owns the state/handlers behind it — this component
-  // only renders what it's handed. Can be omitted/null (e.g. before any legs
-  // exist) with nothing rendered.
+  // 分析↔对比模式切换按钮，由App.tsx传入，显示在标的代码旁；可以不传。
   modeSwitchButton?: ReactNode;
   breakevens: number[];
-  // 2026-09-17新增：情景滑块ΔT对应的实际日期(=day0/openingAt + shifts.dT
-  // 天)，显示在盈亏数字左边——只有分析模式（!compareMode）会传/会显示，
-  // 对比模式的shifts永远冻结在(0,0,0)，算出来的日期没意义（对比模式本来
-  // 就在别处显示真实日期）。可选：SimulatorPage.tsx等纯对比模式调用方不
-  // 需要传。
+  // 情景滑块ΔT对应的实际日期（day0+dT天），只在分析模式传入和显示。
   openingAt?: number;
   trackedLegs?: Leg[];   // 持仓组合 — drawn as a fixed curve, not affected by shifts
   trackedSpot?: number;  // 持仓组合's current spot price
@@ -50,33 +41,19 @@ interface Props {
   // used in any pricing calculation itself. Undefined outside compare mode
   // or when no live quote is available.
   liveSpot?: number;
-  // 2026-09-15新增。App.tsx的isExpiredOpening：分析模式下打开一条已保存策略，
-  // 发现"真实经过天数"已经超过它第0天(legsAsOf)当时的完整周期(originalMaxDte)，
-  // 即真实世界已经过了这条策略的到期日。为true时只是视觉上标记"仅供历史模拟
-  // 参考"（顶部提示条+图形整体降低饱和度），不影响任何计算——滑块依然能在
-  // 完整原始周期内自由拖动，见ExpiredStrategyDialog.tsx和savedStrategies.ts的
-  // OpeningSimBasis注释。
+  // 分析模式打开的策略真实到期日已过：只做视觉标记（提示条+图形变灰），不影响计算，滑块仍可在完整周期内拖动。
   expired?: boolean;
-  // 2026-09-21新增，"多方案对比"功能：分析模式下最多再加2份独立的候选
-  // combo（B/C，见useCompareSlots.ts），跟主combo（这份Props本身的
-  // `legs`，即"方案A"）叠加画在同一张图上，方便"该买Call还是价差还是卖
-  // Put"这种同标的多方案对比。只在!compareMode（分析模式）下由App.tsx
-  // 传入，对比模式(isCompareMode)下不传（该功能跟"跟踪一个真实仓位"是两
-  // 个不同场景，见App.tsx对应注释）。每条曲线的计算方式故意跟主曲线
-  // （calcPnL，见下）保持一致——同样吃这份Props的`spot`/`shifts`，这样
-  // 情景滑块（现价/时间/IV）拖动时三条曲线一起变形，才是"同一情景下三个
-  // 方案怎么比"这个功能真正的意义所在；不复用pricing.ts的
-  // payoffCurvePoints()，那个函数算的是固定到期payoff（不跟随shifts），
-  // 语义不同。
+  // 多方案对比的B/C曲线，只在分析模式传入。计算方式必须跟主曲线（calcPnL）一致、跟随spot/shifts，
+  // 拖滑块时三条曲线一起变化；不能用payoffCurvePoints（那个只算到期payoff，不跟随shifts）。
   compareCurves?: { id: string; label: string; color: string; legs: Leg[] }[];
+  // 手机精简版：不显示各腿明细、时间衰减/实时价开关、缩放提示和底部图例。
+  compact?: boolean;
 }
 
 const POINTS = 200;
 const RATE = 0.05;
 const PAD = { t: 12, r: 16, b: 32, l: 52 };
 
-// impliedVol lives in lib/pricing.ts — imported above, not redefined here
-// (used to be a byte-for-byte duplicate of pricing.ts's version).
 
 function calcPnL(legs: Leg[], spot: number, shifts: Shifts, sTest: number): number {
   let pnl = 0;
@@ -174,12 +151,9 @@ function calcTrackedPnLAtTime(trackedLegs: Leg[], openingLegs: Leg[], spot: numb
 
 const FAN_COLORS = ["#fbbf24", "#f59e0b", "#a3a3a3", "#475569"];
 
-export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot, expired, openingAt, compareCurves }: Props) {
+export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot, expired, openingAt, compareCurves, compact }: Props) {
   const { t } = useI18n();
-  // 情景滑块ΔT对应的实际日期——day0(openingAt)+shifts.dT天。只在分析模式
-  // 显示（见Props.openingAt注释）。固定用mm/dd/yyyy（xue指定的格式），不
-  // 用toLocaleDateString——那样zh-CN locale会给出yyyy/mm/dd的顺序，年份
-  // 位置就不对了。
+  // 固定用mm/dd/yyyy（xue指定），不用toLocaleDateString（中文环境会变成yyyy/mm/dd）。
   const scenarioDateTs = !compareMode && openingAt !== undefined
     ? addCalendarDays(openingAt, shifts.dT)
     : null;
@@ -433,8 +407,8 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
   );
   if (!active) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-slate-600">
-        {spot <= 0 ? t("chart.noSpot") : t("chart.addLegs")}
+      <div className="flex h-full items-center justify-center px-4 text-center text-sm text-slate-400">
+        {spot <= 0 ? t("chart.noSpot") : t(compact ? "chart.addLegsMobile" : "chart.addLegs")}
       </div>
     );
   }
@@ -469,12 +443,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
     const span = yMax - yMin;
     if (!Number.isFinite(span) || span <= 0) return [0];
     const nice = [0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500];
-    // 2026-09-24修复：原来`nice`表只到500，span超出500*6=3000时`.find`找不到
-    // 匹配、退回`?? 500`这个写死的兜底step——数量上限从100提到9999、价格上限
-    // 提到50万之后，一条腿的到期盈亏span能轻松到数十亿，step却还是500，下面
-    // 的for循环要跑几百万/几千万次，同步阻塞在渲染里，就是"打大数字卡死"。
-    // 这里按10的幂扩大step直到6个刻度够用，并且不管算出来的step多大，都加一
-    // 个硬上限防止任何未预见的边界情况再次死循环。
+    // step按10的幂放大直到刻度≤6个，并设刻度数硬上限——数量/价格很大时盈亏跨度可达数十亿，固定step会让循环卡死页面。
     let step = nice.find((n) => span / n <= 6);
     if (step === undefined) {
       let mult = 1000;
@@ -542,7 +511,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
             </div>
           </div>
         </div>
-        {perLegValues && perLegValues.length > 0 && (
+        {perLegValues && perLegValues.length > 0 && !compact && (
           <div className="flex flex-wrap items-center gap-0.5">
             <span className="text-[8px] uppercase tracking-wide text-slate-600">{t("chart.perLeg")}</span>
             {perLegValues.map(({ leg, shifted, change }) => (
@@ -562,11 +531,21 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
               <span className="ml-auto shrink-0 rounded border border-slate-700 bg-slate-900 px-1.5 py-0 text-[9px]">
                 <span className="text-slate-500">{t("chart.net")} </span>
                 <span className="font-bold tabular-nums text-slate-100">${Math.abs(netValue).toFixed(2)}</span>
-                {netChange !== undefined && (
-                  <span className={"ml-1 font-semibold tabular-nums " + (netChange >= 0 ? "text-emerald-400" : "text-rose-400")}>
-                    {netChange >= 0 ? "+" : ""}{netChange.toFixed(2)}
-                  </span>
-                )}
+                {netChange !== undefined && (() => {
+                  // 右上角已有盈亏金额，这里改显示盈亏百分比（相对开仓权利金），方便对照"盈利50%/亏损50%平仓"。
+                  // 含正股腿或开仓权利金≈0时百分比没有意义，退回显示金额。
+                  const basis = Math.abs(netValue - netChange);
+                  const hasStock = perLegValues.some(({ leg }) => leg.kind === "stock");
+                  const pct = !hasStock && basis > 0.005 ? (netChange / basis) * 100 : null;
+                  return (
+                    <span
+                      className={"ml-1 font-semibold tabular-nums " + (netChange >= 0 ? "text-emerald-400" : "text-rose-400")}
+                      title={pct !== null ? t("chart.pnlPctHint") : undefined}
+                    >
+                      {netChange >= 0 ? "+" : ""}{pct !== null ? `${pct.toFixed(1)}%` : netChange.toFixed(2)}
+                    </span>
+                  );
+                })()}
               </span>
             )}
           </div>
@@ -593,7 +572,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
           </div>
         )}
         {/* Top-right controls */}
-        <div className="absolute right-0 top-0 z-10 flex items-center gap-1">
+        <div className={`absolute right-0 top-0 z-10 flex items-center gap-1 ${compact && !isZoomed ? "hidden" : ""}`}>
           {isZoomed && (
             <button
               onClick={resetView}
@@ -609,7 +588,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
               {xZoom.toFixed(1)}×
             </span>
           )}
-          <button
+          {!compact && <button
             onClick={() => setShowFan((v) => !v)}
             className="flex items-center gap-1.5 rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[9px] font-semibold text-slate-400 transition hover:text-slate-300"
             title={t("chart.timeDecay")}
@@ -621,8 +600,8 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
               />
             </span>
             <span className={showFan ? "text-amber-300" : "text-slate-500"}>{t("chart.timeDecay")}</span>
-          </button>
-          {compareMode && hasTracked && liveSpot !== undefined && (
+          </button>}
+          {compareMode && hasTracked && liveSpot !== undefined && !compact && (
             <button
               onClick={() => setShowLiveSpot((v) => !v)}
               className="flex items-center gap-1.5 rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[9px] font-semibold text-slate-400 transition hover:text-slate-300"
@@ -659,7 +638,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
         )}
 
         {/* Zoom hint — only when not zoomed */}
-        {!isZoomed && (
+        {!isZoomed && !compact && (
           <div className="pointer-events-none absolute bottom-6 right-0 z-10 text-[9px] text-slate-600">
             {t("chart.zoomHint")}
           </div>
@@ -885,7 +864,6 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
             {/* Y axis labels */}
             {yTicks.map((v) => (
               <text key={v} x={PAD.l - 4} y={toY(v) + 3.5} textAnchor="end" fontSize="9" fill="rgb(100 116 139)">
-                {/* 2026-09-26修：原来前面还手动拼了一个"-"，负数toFixed本身已带负号，显示成"--2" */}
                 {Math.abs(v) < 1 ? v.toFixed(2) : v.toFixed(0)}
               </text>
             ))}
@@ -964,7 +942,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
         )}
 
         {/* K / BEP legend */}
-        <div className="absolute bottom-0 left-0 z-10 flex items-center gap-2 text-[9px] text-slate-500">
+        <div className={`absolute bottom-0 left-0 z-10 flex items-center gap-2 text-[9px] text-slate-500 ${compact ? "hidden" : ""}`}>
           <span className="flex items-center gap-1">
             <span className="inline-block h-2 w-3 border border-dashed border-slate-500" />
             <span><span className="font-semibold text-slate-400">K</span> = {t("chart.strikeLabel")}</span>

@@ -9,6 +9,7 @@ import type { CustomPreset } from "@/lib/customPresets";
 import type { StockQuote } from "@/lib/useStockQuote";
 import type { EpsEstimate } from "@/hooks/useEpsEstimate";
 import PresetPicker from "@/components/PresetPicker";
+import StepBadge from "@/components/StepBadge";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import LiveClock from "@/components/LiveClock";
 import { useI18n } from "@/i18n/I18nContext";
@@ -164,6 +165,8 @@ interface Props {
   // 2026-09-17新增：分析模式情景滑块离开(0,0,0)时由App.tsx算出的
   // isExploring，锁定策略库选择器、标的代码输入框及其下拉——直到点击"重置"。
   locked?: boolean;
+  // 新用户引导：组合还空着时在代码框显示1、预设策略显示2（见StepBadge.tsx）。
+  showGuideSteps?: boolean;
 }
 
 export default function AppHeader({
@@ -192,14 +195,13 @@ export default function AppHeader({
   epsLoading,
   onOpenHelp,
   locked = false,
+  showGuideSteps = false,
 }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
 
   return (
-    // 2026-09-26 移动端第二步：手机上左右两组都用display:contents"拆开"，所有
-    // 按钮按顺序在同一个可换行的flex里依次排列、放不下自动换行；logo缩小、时钟
-    // 隐藏、"使用说明"只留图标，不再把按钮文字挤成一字一行的竖排。电脑版class不变。
+    // 手机：左右两组用display:contents合并成一个可换行的flex，logo缩小。
     <header
       className={
         isMobile
@@ -225,6 +227,7 @@ export default function AppHeader({
         </button>
 
         <PresetPicker
+          badge={showGuideSteps ? <StepBadge n={2} title={t("guide.step2")} /> : undefined}
           customPresets={customPresets}
           onDeleteCustom={onDeleteCustomPreset}
           onSelect={onSelectPreset}
@@ -232,8 +235,9 @@ export default function AppHeader({
         />
 
         <div ref={symbolWrapRef} className="relative flex items-center gap-1.5">
-          <span className="text-[10px] uppercase text-slate-500">{t("stock.code")}</span>
-          <div className="flex items-center">
+          {!isMobile && <span className="text-[10px] uppercase text-slate-500">{t("stock.code")}</span>}
+          <div className="relative flex items-center">
+            {showGuideSteps && <StepBadge n={1} title={t("guide.step1")} />}
             <input
               placeholder="SPY"
               value={symbol}
@@ -287,7 +291,8 @@ export default function AppHeader({
             )}
           </button>
 
-          {priceChange !== null && changePct !== null ? (
+          {/* 手机精简版只留logo/预设/标的/现价：涨跌幅、EPS估值、时钟、语言、使用说明都不显示（语言和说明在首页）。 */}
+          {isMobile ? null : priceChange !== null && changePct !== null ? (
             <div className="flex items-center gap-1 rounded border border-slate-800 bg-slate-900/40 px-2 py-1 text-[10px] tabular-nums">
               <span className={priceChange >= 0 ? "text-emerald-400 font-semibold" : "text-rose-400 font-semibold"}>
                 {priceChange >= 0 ? "+" : ""}{priceChange.toFixed(2)}
@@ -296,11 +301,11 @@ export default function AppHeader({
                 ({changePct >= 0 ? "+" : ""}{changePct.toFixed(2)}%)
               </span>
             </div>
-          ) : isMobile ? null : (
+          ) : (
             <div className="w-[88px]" />
           )}
 
-          {epsLoading ? (
+          {isMobile ? null : epsLoading ? (
             <RefreshCw size={11} className="animate-spin text-slate-600" />
           ) : epsEstimate ? (
             <EpsValuationBadge estimate={epsEstimate} />
@@ -309,15 +314,17 @@ export default function AppHeader({
 
       <div className={isMobile ? "contents" : "flex items-center gap-3"}>
         {!isMobile && <LiveClock />}
-        <LanguageSwitcher />
-        <button
-          onClick={onOpenHelp}
-          title={t("toolbar.help")}
-          className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-[11px] font-semibold text-slate-400 transition hover:border-emerald-500/50 hover:text-emerald-300"
-        >
-          <HelpCircle size={12} />
-          {!isMobile && <span>{t("toolbar.help")}</span>}
-        </button>
+        {!isMobile && <LanguageSwitcher />}
+        {!isMobile && (
+          <button
+            onClick={onOpenHelp}
+            title={t("toolbar.help")}
+            className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-[11px] font-semibold text-slate-400 transition hover:border-emerald-500/50 hover:text-emerald-300"
+          >
+            <HelpCircle size={12} />
+            <span>{t("toolbar.help")}</span>
+          </button>
+        )}
       </div>
     </header>
   );

@@ -2,6 +2,7 @@
 import { RotateCcw } from "lucide-react";
 import type { Shifts } from "@/lib/types";
 import { useI18n } from "@/i18n/I18nContext";
+import { useIsMobile } from "@/hooks/useIsMobile";
 
 interface Props {
   shifts: Shifts;
@@ -76,6 +77,7 @@ function Slider({
   // component, not something that should own its own i18n subscription.
   t: (key: string, vars?: Record<string, string | number>) => string;
 }) {
+  const isMobile = useIsMobile();
   const pct = ((value - min) / (max - min)) * 100;
   const markerPct = markerValue !== undefined && markerValue >= min && markerValue <= max
     ? ((markerValue - min) / (max - min)) * 100
@@ -115,12 +117,13 @@ function Slider({
           )}
         </div>
         <span
-          className="w-16 text-right text-[10px] font-bold tabular-nums"
+          // 手机上字号放大后数值列加宽，副数值换到下一行，避免撑出屏幕。
+          className={`${isMobile ? "w-24 shrink-0" : "w-16"} text-right text-[10px] font-bold tabular-nums`}
           style={{ color: accent }}
         >
           {display}
           {subdisplay && (
-            <span className="ml-1 text-[9px] font-medium text-slate-500">{subdisplay}</span>
+            <span className={`${isMobile ? "block" : "ml-1"} text-[9px] font-medium text-slate-500`}>{subdisplay}</span>
           )}
         </span>
       </div>

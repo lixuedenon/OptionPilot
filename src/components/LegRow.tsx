@@ -37,13 +37,7 @@ interface Props {
   // most people actually pick. Undefined/0 just skips the auto-scroll and
   // leaves the dropdown's default scroll position alone.
   spot?: number;
-  // What this specific leg is doing in the combo (主力腿/保护腿/etc, computed
-  // across the whole leg list by legRoles.ts) — shown inside the "..."
-  // menu rather than a separate always-visible panel, per Xue's request:
-  // folded into the existing menu saves space and keeps the leg row itself
-  // uncluttered, rather than adding a permanent header-level element.
-  // Undefined for a disabled leg (legRoles.ts only classifies active legs)
-  // or when it can't be confidently classified.
+  // 这条腿在组合里的角色（legRoles.ts计算），显示在"..."菜单里。无法分类或已屏蔽的腿为undefined。
   roleInfo?: { label: string; explanation: string };
   // Compare mode's "开仓组合" (opening combo) rows are historical/fixed —
   // that data is supposed to match what analysis mode originally recorded,
@@ -53,46 +47,17 @@ interface Props {
   // a market-fetch behavior that doesn't apply. Undefined/false elsewhere
   // keeps the normal live-fetch behavior below.
   hidePriceRefresh?: boolean;
-  // 2026-09-17新增：这条腿所属的策略"真实到期日"已经过去（真实经过天数超
-  // 过了当初完整周期——App.tsx里的openingSimBasis.daysSinceOpen >
-  // originalMaxDte，跟isExpiredOpening/ExpiredStrategyDialog同一个判断）。
-  // 已经真实到期的合约在Yahoo链上已经找不到了——但此时leg.dte早被
-  // handleOpenStrategy/handleTrack的Math.max(0,...)钳到了0（"今天到
-  // 期"），如果照样去发起fetchLegPremium/getOptionChain(sym,
-  // 0)，请求会静默snap到"今天"附近某个完全不同的、当前真实挂牌的合约上
-  // ——不会报错，只在priceNote里露一行不起眼的"已调整为XX/XX"，很容易被
-  // 忽略，等于给这条已经不存在的腿悄悄换了张完全不同的合约再定价。所以
-  // 这个已过期不能靠"leg.dte===0"本身判断（正常今天到期的合约dte也是
-  // 0），必须由调用方（App.tsx）算好了传进来。设为true时连同
-  // hidePriceRefresh一起挡住三条路径：策略/行权价下拉菜单背后那次链加
-  // 载、premium===0时的自动填充、以及"恢复市场价"手动刷新——统一显示
-  // leg.contractExpiredNoPrice提示，而不是静默换合约。
+  // 这条腿所属策略的真实到期日已过（由App.tsx算好传入）。
+  // ⚠️ 不能用leg.dte===0判断：过期腿的dte已被钳到0，照常请求期权链会静默换成另一张在市合约。
+  // 为true时挡住期权链加载、自动拉价、手动刷新三条路径，显示"合约已过期"提示。
   expired?: boolean;
-  // Which leg(s), if any, this one was created from or gave rise to via
-  // Roll/Protect/Hedge — see lib/legLinks.ts and types.ts's
-  // `Leg.derivedFrom`. Drives the small pairing badge next to the leg
-  // index so more than one roll/protect/hedge on the board doesn't turn
-  // into guesswork about which rows go together (xue: "否则很容易乱") —
-  // the badge shows the paired leg's own number directly, not just in a
-  // hover tooltip, so multiple simultaneous pairs stay distinguishable at
-  // a glance instead of all looking like the same generic icon.
-  linkInfo?: { role: "source" | "derived"; via: "roll" | "protect" | "hedge"; otherIndex: number };
+  // 这条腿通过展期/保护跟哪条腿配对（lib/legLinks.ts），配对的两条腿铺同色背景。
+  linkInfo?: { role: "source" | "derived"; via: "roll" | "protect" | "hedge"; otherIndex: number; color: string };
   onChange: (patch: Partial<Leg>) => void;
   onToggleDisable: () => void;
-  // Optional: compare mode's "开仓组合" rows pass neither delete nor
-  // roll/hedge/protect — the opening combo's structure is locked there
-  // (see App.tsx's compare-mode leg toolbar). When provided, the label/
-  // icon/tone shown for it is resolved from `leg.derivedFrom` first (an
-  // "撤销展期/保护/对冲" undo action), then from `leg.closedPnl` (an
-  // already-closed leg, shown but no longer actionable), and falls back to
-  // `deleteVariant` otherwise — see the deleteConfig logic below.
+  // 可选：对比模式"开仓组合"不传（结构锁定）。菜单项的文字/图标先看leg.derivedFrom（撤销），再看leg.closedPnl（已平仓），否则用deleteVariant。
   onDelete?: () => void;
-  // 2026-09-23起可选：跟onRoll/onHedge/onProtect同一类——对比槽位
-  // （ComboCompareSlots.tsx的B/C候选方案）v1故意不接"添加到预设"这个动
-  // 作（那套流程是给主combo的SavePresetDialog设计的），之前这个字段是
-  // 必填的，调用方漏传时typecheck能抓出来，但vite build不做类型检查，
-  // 运行时onAddToPreset会是undefined，用户在B/C槽位点开某条腿的菜单选
-  // "添加到预设"会直接抛"onAddToPreset is not a function"崩溃。
+  // 可选：B/C对比槽位不接"添加到预设"。菜单里只在传了时才显示该项。
   onAddToPreset?: () => void;
   onRoll?: () => void;
   onHedge?: () => void;
@@ -104,12 +69,7 @@ interface Props {
   // mistake. Ignored (overridden) when `leg.derivedFrom` or `leg.closedPnl`
   // is set — see deleteConfig below.
   deleteVariant?: "delete" | "close";
-  // Reordering — buttons in the "..." menu rather than drag-and-drop.
-  // (An earlier version tried making the selection checkbox double as a
-  // drag handle to save row width, but browsers treat a mousedown inside a
-  // draggable ancestor as the start of a drag gesture even when it lands on
-  // a checkbox, which silently ate the click and made the checkbox
-  // unselectable. Buttons avoid that conflict entirely.)
+  // 排序用"..."菜单里的上移/下移，不用拖拽（拖拽会吞掉复选框的点击）。
   onMoveUp?: () => void;
   onMoveDown?: () => void;
   canMoveUp?: boolean;
@@ -120,11 +80,8 @@ interface Props {
   selected?: boolean;
   onToggleSelect?: () => void;
   selectable?: boolean;
-  // 2026-09-17新增：分析模式情景滑块（ΔS/ΔT/ΔV）离开静止点(0,0,0)时由
-  // App.tsx算出的isExploring，向下传到每个LegRow，锁定所有可编辑字段/菜单
-  // 操作——直到用户点击"重置"把滑块归位。跟`disabled`(=leg.disabled，用户
-  // 主动屏蔽某条腿)是两个独立概念，两者都要锁的字段用`fieldsDisabled`合并
-  // 判断；只影响某条腿显示/隐藏(如"已屏蔽"灰色样式)的地方仍只看`disabled`。
+  // 情景滑块离开原点时（App.tsx的isExploring）为true：暂停自动拉取市场权利金。
+  // 界面上的锁定由App.tsx左侧整体的LockedOverlay负责，这里不再处理。
   locked?: boolean;
 }
 
@@ -133,27 +90,8 @@ const inp =
 const inpDisabled =
   "w-full rounded border border-slate-700/40 bg-slate-800/60 px-1.5 py-1 text-xs text-slate-400 tabular-nums cursor-not-allowed";
 
-// 2026-09-25新增：小屏幕/窄窗口笔记本上，这一整行（复选框+腿号+方向/类
-// 型切换+张数/行权价/到期日/权利金四个输入框+情景估值/腿位盈亏两个徽章+
-// "..."菜单）全部是`shrink-0`，没有一个会被flexbox压缩——这是故意的（见
-// NumField/ValueBadge上面的注释：数字不能因为容器变窄而被截断/滚动查
-// 看，只能靠字号自动收缩），但列的固定宽度本身不会跟着变窄，窗口比设计
-// 基准（约1440px宽的笔记本）更窄时，这一整行就会比左侧面板容器更宽，被
-// 挤到换行、整体布局跟着乱掉——xue反馈的"小屏幕上输入框内容显示不下、
-// 换行导致结构错乱"就是这个。
-//
-// 轻量修复（跟xue确认过方向）：不重新设计布局（那是"六、22"移动端适配
-// 那个量级的独立工作），而是在窗口宽度低于这个阈值时，把每一列的固定宽
-// 度本身也按比例收窄几像素（张数/行权价/权利金/情景估值/腿位盈亏/到期
-// 日框，以及外层gap/padding），跟"字号自动收缩"配合，两层收缩叠加起来
-// 让整行在更窄的窗口下也能不换行地放进去。阈值1440px是常见笔记本原生分
-// 辨率的一个粗略下限估计，不是精确计算出来的——如果后续发现某个具体分
-// 辨率下还是不够，调这个数字或者下面各列收窄后的宽度即可，不需要改动
-// 这里的机制本身。
-//
-// 用matchMedia而不是resize事件+innerWidth，浏览器原生支持
-// change事件、不需要自己节流；每个LegRow实例都会各自注册一个
-// listener，一屏最多10条腿位、代价可忽略。
+// 窗口宽度≤1440px时收窄各列固定宽度和间距。整行所有列都是shrink-0（数字不能被截断/滚动，只能靠字号收缩），
+// 所以窄窗口下要把列宽本身也收窄，否则整行会被挤到换行。阈值是粗略估计，不够就调这个数或各列宽度。
 function useNarrowLegRow(breakpointPx = 1440): boolean {
   const [narrow, setNarrow] = useState(
     () => typeof window !== "undefined" && window.innerWidth <= breakpointPx,
@@ -182,11 +120,7 @@ function useClickOutside(active: boolean, onClose: () => void) {
   return ref;
 }
 
-// Locale-aware weekday abbreviation ("周一" in zh, "Mon" in en) via the
-// browser's own Intl formatter rather than a hardcoded Chinese lookup
-// table — the earlier version always returned "周X" regardless of UI
-// language, so the English interface was showing Chinese weekday labels
-// next to expiry dates in the strike/expiry picker dropdown.
+// 按界面语言显示星期几（Intl），不要写死中文。
 function weekdayLabel(iso: string, lang: string): string {
   const date = new Date(iso + "T00:00:00");
   return new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", { weekday: "short" }).format(date);
@@ -205,9 +139,7 @@ function ToggleBtn({
   color: string;
   onClick: () => void;
   disabled?: boolean;
-  // 2026-09-25新增：窄窗口下（见useNarrowLegRow）把左右padding从px-2收窄
-  // 到px-1，方向/类型两个切换按钮各省1~2px，给这一行其它更紧张的列腾地
-  // 方；不影响按钮本身的可点击文字内容。
+  // 窄窗口下切换按钮左右padding收窄。
   compact?: boolean;
 }) {
   const { t } = useI18n();
@@ -223,12 +155,7 @@ function ToggleBtn({
   );
 }
 
-// 2026-09-24新增：字号自动收缩的公共公式，NumField（可编辑数值框）和下面
-// 的ValueBadge（只读的情景估值/腿位盈亏徽章）共用同一份——两者都要在
-// "宽度固定死、不能滚动"这条硬性要求下显示长度不定的数字，逻辑完全一样，
-// 不应该各写一份（CLAUDE.md"五、19"：同一套判断逻辑只应有一份权威实现）。
-// BASE_FONT_PX是未收缩时的字号，CHAR_PX是tabular-nums数字在12px字号下的
-// 实测宽度近似值，MIN_FONT_PX是收缩下限（再小就不可读了）。
+// 字号自动收缩的公共公式，NumField和ValueBadge共用：宽度固定死、不能滚动，靠缩小字号放下长数字。
 const SHRINK_BASE_FONT_PX = 12;
 const SHRINK_MIN_FONT_PX = 7;
 const SHRINK_CHAR_PX = 6.6;
@@ -239,12 +166,7 @@ function shrinkFontSize(text: string, widthPx: number, innerPad = 12): number {
   return Math.max(SHRINK_MIN_FONT_PX, Math.min(SHRINK_BASE_FONT_PX, fit));
 }
 
-// 2026-09-24新增：情景估值/腿位盈亏两处只读数值徽章，原来是没有固定宽度
-// 的<span>，宽度完全由内容撑开——"+2.40"（5字符）和"-23.94"（6字符）撑出
-// 的框宽不一样，导致同一个combo里、甚至同一行内后面的"..."菜单按钮，
-// 跟着每一行数字的位数一起左右晃动，看起来"位置不对齐"。改成跟NumField
-// 一样的固定宽度+字号自动收缩，宽度钉死、不随内容变化，这样菜单按钮在
-// 每一行的水平位置就完全一致了。
+// 只读的情景估值/腿位盈亏徽章：固定宽度+字号自动收缩，保证每行"..."菜单位置对齐。
 function ValueBadge({
   label,
   value,
@@ -287,45 +209,14 @@ function NumField({
   width: string;
   onChange: (v: number) => void;
   disabled?: boolean;
-  // 2026-09-24新增：行权价/权利金/数量/股数四类调用点各自传各自的规则
-  // （NUMBER_RULES.price/premium/qty/shares），onChange前统一clamp到
-  // [min,max]区间+按小数位数四舍五入。这是LegRow.tsx里数值输入完全没
-  // 有上限/负数防护这个系统性缺口的修复——之前行权价输负数会让
-  // bs.ts的Black-Scholes公式算出NaN，一路传染到整个组合定价。
+  // 数值输入统一走useClampedNumberField（numberInput.ts），按传入的规则clamp。
   rule: NumberInputRule;
 }) {
-  // 2026-09-22移除：这里以前自己叠一层遮罩、点击锁定态的输入框弹提示
-  // ("请先点重置")。现在这个反馈已经上移到容器级——LegListSection.tsx/
-  // ComboCompareSlots.tsx用LockedOverlay包住整个combo容器，点锁定态下
-  // 容器里任意位置都会弹同样的提示，层级比这里高，点击会被那层先拦
-  // 截，这里的遮罩+提示永远轮不到、是打不到的死代码，所以直接删掉。
-  // disabled状态本身（灰置、input.disabled）还在，只是不再自己接住点击。
 
-  // 2026-09-24修复"输入多位数就卡死"的bug：之前每次keystroke都直接
-  // `onChange(clampToRule(num(e.target.value), rule))`，而input是完全受控
-  // 的（`value={value}`）。清空框准备输入新数字时解析成0，`clampToRule`
-  // 立刻把它钉回rule.min（比如qty是1、价格是0.01），框内瞬间变回"1"，用
-  // 户接下来敲的每个数字都接在这个意外冒出来的"1"后面，清空-弹回-清空-
-  // 弹回，感觉就是"卡死了打不进去"；打小数（比如"12."）时同理，trailing
-  // "."被每次keystroke的clamp立刻吃掉。修复统一收进`useClampedNumberField`
-  // （见numberInput.ts），全项目所有同类数值输入框都改用这一个hook，不
-  // 再各自重复实现，同一时刻只有一份权威逻辑（CLAUDE.md"五、19"）。
   const field = useClampedNumberField(value, rule, onChange);
 
-  // 2026-09-24修复：这个label之前没有`shrink-0`，是这一整行里唯一一个
-  // 会被flexbox压缩的元素——张数框打进很长的数字时，整行内容变宽，浏览
-  // 器会把没有shrink-0的这一项挤扁（其它列全部有shrink-0，见调用方），
-  // 挤到只剩几像素宽，"张数"两个字因为容器太窄换行变成竖排、输入框里的
-  // 数字也看不到。这里补上shrink-0+minWidth，让这一列的宽度永远钉死在
-  // width这个值，不会因为内容变化被压缩。
-  //
-  // 2026-09-24二次修复：上一版这里写的是"数字比框宽时原生input支持横向
-  // 滚动查看"——被xue指出这就是变相的滚动，跟"容器尺寸固定死、不能靠
-  // 滚动看内容"这条硬性要求是同一个问题，不能这么做。改成：框的宽度
-  // (width/minWidth)保持不变，改由字号跟着输入内容的字符数动态收缩，
-  // 保证任意长度的数字都能完整地、不滚动地显示在这个固定宽度的框里。
-  // 公式现在抽成上面的共用函数shrinkFontSize，ValueBadge（情景估值/腿
-  // 位盈亏徽章）复用同一份，不再各写一套。
+  // ⚠️ 宽度固定（shrink-0+minWidth），不能被压缩，也不能靠横向滚动显示长数字（xue的硬性要求）；
+  // 数字太长时由shrinkFontSize缩小字号。
   const widthPx = parseFloat(width) || 52;
   const fontSize = shrinkFontSize(field.text, widthPx, 12);
 
@@ -404,7 +295,6 @@ function MenuItem({
 
 function LegMenu({
   disabled,
-  locked,
   onToggleDisable,
   onDelete,
   deleteConfig,
@@ -420,10 +310,6 @@ function LegMenu({
   roleInfo,
 }: {
   disabled: boolean;
-  // See Props.locked on LegRow above — disables the "..." trigger itself
-  // so none of the menu's actions (block/delete/roll/hedge/…) are reachable
-  // while a scenario slider is off its rest position.
-  locked?: boolean;
   onToggleDisable: () => void;
   onDelete?: () => void;
   deleteConfig: {
@@ -480,8 +366,7 @@ function LegMenu({
     <div ref={ref} className="relative ml-1 shrink-0">
       <button
         onClick={() => setOpen((v) => !v)}
-        disabled={locked}
-        title={locked ? t("leg.blocked") : t("leg.more")}
+        title={t("leg.more")}
         className="rounded p-1 text-slate-500 transition hover:bg-slate-700/40 hover:text-slate-300 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-500"
       >
         <MoreVertical size={14} />
@@ -558,20 +443,12 @@ export default function LegRow({
   locked = false,
 }: Props) {
   const { t, lang } = useI18n();
-  // 见useNarrowLegRow自己的注释——窄窗口笔记本上收窄这一行各列的固定宽度
-  // /padding/gap，配合已有的字号自动收缩，避免整行被挤到换行。
+  // 窄窗口收窄列宽，见useNarrowLegRow。
   const narrow = useNarrowLegRow();
-  // 2026-09-26 移动端第二步：手机上一行放不下全部列（约需450px，手机只有360–430），
-  // 改成两行——第一行"腿号/方向/类型/张数/行权价/到期日"，第二行"权利金/情景估值/
-  // 腿位盈亏/…菜单"（靠行内一个basis-full的空元素强制换行）。到期日框在手机上
-  // 用电脑版的宽度（84px），否则"2026-10-23"会被挤成两行。正股腿那一行本来就短，
-  // 只加flex-wrap兜底。
+  // 手机上一行放不下，拆成两行：第一行方向/类型/张数/行权价/到期日，第二行权利金/情景估值/盈亏/菜单
+  // （靠一个basis-full的空元素换行）。到期日框在手机上用84px，否则日期会被挤成两行。
   const isMobile = useIsMobile();
   const disabled = leg.disabled === true;
-  // Combined gate for anything that would actually change this leg's data —
-  // see Props.locked's comment. `disabled` alone still drives the "已屏蔽"
-  // visual/hide-affordance branches below, unchanged.
-  const fieldsDisabled = disabled || locked;
   const [priceFetching, setPriceFetching] = useState(false);
   const [priceError, setPriceError] = useState<string | null>(null);
   const [priceNote, setPriceNote] = useState<string | null>(null);
@@ -594,10 +471,7 @@ export default function LegRow({
   const openingPremiumRef = useRef<number | null>(null);
 
   const sym = symbol?.trim() ?? "";
-  // `!locked` here suspends BOTH the auto-fill debounce effect below and the
-  // manual refresh-price toggle while a scenario slider is off rest — a
-  // queued market-price fetch must not land on a leg the user can't see
-  // being edited right now. (2026-09-17, part of the slider input-lock.)
+  // 滑块离开原点时（locked）暂停自动拉价和手动刷新价格。
   const canAutoPrice = leg.kind !== "stock" && !disabled && !locked && !expired && sym.length > 0;
 
   const strikeMenuRef = useClickOutside(strikeMenuOpen, () => setStrikeMenuOpen(false));
@@ -677,12 +551,7 @@ export default function LegRow({
       .map((epoch) => ({ epoch, iso: new Date(epoch * 1000).toISOString().slice(0, 10) }));
   }, [chain]);
 
-  // Shared by the auto-fill effect and handleTogglePrice below — both fetch
-  // a premium via fetchLegPremium and need to do the exact same thing with
-  // the result: patch premium (+ strike/dte if the request snapped to the
-  // nearest real chain entry) back onto the leg, and surface a note when a
-  // snap happened. Pulled out after this logic was found copy-pasted
-  // identically in both places (2026-09-17 dead-code audit).
+  // 自动拉价和手动刷新共用：把拉到的权利金（以及贴到最近真实合约时的行权价/dte）写回这条腿，发生贴靠时显示提示。
   const applyFetchedPremium = (result: LegPremiumResult) => {
     const patch: Partial<Leg> = { premium: result.premium };
     if (result.strikeSnapped) patch.strike = result.actualStrike;
@@ -786,22 +655,14 @@ export default function LegRow({
     if (d >= 0) onChange({ dte: d, premium: 0 });
   };
 
-  // The drag-to-reorder handle and the selection checkbox share one slot:
-  // Selection checkbox. Reordering now lives in the "..." menu (move
-  // up/down) instead of drag-and-drop — an earlier version tried making
-  // this checkbox double as a drag handle to save space, but a mousedown
-  // inside a `draggable` ancestor gets claimed by the browser's native drag
-  // gesture even when it lands on a checkbox, which silently swallowed the
-  // click and made selection unusable. Rows that opt out of selection
-  // (selectable={false}) render nothing here — there's no drag affordance
-  // to show any more, so an empty slot keeps columns aligned.
-  const selectHandle = selectable ? (
+  // 选择复选框；selectable={false}的行放一个同宽空位保持对齐。
+  // 手机上不做批量选择，不显示复选框。
+  const selectHandle = isMobile ? null : selectable ? (
     <span className="flex w-4 shrink-0 items-center justify-center">
       <input
         type="checkbox"
         checked={selected}
         onChange={() => onToggleSelect?.()}
-        disabled={locked}
         title={t("leg.selectLeg")}
         className="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 bg-slate-800 accent-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
       />
@@ -810,27 +671,11 @@ export default function LegRow({
     <span className="w-4 shrink-0" />
   );
 
-  // What the delete/close menu item actually does, and how it's labeled —
-  // resolved in priority order:
-  // 1. `leg.derivedFrom` set → this leg was created by a Roll/Protect/
-  //    Hedge, so removing it means undoing that action (the `onDelete`
-  //    handler already carries the compound revert logic — see
-  //    useLegEditing.ts's deleteLeg/closeTrackedLeg). Locked (1a) once that
-  //    action has been captured into a saved snapshot — see types.ts's
-  //    comment on `derivedFrom.locked` — in which case the item is shown
-  //    disabled instead of actionable, so the record that was just saved
-  //    can't be silently invalidated by an undo a moment later.
-  // 2. `leg.closedPnl !== undefined` (and no derivedFrom) → this is an
-  //    organic leg that's already been closed (平仓) — shown so the row
-  //    stays visible with its frozen P&L (see the legPnl fallback below),
-  //    but there's nothing further to do here, so the item is disabled
-  //    rather than able to silently re-freeze at 0 (a closed leg has no
-  //    live P&L to read any more — see closeTrackedLeg's own guard).
-  // 3. Otherwise → the plain `deleteVariant` prop ("delete" or "close").
-  // The click behavior itself never changes (always just calls
-  // `onDelete`); only the label/icon/tone/disabled state do, so the menu
-  // tells the person what will actually happen instead of always saying
-  // "删除" for what might really be an undo or a no-op.
+  // 删除/平仓菜单项的显示，按优先级：
+  // 1. leg.derivedFrom → 这条腿由展期/保护/对冲产生，删除=撤销该操作；已保存进快照后（derivedFrom.locked）禁用，不能再撤销。
+  // 2. leg.closedPnl已设置 → 已平仓的腿，禁用（保留显示冻结的盈亏）。
+  // 3. 其它 → 按deleteVariant显示"删除"或"平仓"。
+  // 点击行为始终是调onDelete，只有文字/图标/是否禁用不同。
   const deleteConfig = (() => {
     if (leg.derivedFrom) {
       if (leg.derivedFrom.locked) {
@@ -864,48 +709,36 @@ export default function LegRow({
       : { icon: <Trash2 size={12} />, label: t("leg.delete"), tone: "rose" as const };
   })();
 
-  // Small pairing badge next to the leg index — see linkInfo's own comment
-  // on the Props interface above. "source" (the original leg a roll/
-  // protect points away from) and "derived" (the new leg it points to) get
-  // the same icon (keyed by `via`) but different tone, and both show the
-  // OTHER leg's own number right in the badge (not just in the tooltip) —
-  // so two separate roll pairs on the board (e.g. #1↔#5 and #2↔#6) stay
-  // tellable apart at a glance instead of showing as identical icons that
-  // only differ once you hover to read the tooltip text.
-  const linkBadge = linkInfo && (
-    <span
-      className={`flex shrink-0 items-center gap-0.5 ${linkInfo.role === "source" ? "text-slate-500" : "text-amber-400"}`}
-      title={t(
+  // 展期/保护配对：一组配对的两条腿铺同一种颜色的背景（颜色见lib/legLinks.ts），鼠标悬停说明跟哪条腿配对。
+  const linkStyle = linkInfo ? { backgroundColor: `${linkInfo.color}1f`, borderColor: `${linkInfo.color}73` } : undefined;
+  const linkTitle = linkInfo
+    ? t(
         linkInfo.via === "roll"
           ? linkInfo.role === "source" ? "leg.rollSourceHint" : "leg.rollDerivedHint"
           : linkInfo.via === "protect"
           ? linkInfo.role === "source" ? "leg.protectSourceHint" : "leg.protectDerivedHint"
           : linkInfo.role === "source" ? "leg.hedgeSourceHint" : "leg.hedgeDerivedHint",
         { index: linkInfo.otherIndex },
-      )}
-    >
-      {linkInfo.via === "roll" ? <CalendarClock size={10} /> : linkInfo.via === "protect" ? <Shield size={10} /> : <Layers size={10} />}
-      <span className="text-[8px] font-bold tabular-nums">{linkInfo.otherIndex}</span>
-    </span>
-  );
+      )
+    : undefined;
 
   const menu = (
     <LegMenu
       disabled={disabled}
-      locked={locked}
       onToggleDisable={onToggleDisable}
       onDelete={onDelete}
       deleteConfig={deleteConfig}
-      onAddToPreset={onAddToPreset}
-      onRoll={onRoll}
-      onHedge={onHedge}
-      onProtect={onProtect}
-      onCompare={onCompare}
-      onMoveUp={onMoveUp}
-      onMoveDown={onMoveDown}
+      // 手机精简版：菜单只留屏蔽和删除/平仓，其余操作在电脑上做。
+      onAddToPreset={isMobile ? undefined : onAddToPreset}
+      onRoll={isMobile ? undefined : onRoll}
+      onHedge={isMobile ? undefined : onHedge}
+      onProtect={isMobile ? undefined : onProtect}
+      onCompare={isMobile ? undefined : onCompare}
+      onMoveUp={isMobile ? undefined : onMoveUp}
+      onMoveDown={isMobile ? undefined : onMoveDown}
       canMoveUp={canMoveUp}
       canMoveDown={canMoveDown}
-      roleInfo={roleInfo}
+      roleInfo={isMobile ? undefined : roleInfo}
     />
   );
 
@@ -913,6 +746,8 @@ export default function LegRow({
   if (leg.kind === "stock") {
     return (
       <div
+        style={linkStyle}
+        title={linkTitle}
         className={`flex items-center ${isMobile ? "flex-wrap gap-x-1 gap-y-1 px-1.5" : narrow ? "gap-0.5 px-1.5" : "gap-1 px-2"} rounded border py-1.5 transition ${
           disabled
             ? "border-slate-700/50 bg-slate-900/40"
@@ -923,7 +758,6 @@ export default function LegRow({
           {selectHandle}
           <span className="w-4 shrink-0 text-center text-[10px] font-semibold text-slate-500">{index + 1}</span>
         </div>
-        {linkBadge}
         <div className="flex shrink-0 flex-col gap-0.5">
           <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{t("leg.type")}</span>
           <span className="rounded bg-amber-600 px-2 py-1 text-[10px] font-bold uppercase text-white">{t("hedge.stock")}</span>
@@ -935,12 +769,12 @@ export default function LegRow({
             next={leg.action === "buy" ? "sell" : "buy"}
             color={leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"}
             onClick={() => onChange({ action: leg.action === "buy" ? "sell" : "buy" })}
-            disabled={fieldsDisabled}
+            disabled={disabled}
             compact={narrow}
           />
         </div>
-        <NumField label={t("leg.buyPrice")} value={leg.strike} step={0.5} width={narrow ? "60px" : "72px"} onChange={(v) => onChange({ strike: v })} disabled={fieldsDisabled} rule={NUMBER_RULES.price} />
-        <NumField label={t("leg.sharesLabel")} value={leg.shares ?? 100} step={1} width={narrow ? "46px" : "56px"} onChange={(v) => onChange({ shares: v })} disabled={fieldsDisabled} rule={NUMBER_RULES.shares} />
+        <NumField label={t("leg.buyPrice")} value={leg.strike} step={0.5} width={isMobile ? "80px" : narrow ? "60px" : "72px"} onChange={(v) => onChange({ strike: v })} disabled={disabled} rule={NUMBER_RULES.price} />
+        <NumField label={t("leg.sharesLabel")} value={leg.shares ?? 100} step={1} width={isMobile ? "64px" : narrow ? "46px" : "56px"} onChange={(v) => onChange({ shares: v })} disabled={disabled} rule={NUMBER_RULES.shares} />
         <div className="flex flex-col gap-0.5">
           <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">Delta</span>
           <span className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-semibold text-emerald-400">
@@ -957,20 +791,19 @@ export default function LegRow({
 
   return (
     <div
+      style={linkStyle}
+      title={linkTitle}
       className={`flex items-center ${isMobile ? "flex-wrap gap-x-1 gap-y-1 px-1.5" : narrow ? "gap-0.5 px-1.5" : "gap-1 px-2"} rounded border py-1.5 transition ${
         disabled
           ? "border-slate-700/50 bg-slate-900/40"
           : "border-slate-800 bg-slate-900/60"
       }`}
     >
-      {/* 2026-09-24改：复选框和腿号紧挨在一起（gap-0代替父级gap-1），给
-          后面的行权价/到期日/情景估值/"..."菜单腾出几像素——xue反馈方案
-          对比时靠右的列会被挤到容器外面，需要横向滚动才看得到。 */}
+      {/* 复选框和腿号紧挨，给后面的列腾宽度 */}
       <div className="flex shrink-0 items-center gap-0">
         {selectHandle}
         <span className="w-4 shrink-0 text-center text-[10px] font-semibold text-slate-500">{index + 1}</span>
       </div>
-      {linkBadge}
 
       <div className={`flex shrink-0 flex-col gap-0.5 ${disabled ? "opacity-40" : ""}`}>
         <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{t("leg.action")}</span>
@@ -979,7 +812,7 @@ export default function LegRow({
           next={leg.action === "buy" ? "sell" : "buy"}
           color={leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"}
           onClick={() => onChange({ action: leg.action === "buy" ? "sell" : "buy" })}
-          disabled={fieldsDisabled}
+          disabled={disabled}
           compact={narrow}
         />
       </div>
@@ -994,32 +827,30 @@ export default function LegRow({
             const next = leg.type === "call" ? "put" : "call";
             onChange({ type: next });
           }}
-          disabled={fieldsDisabled}
+          disabled={disabled}
           compact={narrow}
         />
       </div>
 
-      {/* 2026-09-24改：宽度从52px收窄到38px——xue反馈日常最多打两位数，
-          没必要按上限9999(4位)留出52px这么宽的框；框内数字仍然靠NumField
-          的动态字号收缩兜底极端情况（3~4位数时字号自动变小，不会破字/
-          不会滚动），只是把日常最常见的1~3位数场景下的框本身收窄，给
-          这一行后面挤得慌的列（行权价/到期日/情景估值/"..."菜单）腾空间。*/}
+      {/* 张数框38px（日常1~3位数），更长的数字靠字号收缩 */}
       <NumField
         label={t("leg.qty")}
         value={leg.qty ?? 1}
         step={1}
-        width={narrow ? "30px" : "38px"}
+        width={isMobile ? "48px" : narrow ? "30px" : "38px"}
         onChange={(v) => onChange({ qty: v })}
-        disabled={fieldsDisabled}
+        disabled={disabled}
         rule={NUMBER_RULES.qty}
       />
 
+      {isMobile && <div className="ml-auto">{menu}</div>}
+      {isMobile && <div className="h-0 basis-full" aria-hidden />}
       <div ref={strikeMenuRef} className="relative flex shrink-0 items-end gap-0.5">
-        <NumField label={t("leg.strike")} value={leg.strike} step={0.5} width={narrow ? "44px" : "52px"} onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ strike: v }); }} disabled={fieldsDisabled} rule={NUMBER_RULES.price} />
+        <NumField label={t("leg.strike")} value={leg.strike} step={0.5} width={isMobile ? "72px" : narrow ? "44px" : "52px"} onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ strike: v }); }} disabled={disabled} rule={NUMBER_RULES.price} />
         {!disabled && (
           <button
             onClick={() => setStrikeMenuOpen((v) => !v)}
-            disabled={strikeOptions.length === 0 || locked}
+            disabled={strikeOptions.length === 0}
             title={strikeOptions.length > 0 ? t("leg.pickStrike") : chainError ?? t("leg.noStrikeOptions")}
             className="mb-[1px] flex items-center rounded border border-slate-700 bg-slate-900 px-1 py-1 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -1044,24 +875,24 @@ export default function LegRow({
         )}
       </div>
       <div ref={expiryMenuRef} className="relative flex shrink-0 items-end gap-0.5">
-        <div className="flex flex-col gap-0" style={{ width: narrow && !isMobile ? "70px" : "84px" }}>
+        <div className="flex flex-col gap-0" style={{ width: isMobile ? "104px" : narrow ? "70px" : "84px" }}>
           <span className="flex items-baseline gap-1 text-[8px] font-semibold uppercase tracking-wide text-slate-500">
             {t("leg.expiry")}
             <span className="text-[8px] font-medium normal-case text-amber-400/80">{t("leg.left")}{Math.round(leg.dte)}d</span>
           </span>
           <button
             type="button"
-            onClick={() => !fieldsDisabled && setExpiryMenuOpen((v) => !v)}
-            disabled={fieldsDisabled}
-            className={`${fieldsDisabled ? inpDisabled : inp} text-left`}
+            onClick={() => !disabled && setExpiryMenuOpen((v) => !v)}
+            disabled={disabled}
+            className={`${disabled ? inpDisabled : inp} text-left`}
           >
             {dateFromDte(leg.dte)}
           </button>
         </div>
-        {!disabled && (
+        {!disabled && !isMobile && (
           <button
             onClick={() => setExpiryMenuOpen((v) => !v)}
-            disabled={expiryOptions.length === 0 || locked}
+            disabled={expiryOptions.length === 0}
             title={expiryOptions.length > 0 ? t("leg.pickExpiry") : chainError ?? t("leg.noExpiryOptions")}
             className="mb-[1px] flex items-center rounded border border-slate-700 bg-slate-900 px-1 py-1 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -1085,10 +916,8 @@ export default function LegRow({
           </div>
         )}
       </div>
-      {isMobile && <div className="h-0 basis-full" aria-hidden />}
-      {isMobile && <div className="w-[34px] shrink-0" aria-hidden />}
       <div className="flex shrink-0 items-end gap-0.5">
-        <NumField label={t("leg.premium")} value={leg.premium} step={0.01} width={narrow ? "62px" : "76px"} onChange={(v) => { setPriceError(null); setPriceNote(null); setPriceView("opening"); onChange({ premium: v }); }} disabled={fieldsDisabled} rule={NUMBER_RULES.premium} />
+        <NumField label={t("leg.premium")} value={leg.premium} step={0.01} width={isMobile ? "80px" : narrow ? "62px" : "76px"} onChange={(v) => { setPriceError(null); setPriceNote(null); setPriceView("opening"); onChange({ premium: v }); }} disabled={disabled} rule={NUMBER_RULES.premium} />
         {!disabled && !hidePriceRefresh && (
           <button
             onClick={handleTogglePrice}
@@ -1115,12 +944,8 @@ export default function LegRow({
         )}
       </div>
 
-      {/* 2026-09-24改：情景估值/腿位盈亏原来是没有固定宽度的<span>，框
-          宽跟着"+2.40"/"-23.94"这类不同长度的数字变化，导致同一个combo
-          里每一行的"..."菜单按钮水平位置跟着晃——xue反馈"三个点不在同一
-          位置"就是这个原因。改用ValueBadge（固定宽度+字号自动收缩，跟
-          张数框同一套逻辑），宽度钉死为56px，不再随内容变化。 */}
-      {scenarioPrice !== undefined && !disabled && (
+      {/* 固定宽度，保证各行"..."菜单对齐 */}
+      {scenarioPrice !== undefined && !disabled && !isMobile && (
         <ValueBadge label={t("leg.scenarioValue")} value={scenarioPrice} width={narrow ? "46px" : "56px"} title={t("leg.scenarioValueHint")} />
       )}
 
@@ -1133,7 +958,7 @@ export default function LegRow({
         // live "腿位盈亏" — the number itself won't move again either way,
         // but the label is what tells the person why.
         const displayPnl = legPnl ?? leg.closedPnl;
-        if (displayPnl === undefined) return null;
+        if (displayPnl === undefined || isMobile) return null;
         const closed = leg.closedPnl !== undefined;
         return (
           <ValueBadge
@@ -1145,7 +970,7 @@ export default function LegRow({
         );
       })()}
 
-      {menu}
+      {!isMobile && menu}
     </div>
   );
 }

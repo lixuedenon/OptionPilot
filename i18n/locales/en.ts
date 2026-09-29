@@ -562,7 +562,6 @@ const en: Dict = {
   "chart.flat": "BREAK-EVEN",
   "chart.perLeg": "Per Leg",
   "chart.net": "Net",
-  "chart.pnlPctHint": "P&L as a percentage of the opening premium (e.g. close sellers at 50% profit or a set loss %)",
   "chart.resetView": "Reset View",
   "chart.timeDecay": "Time Decay",
   "chart.liveSpotToggle": "Live Spot Line",

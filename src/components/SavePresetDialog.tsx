@@ -1,3 +1,4 @@
+// src/components/SavePresetDialog.tsx
 import { useState } from "react";
 import { X, Save } from "lucide-react";
 import type { Leg } from "@/lib/types";
@@ -57,7 +58,7 @@ export default function SavePresetDialog({ open, onClose, onSave, legs }: Props)
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60" onClick={onClose}>
       <div
-        className="w-[340px] rounded-xl border border-slate-700 bg-slate-950 p-4 shadow-2xl"
+        className="w-[340px] max-w-[94vw] rounded-xl border border-slate-700 bg-slate-950 p-4 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-3 flex items-center justify-between">

@@ -3,6 +3,12 @@ import { useState } from "react";
 import type { Leg } from "@/lib/types";
 import { useLegBatchOps } from "@/hooks/useLegBatchOps";
 
+// 展期/保护产生的新腿紧跟在原腿后面插入（不加到列表最后），两条腿挨着、用同色背景表示配对。
+function insertAfter(list: Leg[], afterId: string, leg: Leg): Leg[] {
+  const i = list.findIndex((l) => l.id === afterId);
+  return i === -1 ? [...list, leg] : [...list.slice(0, i + 1), leg, ...list.slice(i + 1)];
+}
+
 // Which combo an in-flight roll/protect/hedge action targets. Defaults to
 // "legs" everywhere below so every pre-existing call site (LegListSection's
 // opening-combo rows, which only ever pass a legId with no second argument)
@@ -132,19 +138,13 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
   // actual position — so its branch below never sets closedPnl.
   const handleRollConfirm = (newLeg: Leg, sourcePnl?: number) => {
     if (!rollTarget) return;
-    // Tags the new leg with where it came from — see types.ts's
-    // `derivedFrom` and lib/legLinks.ts — so the UI can badge the pair and
-    // deleteLeg/closeTrackedLeg can auto-restore rollTarget on undo.
+    // 给新腿记上来源（derivedFrom）：界面据此给这对腿铺同色背景，撤销时据此恢复原腿。
     const taggedLeg: Leg = { ...newLeg, derivedFrom: { legId: rollTarget.id, via: "roll" } };
     if (rollTargetSource === "tracked") {
-      setTrackedLegs((prev) => (prev ? prev.map((l) => (l.id === rollTarget.id ? { ...l, disabled: true, closedPnl: sourcePnl } : l)) : prev));
-      // The new rolled-to leg has no opening-combo counterpart of its own
-      // (it didn't exist when trackedLegs was derived from legs) — leaving
-      // openLegId unset is correct here, not a gap to fill in; see types.ts.
-      setTrackedLegs((prev) => (prev ? [...prev, taggedLeg] : prev));
+      // 新腿没有对应的开仓组合腿（它是后来才有的），openLegId不设是对的，见types.ts。
+      setTrackedLegs((prev) => (prev ? insertAfter(prev.map((l) => (l.id === rollTarget.id ? { ...l, disabled: true, closedPnl: sourcePnl } : l)), rollTarget.id, taggedLeg) : prev));
     } else {
-      setLegs((prev) => prev.map((l) => l.id === rollTarget.id ? { ...l, disabled: true } : l));
-      setLegs((prev) => [...prev, taggedLeg]);
+      setLegs((prev) => insertAfter(prev.map((l) => (l.id === rollTarget.id ? { ...l, disabled: true } : l)), rollTarget.id, taggedLeg));
     }
     setRollTarget(null);
   };
@@ -161,9 +161,9 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
     if (!protectTarget) return;
     const taggedLeg: Leg = { ...protectLeg, derivedFrom: { legId: protectTarget.id, via: "protect" } };
     if (protectTargetSource === "tracked") {
-      setTrackedLegs((prev) => (prev ? [...prev, taggedLeg] : prev));
+      setTrackedLegs((prev) => (prev ? insertAfter(prev, protectTarget.id, taggedLeg) : prev));
     } else {
-      setLegs((prev) => [...prev, taggedLeg]);
+      setLegs((prev) => insertAfter(prev, protectTarget.id, taggedLeg));
     }
     setProtectTarget(null);
   };

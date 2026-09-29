@@ -20,34 +20,9 @@ import { calendarDaysSince, nearestFridayDte } from "@/lib/dateUtils";
 import { peekResolvedChain, nearestStrikeToSpot, resolveFromCache } from "@/lib/optionChain";
 import type { StockQuote } from "@/lib/useStockQuote";
 
-// Everything App.tsx used to call the "策略管理" cluster — moved here
-// verbatim, 2026-09-08 (second file-size pass, after useComboAnalytics.ts).
-// CLAUDE.md flags this as the HIGHER-risk of the two "intentionally not yet
-// split" clusters (historically the highest bug-density code in the whole
-// project — handlers calling each other, sharing a dozen+ refs/setters, and
-// several of them reaching forward into applyPreset/doClearAll/
-// saveTrackedSnapshotTo/performSwitchToAnalysis, which used to be declared
-// later in the same file). Bundling ALL of it — the combo-mutation helpers
-// (addLeg/applyPreset/clearAllLegs/doClearAll/updateTrackedLeg/
-// handleCorrectSpot/comboDirection/handleAddCustom/handleAddToSimAccount)
-// together with the strategy-persistence/mode-switch handlers
-// (handleSaveStrategy...handleSwitchToAnalysis) into ONE hook, in their
-// original relative order, is what makes this a pure relocation rather than
-// a re-architecture: every forward reference between them (e.g.
-// handleSaveStrategy calling applyPreset) still resolves the exact same way
-// it did as sibling consts in App.tsx, because they're still sibling consts
-// — just in this file instead. Every ref (legBaseSpot/legBaseSymbol/
-// spotManuallySet/pendingPreset/pendingPresetReplace/pendingLeaveAfterSave/
-// pendingSaveTrackedAfterStrategy/pendingSwitchSource) is created in App.tsx
-// and passed straight through by reference — since a ref is the same mutable
-// object wherever it's held, App.tsx's own JSX and effects keep reading/
-// writing the identical object this hook mutates, with nothing to sync.
-// 2026-09-17：computeOpeningSimBasis本身搬去savedStrategies.ts导出了（见
-// 那边的完整注释）——App.tsx现在用它做一个实时useMemo，每次渲染都用当前
-// legs/spot/openingAt重算，不再是只在保存/加载时刷新一次的state，修复了
-// "情景估值跟不上实时编辑"的bug。这个hook里剩下的几个调用点
-// （handleOpenStrategy）只是用它检查"这条策略是否已过期"
-// （expiredStrategyPrompt），不再需要`setOpeningSimBasis`这个state setter。
+// App.tsx的"策略管理"逻辑：组合修改（addLeg/applyPreset/clearAllLegs…）+策略保存/模式切换，按原顺序放在一个hook里，
+// 它们之间互相调用。所有ref在App.tsx创建、原样传进来，App.tsx和这里读写的是同一个对象。
+// ⚠️ 全项目bug最多的一块，改动要小心。
 
 export function useStrategyOrchestration(params: {
   // Opening combo
@@ -62,30 +37,16 @@ export function useStrategyOrchestration(params: {
   setSpot: React.Dispatch<React.SetStateAction<number>>;
   setShifts: React.Dispatch<React.SetStateAction<Shifts>>;
   setOpeningAt: React.Dispatch<React.SetStateAction<number>>;
-  // Compare mode's "开仓组合" date field lets the user preview a
-  // hypothetical opening date without touching the real, persisted
-  // `openingAt` — see LegListSection.tsx's date field and CLAUDE.md's bug
-  // notes (2026-09-14, xue: "只是临时让用户模拟不同的日期...不要保存这些
-  // 信息"). Reset to null (falls back to the real openingAt) at every mode
-  // switch / (re)load / save below — a stray non-null value surviving past
-  // one of those points would be a bug, not a feature.
+  // 对比模式开仓日期的临时预览值，不写回openingAt。每次模式切换/加载/保存都必须清回null。
   setOpeningAtSimOverride: React.Dispatch<React.SetStateAction<number | null>>;
   // 打开一条策略时，如果发现"真实经过天数"已经超过它第0天的完整周期
   // （说明这条策略现实中已经过了真正的到期日），App.tsx据此弹一个"已过
   // 期，删除还是保留"的确认框。null=不弹。
   setExpiredStrategyPrompt: React.Dispatch<React.SetStateAction<SavedStrategy | null>>;
-  // 2026-09-17新增，配合上面的setExpiredStrategyPrompt：真正长期驱动"是
-  // 否已过期"这个结论的显式state（见App.tsx里的大段注释——不能靠每次渲
-  // 染从live legs反推，那个反推一旦legs.dte被钳到0就会失真）。
-  // handleOpenStrategy/handleTrack在加载那一刻用未被钳过的原始s.legs算
-  // 一次并存进来，此后"保留"这条策略不会再丢失这个结论；doClearAll/加
-  // 载一条未过期的新策略/重新以当下为基准进入分析模式时清回false。
+  // "已过期"结论：handleOpenStrategy/handleTrack加载时用未被钳过的原始s.legs算好存进来。
+  // 不能靠渲染时从live legs反推（dte被钳到0后会失真）。清空/加载未过期策略/重新以当下为基准时清回false。
   setExpiredConfirmed: React.Dispatch<React.SetStateAction<boolean>>;
-  // 2026-09-17新增：跟踪一条已经过了真实到期日的策略时弹出的提示——对比
-  // 模式没有"保留"这个选项（没有真实行情可比对，跟踪这个动作本身就没意
-  // 义），只提示+一个"确定"按钮，点击后直接删除这条策略，不像
-  // expiredStrategyPrompt（分析模式"打开策略"用）那样还有keep分支。
-  // null=不弹。
+  // 跟踪一条已过期策略时的提示：对比模式没有"保留"，只有"确定"（删除该策略）。null=不弹。
   setExpiredTrackPrompt: React.Dispatch<React.SetStateAction<SavedStrategy | null>>;
   setCorrectedSpot: React.Dispatch<React.SetStateAction<number | null>>;
   setCorrecting: React.Dispatch<React.SetStateAction<boolean>>;
@@ -93,20 +54,13 @@ export function useStrategyOrchestration(params: {
   isCompareMode: boolean;
   trackedLegs: Leg[] | null;
   trackedSpot: number | null;
-  // 2026-09-25起，trackedDirty不再是一个手动维护的state——App.tsx用
-  // serializeTrackedLegs(trackedLegs) !== trackedBaseline现算，这里仍然
-  // 当一个普通只读boolean接进来用（handleSwitchToAnalysis/clearAllLegs的
-  // 判断逻辑不用变），但"标脏"这半件事不再需要任何人显式调用，"标干净"
-  // 那半件事改成调用下面的setTrackedBaseline，见它自己的注释。
+  // trackedDirty是App.tsx派生出来的只读值（指纹比较），这里只读不写。
   trackedDirty: boolean;
   effectiveTrackedSpot: number;
   setTrackedLegs: React.Dispatch<React.SetStateAction<Leg[] | null>>;
   setTrackedSpot: React.Dispatch<React.SetStateAction<number | null>>;
   setTrackedDaysElapsed: React.Dispatch<React.SetStateAction<number>>;
-  // 取代原来的setTrackedDirty(false)——把"此刻视为已保存"那一份
-  // trackedLegs的指纹存起来（null表示尚未进入/已经离开对比模式，此时无
-  // 论trackedLegs是什么，App.tsx那边的派生判断都直接短路成false，不看这
-  // 个值）。见savedStrategies.ts的serializeTrackedLegs。
+  // "此刻视为已保存"时调用，记下trackedLegs的指纹；null=不在对比模式。
   setTrackedBaseline: React.Dispatch<React.SetStateAction<string | null>>;
   setActiveSnapshotId: React.Dispatch<React.SetStateAction<string | null>>;
   setConfirmSaveTrackedOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -177,15 +131,7 @@ export function useStrategyOrchestration(params: {
   // when someone already has a combo built in ordinary analysis mode and
   // wants to paper-trade it without rebuilding it a second time.
   const [addingToSim, setAddingToSim] = useState(false);
-  // 2026-09-23修复：override参数——App.tsx的handleToolbarAddToSim（B/C对比槽
-  // 位激活时）需要把该槽位自己的legs/spot/symbol/openingAt喂进来，而不是
-  // 无条件用这个hook自己作用域里的activeLegs/spot/symbol/openingAt（那些
-  // 永远是A容器的数据）。之前这个函数签名是`async () => {...}`，不接受任
-  // 何参数，App.tsx那边传参会被TypeScript报"Expected 0 arguments"、运行
-  // 时又被JS静默丢弃——B/C槽位点"加入模拟账户"实际加的还是A的内容，是一
-  // 个typecheck能抓、但build/eslint都抓不出来的真实bug（vite build不做类
-  // 型检查，见CLAUDE.md"一、验证手段"）。override不传时（A容器）行为完
-  // 全不变。
+  // override：B/C槽位激活时由App.tsx传入该槽位的legs/spot/symbol/openingAt；不传时用A的数据。
   const handleAddToSimAccount = useCallback(async (override?: { legs: Leg[]; spot: number; symbol: string; openingAt?: number }) => {
     const effectiveLegs = override ? override.legs : activeLegs;
     const effectiveSpot = override ? override.spot : spot;
@@ -306,10 +252,6 @@ export function useStrategyOrchestration(params: {
 
   const updateTrackedLeg = (id: string, patch: Partial<Leg>) => {
     setTrackedLegs((prev) => prev?.map((l) => (l.id === id ? { ...l, ...patch } : l)) ?? null);
-    // trackedDirty不再在这里手动置true——App.tsx现在用serializeTrackedLegs
-    // 现算trackedLegs跟trackedBaseline的差异，这次setTrackedLegs调用本身
-    // 已经足够让派生判断自动感知到。见savedStrategies.ts的
-    // serializeTrackedLegs注释。
     if (patch.premium !== undefined) setCorrectedSpot(null);
   }
 
@@ -341,26 +283,10 @@ export function useStrategyOrchestration(params: {
 
   const comboDirection: "buy" | "sell" = activeLegs.length > 0 && activeLegs.every((l) => l.action === "buy") ? "buy" : "sell";
 
-  // Shared by handleSaveTracked's normal path and its "save the strategy
-  // first, then attach the snapshot" fallback below — appends trackedLegs
-  // as a new TrackedSnapshot on the given (already-saved) strategy id.
-  //
-  // 2026-09-12: also PERMANENTLY LOCKS every roll/protect/hedge-derived leg
-  // (`derivedFrom` set) that's part of this save — see types.ts's comment on
-  // `derivedFrom.locked`. Locking has to happen HERE, on the exact array
-  // handed to addTrackedSnapshot, not as a separate follow-up setTrackedLegs
-  // call afterward: the snapshot stores whatever leg objects it's given, so
-  // if the lock were only applied to the live trackedLegs post-hoc, a
-  // snapshot saved a moment earlier would still contain unlocked
-  // derivedFrom legs — and reopening THAT snapshot later (handleTrack/
-  // handleSelectSnapshot copy a past snapshot's legs back into trackedLegs
-  // verbatim aside from id/dte) would resurrect an undo option for an
-  // action that was supposedly already locked in. Baking the lock into the
-  // same array that both gets saved AND becomes the new live trackedLegs
-  // keeps the two in sync by construction, not by remembering to update
-  // both. Already-locked legs are left alone (no-op) rather than
-  // re-spread, purely to avoid a pointless new object identity on every
-  // save for legs that didn't change.
+  // handleSaveTracked的两条路径共用：把trackedLegs作为新快照追加到已保存的策略上。
+  // ⚠️ 同时永久锁定本次保存里所有展期/保护/对冲派生的腿（derivedFrom.locked）。锁定必须加在交给
+  // addTrackedSnapshot的同一个数组上，而不是事后再改trackedLegs——否则快照里存的是未锁定的腿，
+  // 以后重新打开那个快照又能撤销了。
   const saveTrackedSnapshotTo = useCallback(async (strategyId: string) => {
     if (!trackedLegs) return;
     // Any "开仓组合" date simulation in progress gets discarded on save —
@@ -376,9 +302,7 @@ export function useStrategyOrchestration(params: {
     const newSnaps = updatedStrategy?.trackedSnapshots ?? [];
     if (newSnaps.length > 0) setActiveSnapshotId(newSnaps[newSnaps.length - 1].id);
     setTrackedLegs(lockedLegs);
-    // 保存成功=这份lockedLegs现在就是"已保存"的基准，记下它的指纹而不是
-    // 简单置一个布尔值——2026-09-25修复见savedStrategies.ts的
-    // serializeTrackedLegs注释。
+    // 保存成功：这份lockedLegs就是新的已保存基准。
     setTrackedBaseline(serializeTrackedLegs(lockedLegs));
   }, [trackedLegs, trackedSpot, spot, setActiveSnapshotId, setSavedStrategies, setTrackedBaseline, setTrackedLegs, setOpeningAtSimOverride]);
 
@@ -433,50 +357,20 @@ export function useStrategyOrchestration(params: {
   }, [symbol, spot, legs, activeLegs, shifts, openingAt, applyPreset, onBackHome, saveTrackedSnapshotTo, pendingLeaveAfterSave, pendingPresetReplace, pendingSaveTrackedAfterStrategy, setSaveStrategyOpen, setSavedStrategies, setStrategyBaseline, setTrackingStrategyId, setOpeningAtSimOverride, setExpiredStrategyPrompt]);
 
   const handleTrack = useCallback(async (s: SavedStrategy) => {
-    // 2026-09-17新增：对比模式的核心就是"开仓组合 vs 今日组合"这两份真实
-    // 数据的比较——如果这条策略的真实到期日已经过去，压根就没有"今日真
-    // 实行情"可言（合约在市场上已经不存在了），"跟踪"这个动作本身就没
-    // 有意义。所以这里先用原始、未做任何dte衰减/钳0处理的s.legs判断一
-    // 次，过期就直接弹"无法追踪，将删除"的单按钮提示框、不做任何状态变
-    // 更就return——不像分析模式的"打开策略"那样还有"保留"选项（那边是纯
-    // 本地模拟，不依赖真实数据，历史复盘仍有意义，见App.tsx里
-    // expiredTrackPrompt的注释）。只有真的没过期，才往下走原来那一整套
-    // 进入对比模式的逻辑。
+    // 对比模式需要真实行情，已过期的策略无法跟踪：用原始、未衰减的s.legs先判断，过期就弹提示并直接return，不改任何状态。
     {
       const legsAsOfTs = s.legsAsOf ?? s.openingAt ?? s.createdAt;
       const basis = computeOpeningSimBasis(s.openingAt ?? s.createdAt, legsAsOfTs, s.legs, s.spot);
       if (basis.daysSinceOpen > basis.originalMaxDte) {
-        // "跟踪"这个按钮就在"管理策略"弹窗里点的，这个弹窗本来要到下面
-        // （未过期）分支最后才会关——这里提前return之前必须自己关掉，否
-        // 则两个fixed inset-0的弹窗会叠在一起，"管理策略"挡在上面，新弹
-        // 出的过期提示点不到（Playwright实测发现的）。
+        // ⚠️ return前必须先关"管理策略"弹窗，否则两个全屏弹窗叠在一起，过期提示点不到。
         setManageStrategyOpen(false);
         setExpiredTrackPrompt(s);
         return;
       }
     }
-    // 2026-09-08 bug: dte is stored relative to "today" at whatever moment
-    // it was last set, and LegRow's date column (dateFromDte) always reads
-    // it as "today + dte" — so a leg's dte must be decayed by however many
-    // calendar days have passed since it was recorded, or its DISPLAYED
-    // absolute expiry date silently drifts forward by that many days every
-    // time it's reopened later (the actual contract's expiry never moves).
-    // trackedLegs already got this treatment everywhere it's derived
-    // (below, and in handleSelectSnapshot/handleUpdateSnapshotTime) — this
-    // `legs` (opening combo) assignment was the one place that copied
-    // s.legs's dte verbatim with no decay, which is what made "打开策略"/
-    // 跟踪's "开仓组合" row show the wrong expiry date days after saving.
-    //
-    // 2026-09-14: decay basis switched from `s.openingAt` to `s.legsAsOf ??
-    // s.openingAt` (legsDecayDays) — see SavedStrategy.legsAsOf's doc
-    // comment and CLAUDE.md"六、24". `s.legs` is only accurate "as of"
-    // legsAsOf (when it was last saved); decaying it by days-since-the-
-    // TRUE-opening (openingAt, which never advances) double-counted
-    // whatever had already been decayed into `s.legs` on a prior save,
-    // compounding worse with every save→reopen cycle. `openDaysElapsed`
-    // (days since the real opening) is kept as its own variable, used only
-    // for `setTrackedDaysElapsed`'s "已过X天" stat below — that one SHOULD
-    // stay tied to the real opening date, not to when legs were last saved.
+    // dte是相对"保存那一刻的今天"存的，界面按"今天+dte"显示到期日，所以要减去之后经过的日历天数，否则到期日会往后漂。
+    // ⚠️ 衰减基准是legsAsOf（legs上次保存时间），不是openingAt——用openingAt会重复扣掉以前已扣过的天数。
+    // openDaysElapsed（距真实开仓）只用于"已过X天"统计。
     const legsDecayDays = calendarDaysSince(s.legsAsOf ?? s.openingAt ?? s.createdAt);
     const openDaysElapsed = calendarDaysSince(s.openingAt ?? s.createdAt);
     setOpeningAtSimOverride(null);
@@ -515,34 +409,11 @@ export function useStrategyOrchestration(params: {
     // logic this mirrors).
     const snaps = refreshed.trackedSnapshots ?? [];
     const latestSnap = snaps.length > 0 ? snaps[snaps.length - 1] : null;
-    // 2026-09-25新增：两条分支各自算出的trackedLegs也是这次新的"已保存"
-    // 基准（handleTrack一进对比模式，trackedLegs跟这条基准天然一致，不
-    // 该被判定成"有未保存改动"）——用一个函数体内的局部变量接住两条分支
-    // 各自算出的数组，分支结束后统一往下算一次指纹，不在每条分支里重复
-    // 这行。
+    // 两条分支算出的trackedLegs就是这次新的已保存基准，统一在分支后算一次指纹。
     let newTrackedLegsForBaseline: Leg[];
     if (latestSnap) {
-      // Two different "days" here, easy to conflate (2026-09-04 bug): the
-      // snapshot's own legs were already decayed once, up to whatever
-      // moment it was saved — `calendarDaysSince(latestSnap.savedAt)` is
-      // exactly the ADDITIONAL decay needed to bring that dte current to
-      // right now, and nothing else should use it. The "已过X天" stat, by
-      // contrast, is meant to read as "how long ago did this position
-      // actually open" — that's `calendarDaysSince(s.openingAt ??
-      // s.createdAt)` regardless of when the snapshot happened to be saved.
-      // Reusing the snapshot-relative number for both meant reloading a
-      // same-day snapshot always showed "已过0天" even when the real
-      // opening date was days in the past.
-      //
-      // Both use calendarDaysBetween/calendarDaysSince (whole calendar
-      // days, e.g. via `Math.round` on local-midnight-to-local-midnight)
-      // rather than `daysSince` (a continuous count of 24h periods since
-      // the exact opening TIMESTAMP) — 2026-09-05 bug: a strategy opened
-      // 09-01 and checked on 09-04 showed "已过2天" instead of 3, because
-      // fewer than 3 full 24-hour periods had passed since the opening
-      // moment's time-of-day, even though 3 calendar days separate the two
-      // dates the way a person reads "开仓日 09-01" vs "今天 09-04". See
-      // dateUtils.ts's comment on daysBetweenLocalDates for the full story.
+      // 两种"天数"别混：快照的腿只需再衰减"快照保存至今"的天数；"已过X天"统计始终按真实开仓日期算。
+      // 都用日历天数（calendarDaysSince），不用24小时周期数（daysSince），否则09-01开仓、09-04查看会显示"已过2天"。
       const snapshotDecay = calendarDaysSince(latestSnap.savedAt);
       setTrackedDaysElapsed(calendarDaysSince(s.openingAt ?? s.createdAt));
       newTrackedLegsForBaseline = latestSnap.legs.map((l) => ({
@@ -670,34 +541,13 @@ export function useStrategyOrchestration(params: {
     }
   }, [trackingStrategyId, trackedLegs, openingAt, setSavedStrategies, setTrackedDaysElapsed, setTrackedLegs]);
 
-  // 2026-09-12 added a handleUpdateOpeningAt here to let "开仓组合 (对比
-  // 基准)"'s date field (LegListSection.tsx) persist a correction to the
-  // strategy's real openingAt. Removed 2026-09-14: xue clarified that
-  // field should NOT persist any edit at all — it's a temporary "what if
-  // this had opened on a different date" preview, local to the current
-  // session only, discarded on mode switch or save (see
-  // App.tsx/LegListSection.tsx's openingAtSimOverride). The real, persisted
-  // `openingAt` is only ever set at handleSaveStrategy/handleOverwriteStrategy
-  // time now (from analysis mode), same as before this 2026-09-12 detour.
 
   const handleOpenStrategy = useCallback((s: SavedStrategy) => {
-    // Same dte-decay fix as handleTrack above — without this, "打开策略"
-    // re-loads s.legs's dte verbatim, and since LegRow always renders the
-    // expiry date as "today + dte", the displayed date silently drifts
-    // forward by however many days have passed since this strategy was
-    // saved (the real contract's expiry doesn't move; only "days left"
-    // should shrink). 2026-09-14: basis is `legsAsOf` (when legs were last
-    // saved), not `openingAt` (when the position truly opened) — see
-    // SavedStrategy.legsAsOf's doc comment and CLAUDE.md"六、24".
+    // 同handleTrack：dte按legsAsOf衰减，否则重新打开后显示的到期日会往后漂。
     const daysElapsed = calendarDaysSince(s.legsAsOf ?? s.openingAt ?? s.createdAt);
     setSymbol(s.symbol);
-    // 2026-09-17修复：每条腿的新id只生成一次（`freshIds`），`setLegs`和下
-    // 面喂给`computeOpeningSimBasis`的快照必须用同一份id——之前两边各自
-    // 调用`uid()`，`openingSimBasis.legs`（喂给`analyticsLegs`→图表定价基
-    // 准，见"四、1.9"）的id和live `legs`状态的id永远对不上，导致
-    // `scenarioPriceById.get(leg.id)`（`LegListSection.tsx`按id查每条腿的
-    // "情景估值"）查不到任何东西，每条腿的情景估值方块整体消失（xue用真
-    // 实持仓发现）。
+    // ⚠️ 每条腿的新id只生成一次（freshIds）：setLegs和computeOpeningSimBasis必须用同一份id，
+    // 否则按id查的情景估值会全部查不到。
     const freshIds = s.legs.map(() => uid());
     setLegs(s.legs.map((l, i) => ({
       ...l,
@@ -721,18 +571,8 @@ export function useStrategyOrchestration(params: {
     setStrategyBaseline(serializeStrategyState(s.symbol, s.legs, s.shifts, s.openingAt ?? s.createdAt));
     clearLegSelection();
 
-    // 2026-09-17修正：这里原来的注释说"App.tsx会用实时legs重算
-    // openingSimBasis，不用把结果存起来"——这个假设是错的，是个刚发现的
-    // bug：上面setLegs写进去的dte经过了Math.max(0, 原始dte-已衰减天数)钳
-    // 到0，一旦这条策略真的已经过期（钳到了0），"到底提前过期了多少天"
-    // 这个信息就被永久抹掉了，之后App.tsx每次渲染用live（已被钳过的）
-    // legs反推originalMaxDte都会得到严重偏大的结果，"已过期"这个结论在
-    // 这次一次性判断对了、弹了确认框之后，用户点"保留"的下一次渲染就会
-    // 立刻变回false——图表变暗提示条、以及LegRow"已过期禁止刷新市场价"
-    // 的保护，实际上都不会生效（Playwright测出来的，见App.tsx里
-    // expiredConfirmed state的大段注释）。所以现在必须把这次用未被钳过
-    // 的原始s.legs算出的结论存进expiredConfirmed这个显式state，不能再依
-    // 赖之后的实时重算。
+    // ⚠️ 必须在这里用未被钳过的原始s.legs算出"已过期"并存进expiredConfirmed，不能依赖App.tsx之后用live legs重算
+    // （dte被钳到0后会失真，点"保留"后结论立刻变回false）。
     const legsAsOfTs = s.legsAsOf ?? s.openingAt ?? s.createdAt;
     const basisLegs = s.legs.map((l, i) => ({ ...l, id: freshIds[i] }));
     const basis = computeOpeningSimBasis(s.openingAt ?? s.createdAt, legsAsOfTs, basisLegs, s.spot);
@@ -753,18 +593,8 @@ export function useStrategyOrchestration(params: {
   const handleSwitchToCompare = useCallback(async () => {
     if (isCompareMode || legs.length === 0) return;
     setOpeningAtSimOverride(null);
-    // The opening combo being edited right now might already BE an existing
-    // saved strategy — e.g. it was opened via "打开策略" (handleOpenStrategy
-    // deliberately leaves trackingStrategyId null, same as this function
-    // used to unconditionally do) or it was tracked earlier this session and
-    // then switched back to analysis mode (performSwitchToAnalysis also
-    // resets trackingStrategyId to null by design). Either way, if the combo
-    // still matches that strategy exactly, this compare-mode session should
-    // link back up to it — same findDuplicate check handleSaveTracked runs —
-    // so the "持仓组合" header's snapshot picker can show/reload whatever was
-    // already saved for it, instead of looking like a brand-new untracked
-    // combo just because compare mode was entered via this direct-switch
-    // button instead of "跟踪" from the strategy library.
+    // 正在编辑的开仓组合可能正好是库里某条已保存策略（findDuplicate完全一致），是的话关联回去，
+    // 这样快照选择器能显示/加载它已有的快照。
     let existing = findDuplicate({ symbol, spot, legs, shifts }, savedStrategies);
     if (existing) {
       // Same missed-trading-days backfill as handleTrack — see its comment
@@ -775,27 +605,11 @@ export function useStrategyOrchestration(params: {
     }
     const snaps = existing?.trackedSnapshots ?? [];
     const latestSnap = snaps.length > 0 ? snaps[snaps.length - 1] : null;
-    // 见handleTrack里同名变量的注释——两条分支各自算出的trackedLegs就是
-    // 这次新的"已保存"基准。
+    // 同handleTrack：两条分支算出的trackedLegs就是新的已保存基准。
     let newTrackedLegsForBaseline: Leg[];
     if (latestSnap) {
-      // The matched strategy already has real tracked history — open on
-      // THAT (same decay-from-savedAt logic handleTrack/handleSelectSnapshot
-      // use), not a fresh "today == opening" copy of legs. 2026-09-04 bug:
-      // linking trackingStrategyId here without also loading the snapshot
-      // left trackedLegs as a plain copy of legs while the snapshot picker
-      // still rendered (it only depends on trackingStrategyId) — and its
-      // <select> falls back to displaying the LATEST snapshot as "selected"
-      // whenever activeSnapshotId is null, so the newest snapshot LOOKED
-      // selected without actually being loaded. Picking a different entry
-      // then this one again only "fixed" it because that was the first time
-      // the <select>'s value genuinely changed and fired onChange — the real
-      // bug was the initial state not matching the picker's own displayed
-      // selection.
-      // Same open-vs-snapshot distinction as handleTrack/handleSelectSnapshot
-      // (2026-09-05 bug — this branch got missed in the first pass at that
-      // fix): the snapshot's legs only need decaying by the time since IT
-      // was saved, but "已过X天" belongs to the real opening date.
+      // 关联的策略已有快照：直接加载最新快照（按快照保存至今衰减dte），并设置activeSnapshotId，
+      // 让快照选择器显示的"当前选中"和实际加载的一致。"已过X天"仍按真实开仓日期算。
       const snapshotDecay = calendarDaysSince(latestSnap.savedAt);
       setTrackedDaysElapsed(calendarDaysSince(openingAt));
       newTrackedLegsForBaseline = latestSnap.legs.map((l) => ({
@@ -807,39 +621,8 @@ export function useStrategyOrchestration(params: {
       setTrackedSpot(latestSnap.spot);
       setActiveSnapshotId(latestSnap.id);
     } else {
-      // No tracked history yet (brand-new combo, or matched a strategy that
-      // was only ever "saved", never tracked). This does NOT mean zero days
-      // have elapsed for the "已过X天" STAT — `openingAt` can genuinely be
-      // in the past (a saved strategy opened days ago via "打开策略", or a
-      // hand-edited 开仓日期) — so `daysElapsed` below is still needed for
-      // `setTrackedDaysElapsed`.
-      //
-      // 2026-09-13 bug (regression of the 2026-09-04 one described below):
-      // `legs` here is the live analysis-mode array — whatever populated it
-      // (handleOpenStrategy/handleTrack's own `s.legs.dte - daysElapsed`
-      // decay, or a leg freshly typed in analysis mode) already leaves
-      // `l.dte` correct AS OF TODAY, because that's exactly what analysis
-      // mode's date column (dateFromDte = today + dte) is showing on screen
-      // right now. Subtracting `daysElapsed` again here decayed it a SECOND
-      // time — e.g. handleOpenStrategy sets legs.dte = s.legs.dte -
-      // daysElapsed, then this line computed legs.dte - daysElapsed AGAIN,
-      // i.e. s.legs.dte - 2*daysElapsed — silently undercounting the
-      // tracked leg's remaining days (sometimes clamped all the way to 0,
-      // making "持仓组合" show today's date as a bogus 到期日) while the
-      // untouched `legs`/开仓组合 row kept showing the correct expiry. This
-      // is exactly what the top-of-function comment above already promised
-      // ("trackedLegs starts as an exact copy of legs with no DTE
-      // reduction") — the code just didn't match that comment. Fixed by
-      // actually doing what the comment says: copy `l.dte` as-is.
-      //
-      // (Old 2026-09-04 bug, still relevant context: before that fix this
-      // branch hardcoded daysElapsed-independent zero, so both stat boxes —
-      // LegListSection's 开仓组合 summary and TrackedComboSection's 持仓组合
-      // grid, which share this same `effectiveDaysElapsed` — always showed
-      // "已过0天" even when the opening date was days in the past. That part
-      // of the fix (deriving `daysElapsed` from `openingAt` for the STAT)
-      // was correct and is kept; only the dte-math reuse of the same number
-      // was wrong.)
+      // 还没有快照：trackedLegs直接复制legs，dte不要再减——legs的dte已经是相对今天的，再减会重复衰减。
+      // daysElapsed只用于"已过X天"统计（openingAt可能在过去）。
       const daysElapsed = calendarDaysSince(openingAt);
       setTrackedDaysElapsed(daysElapsed);
       newTrackedLegsForBaseline = legs.map((l) => ({
@@ -861,20 +644,11 @@ export function useStrategyOrchestration(params: {
     clearLegSelection();
   }, [isCompareMode, legs, spot, symbol, shifts, savedStrategies, openingAt, clearLegSelection, setActiveSnapshotId, setCorrectedSpot, setOpeningAtSimOverride, setSavedStrategies, setTrackedDaysElapsed, setTrackedBaseline, setTrackedLegs, setTrackedSpot, setTrackingStrategyId]);
 
-  // Direct switch from compare mode back into plain analysis mode. Which
-  // data becomes the new (single) analysis-mode baseline depends on
-  // `source`:
-  // - "baseline": the opening combo as-is (legs/spot/openingAt already ARE
-  //   this — same as handleOpenStrategy's "just drop the tracked half").
-  // - "current": whatever the "今日组合" side currently shows
-  //   (trackedLegs/effectiveTrackedSpot), promoted to be the new baseline.
-  // - a snapshot id: that specific saved snapshot's legs/spot.
-  // For "current" and a snapshot, openingAt resets to when THAT data was
-  // true (now, or the snapshot's savedAt) rather than staying on the
-  // original real opening date — otherwise a later re-track would use
-  // calendarDaysSince(openingAt) to reduce DTE a second time on top of legs whose
-  // DTE already reflects that elapsed time once (see
-  // claude/wiring-check-2026-09-03.md for the fuller design discussion).
+  // 从对比模式切回分析模式，新的基准取决于source：
+  // - "baseline"：开仓组合原样；
+  // - "current"：今日组合升级为新基准；
+  // - 快照id：该快照的腿/现价。
+  // 后两种openingAt重置为那份数据的时间（现在或快照保存时刻），否则以后再跟踪会重复扣天数。
   const performSwitchToAnalysis = useCallback((source: "baseline" | "current" | string) => {
     if (!isCompareMode) return;
     let newLegs: Leg[];
@@ -901,12 +675,7 @@ export function useStrategyOrchestration(params: {
       newSpot = snap.spot;
       newOpeningAt = snap.savedAt;
     }
-    // 2026-09-17新增：source==="current"或某个快照时，newOpeningAt变成了
-    // "现在"或"那个快照的保存时刻"——相当于从这一刻起重新定义了一个全新
-    // 的开仓基准，它自己的到期周期从这一刻才开始算，不可能"还没开始就已
-    // 经过期"，所以要把expiredConfirmed清掉；source==="baseline"时开仓
-    // 组合/openingAt完全没变，还是原来那条真实持仓，是否真的过期这个结
-    // 论不该受切换模式本身影响，保持不变。
+    // source为current或快照时开仓基准是"从现在重新开始"，不可能已过期，清掉expiredConfirmed；baseline时保持不变。
     if (source !== "baseline") setExpiredConfirmed(false);
     setLegs(newLegs);
     setSpot(newSpot);

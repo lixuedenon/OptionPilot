@@ -10,3 +10,8 @@
 //   另有服务端开关（环境变量AI_ANALYSIS_ENABLED，见该函数文件顶部说明），
 //   那个才是真正防止别人绕过界面直接调用、产生模型费用的那一道闸。
 export const AI_MODULE_ENABLED = false;
+
+// STEP_GUIDE_ENABLED（2026-09-29）：新用户引导步骤编号1–4的总开关。
+//   以后"设置"里加"是否显示使用步骤提示"选项时，把这个常量换成读取用户设置即可，
+//   App.tsx里所有步骤编号都只经过这一处判断。
+export const STEP_GUIDE_ENABLED = true;

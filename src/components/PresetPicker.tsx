@@ -27,6 +27,8 @@ function legLabel(l: Leg, t: (key: string) => string): string {
 }
 
 interface Props {
+  // 触发按钮右上角的引导步骤编号（见StepBadge.tsx）。
+  badge?: React.ReactNode;
   onSelect: (preset: PresetMeta) => void;
   customPresets: CustomPreset[];
   onDeleteCustom: (id: string) => void;
@@ -151,7 +153,7 @@ function TooltipContent({ item }: { item: PresetMeta }) {
   );
 }
 
-export default function PresetPicker({ onSelect, customPresets, onDeleteCustom, disabled = false }: Props) {
+export default function PresetPicker({ onSelect, customPresets, onDeleteCustom, disabled = false, badge }: Props) {
   const { t, lang } = useI18n();
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
@@ -182,7 +184,9 @@ export default function PresetPicker({ onSelect, customPresets, onDeleteCustom, 
 
   return (
     <div ref={ref} className="relative">
+      {badge}
       <button
+        data-guide="preset"
         onClick={() => !disabled && setOpen((v) => !v)}
         disabled={disabled}
         title={disabled ? t("leg.disabledInCompare") : undefined}

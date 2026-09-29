@@ -564,7 +564,6 @@ const zh: Dict = {
   "chart.flat": "持平",
   "chart.perLeg": "各腿",
   "chart.net": "净",
-  "chart.pnlPctHint": "盈亏占开仓权利金的百分比（卖方常见做法：盈利50%止盈，亏损达到一定比例止损）",
   "chart.resetView": "重置视图",
   "chart.timeDecay": "时间衰减",
   "chart.liveSpotToggle": "实时价参考线",
