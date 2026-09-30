@@ -23,15 +23,18 @@ import { useComboAnalytics } from "@/hooks/useComboAnalytics";
 import { useCompareSlots, COMPARE_SLOT_COLORS, MAX_COMPARE_SLOT_LEGS, MAX_COMPARE_SLOTS, isSlotDirty } from "@/hooks/useCompareSlots";
 import ComboCompareSlots from "@/components/ComboCompareSlots";
 import { useStrategyOrchestration } from "@/hooks/useStrategyOrchestration";
-import { nearestFridayDte, formatDateInput, parseDateInput } from "@/lib/dateUtils";
+import { nearestFridayDte, formatDateInput, parseDateInput, addCalendarDays } from "@/lib/dateUtils";
 import { uid, PRESET_DTE_SET } from "@/lib/legFactory";
 import { getOptionChain, resolveFromCache } from "@/lib/optionChain";
 import { estimateRescaledPremium } from "@/lib/pricing";
 import { NUMBER_RULES, clampToRule, blockInvalidNumberKey } from "@/lib/numberInput";
 import { useI18n } from "@/i18n/I18nContext";
 import AppHeader from "@/components/AppHeader";
-import LockedOverlay from "@/components/LockedOverlay";
+import LockedOverlay, { type LockReason } from "@/components/LockedOverlay";
 import StepBadge from "@/components/StepBadge";
+import PnlHeadline from "@/components/PnlHeadline";
+import StockOptionMap, { IvShiftSlider } from "@/components/StockOptionMap";
+import { comboBaseIv } from "@/lib/stockOptionMap";
 import { STEP_GUIDE_ENABLED } from "@/lib/featureFlags";
 import LegPanelTitleRow from "@/components/LegPanelTitleRow";
 import TrackedComboSection from "@/components/TrackedComboSection";
@@ -313,6 +316,11 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
 
   const { quote, loading: quoteLoading, error: quoteError, refetch } = useStockQuote(symbol);
+  // 使用顺序第一步：分析模式下必须先有有效股票代码（有现价），左栏其余输入、预设策略、情景滑块才可用。
+  // 代码无效（报价失败）也算没有——否则左边会留着上一个代码的组合、却显示新代码。策略库例外（见LockedOverlay）。
+  const symbolInvalid = !!quoteError && symbol.trim() !== "";
+  const needSymbol = trackedLegs === null && (symbol.trim() === "" || spot <= 0 || symbolInvalid);
+  const leftLockReason: LockReason | null = isExploring ? "explore" : needSymbol ? (symbolInvalid ? "symbolInvalid" : "symbol") : null;
   const { estimate: epsEstimate, loading: epsLoading } = useEpsEstimate(symbol);
 
   const reloadData = useCallback(async () => {
@@ -467,7 +475,33 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // 那些驱动腿位编辑区、保存按钮、策略名称等实时状态。
   const analyticsLegs = !isCompareModeNow && openingSimBasis ? openingSimBasis.legs : legs;
   const analyticsSpot = !isCompareModeNow && openingSimBasis ? openingSimBasis.spot : spot;
-  const analyticsShifts: Shifts = shifts;
+  // 右侧图表标签："盈亏图"（原有，配三个情景滑块）/"股价 vs 期权价"（地形图，只配IV滑块）。
+  // 地形图标签下，鼠标指向（或钉住）的点换算成一组临时偏移，只喂给图表头部盈亏/归因/情景估值这些显示；
+  // 真实的shifts保持0——左栏不锁、自动拉价不停、保存策略时存的也是真实shifts，绝不能用mapPoint。
+  const [chartView, setChartView] = useState<"payoff" | "stockVsOption">("payoff");
+  const [somDV, setSomDV] = useState(0);
+  const [mapPoint, setMapPoint] = useState<{ day: number; price: number } | null>(null);
+  // 金额显示单位：1=每股，100=每张合约（只影响图表头部和地形图的金额显示）；记在浏览器里，下次沿用。
+  const [unitMult, setUnitMult] = useState<number>(() => {
+    try {
+      return localStorage.getItem("optionpilot.pnlUnit") === "100" ? 100 : 1;
+    } catch {
+      return 1;
+    }
+  });
+  const changeUnitMult = (m: number) => {
+    setUnitMult(m);
+    try {
+      localStorage.setItem("optionpilot.pnlUnit", String(m));
+    } catch {
+      /* 存不了就只在本次会话生效 */
+    }
+  };
+  const mapActive = chartView === "stockVsOption" && !isCompareModeNow && !isMobile;
+  const analyticsShifts: Shifts = useMemo(
+    () => (mapActive ? { dS: mapPoint ? mapPoint.price - analyticsSpot : 0, dT: mapPoint ? mapPoint.day : 0, dV: somDV } : shifts),
+    [mapActive, mapPoint, analyticsSpot, somDV, shifts],
+  );
   // 滑块上界：非对比模式下用openingSimBasis的完整周期（开仓到到期），跟
   // 上面的dte修正基准保持一致；没有basis（legs为空）或对比模式下退回旧
   // 的"当前剩余天数"算法。
@@ -619,9 +653,23 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const activeSlotStrategyName = activeSlot ? matchStrategy(activeSlot.legs, spot, customPresets) : "";
   // 引导第3、4步：本轮组合已保存（或打开的是已存策略）后隐藏；组合清空时复位。
   const [guideSaved, setGuideSaved] = useState(false);
+  // 引导第5步（情景滑块）：滑块动过一次后隐藏；组合清空时复位。
+  const [guideSlid, setGuideSlid] = useState(false);
+  // 切到过"股价 vs 期权价"标签也算看过第5步（情景模拟），跟滑动滑块一样让第5步消失；组合清空时复位。
+  const [guideMapSeen, setGuideMapSeen] = useState(false);
   useEffect(() => {
-    if (legs.length === 0) setGuideSaved(false);
+    if (legs.length === 0) {
+      setGuideSaved(false);
+      setGuideSlid(false);
+      setGuideMapSeen(false);
+    }
   }, [legs.length]);
+  useEffect(() => {
+    if (chartView === "stockVsOption") setGuideMapSeen(true);
+  }, [chartView]);
+  useEffect(() => {
+    if (isExploring) setGuideSlid(true);
+  }, [isExploring]);
 
   const handleSaveStrategyForActive = async (filename: string) => {
     if (activeSlot) {
@@ -722,6 +770,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // 组合再次清空时重新显示（手机上没有这两步）。总开关见featureFlags.ts。
   const showGuide12 = STEP_GUIDE_ENABLED && !isCompareMode && legs.length === 0;
   const showGuide34 = STEP_GUIDE_ENABLED && !isCompareMode && !isMobile && !guideSaved;
+  const showGuide5 = STEP_GUIDE_ENABLED && !isCompareMode && !isMobile && legs.length > 0 && !guideSlid && !guideMapSeen;
+  const showChartTabs = !isCompareMode && !isMobile;
+  const showStockOptionMap = showChartTabs && chartView === "stockVsOption";
+  // 地形图用开仓基准的腿位（第0天=开仓日），跟图表头部盈亏/归因用的是同一份数据。
+  const mapLegs = useMemo(() => analyticsLegs.filter((l) => !l.disabled), [analyticsLegs]);
+  const somBaseIv = useMemo(() => (showStockOptionMap ? comboBaseIv(mapLegs, analyticsSpot) : null), [showStockOptionMap, mapLegs, analyticsSpot]);
 
   const legToolbar = (
     <>
@@ -745,6 +799,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       >
         <Trash2 size={12} />
       </button>
+      {/* 策略库在缺股票代码时也能用：打开已存策略会带上它自己的代码（见LockedOverlay）。 */}
+      <div data-lock-exempt-symbol className="contents">
       <DropdownMenu
         label={t("toolbar.presetLabel")}
         icon={<Layers size={11} />}
@@ -760,6 +816,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           </button>
         )}
       </DropdownMenu>
+      </div>
       {!isCompareMode && !simOrigin && onAddToSimAccount && (
         // 纯图标（文字在title里），给这一行腾宽度。
         <button
@@ -823,6 +880,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         epsLoading={epsLoading}
         onOpenHelp={() => setHelpOpen(true)}
         locked={isExploring}
+        needSymbol={needSymbol}
         showGuideSteps={showGuide12}
       />
 
@@ -846,7 +904,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           className={isMobile ? "flex flex-col border-b border-slate-800" : "flex shrink-0 flex-col overflow-y-auto border-r border-slate-800"}
           style={isMobile ? undefined : { width: "38%", minWidth: 380 }}
         >
-          <LockedOverlay locked={isExploring} className="flex flex-col">
+          <LockedOverlay reason={leftLockReason} className="flex flex-col">
           <div className={`${isMobile ? "" : "sticky top-0 z-20 "}grid shrink-0 grid-cols-[auto_minmax(0,1fr)] grid-rows-[auto_auto] items-center gap-x-2 gap-y-1 border-b border-slate-800/60 bg-slate-950 px-3 py-1.5`}>
             <LegPanelTitleRow
               legsCount={legs.length}
@@ -857,7 +915,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   {/* 手机精简版不显示开仓价/开仓日期：开仓价跟随实时报价，开仓日期为今天。 */}
                   {!isMobile && (<>
                   <label className="relative flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] text-slate-500" title={t("stock.openPrice")}>
-                    {showGuide34 && <StepBadge n={3} title={t("guide.step3")} optional />}
+                    {showGuide34 && <StepBadge n={3} title={t("guide.step3")} />}
                     <span>{t("stock.openPrice")}</span>
                     <input
                       type="number"
@@ -886,7 +944,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                     )}
                   </label>
                       <label className="relative flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] text-slate-500" title={t("stock.openDate")}>
-                    {showGuide34 && <StepBadge n={3} title={t("guide.step3")} optional />}
+                    {showGuide34 && <StepBadge n={3} title={t("guide.step3")} />}
                     <span>{t("stock.openDate")}</span>
                     <input
                       type="date"
@@ -1054,9 +1112,70 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             className={isMobile ? "px-1 py-1.5" : "min-h-0 flex-1 px-2 py-1.5"}
             style={isMobile ? { height: "min(62vh, 560px)", minHeight: 320 } : undefined}
           >
+            {showChartTabs && (
+              <div className="mb-1.5 flex items-end gap-1 border-b border-slate-700">
+                {/* 盈亏图和地形图都属于"未来情景模拟"：标题+代码在左边，后面是真正的文件夹式标签（下沿跟图表区连在一起），
+                    避免看起来像三个并列的功能按钮。没有有效股票代码时整块不可用。 */}
+                <span className={`flex items-baseline gap-2 self-center border-r border-slate-700 pb-1 pr-3 mr-2 ${needSymbol ? "opacity-40" : ""}`}>
+                  <span className="relative pr-1 text-[13px] font-bold text-sky-400">
+                    {showGuide5 && <StepBadge n={5} title={t("guide.step5")} />}
+                    {t("shift.scenario")}
+                  </span>
+                  {symbol && <span className="text-sm font-extrabold text-slate-50">{symbol}</span>}
+                </span>
+                {(["payoff", "stockVsOption"] as const).map((v) => (
+                  <button
+                    key={v}
+                    disabled={needSymbol}
+                    onClick={() => {
+                      // 进入地形图时把三个情景滑块归零，释放左栏锁定（地形图不用这三个滑块）。
+                      if (v === "stockVsOption") setShifts({ dS: 0, dT: 0, dV: 0 });
+                      setChartView(v);
+                    }}
+                    className={`relative -mb-px rounded-t-md border px-3 py-1 text-[12px] font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                      chartView === v
+                        ? "border-slate-600 border-b-slate-950 bg-slate-950 text-sky-300"
+                        : "border-transparent text-slate-500 hover:bg-slate-800/50 hover:text-slate-300"
+                    }`}
+                  >
+                    {t(v === "payoff" ? "chart.tabPayoff" : "chart.tabStockVsOption")}
+                  </button>
+                ))}
+                {activeLegs.length > 0 && (
+                  <PnlHeadline
+                    className="ml-auto self-center pb-1"
+                    dateTs={addCalendarDays(openingAt, analyticsShifts.dT)}
+                    pnl={result.change}
+                    netValue={result.shiftedValue}
+                    netChange={result.change}
+                    hasStock={activeLegs.some((l) => l.kind === "stock")}
+                    unitMult={unitMult}
+                    onUnitChange={changeUnitMult}
+                  />
+                )}
+              </div>
+            )}
             <ErrorBoundary>
+              {showStockOptionMap ? (
+              <div className={showChartTabs ? "h-[calc(100%-30px)]" : "h-full"}>
+                <StockOptionMap
+                  liveSpot={quote?.price}
+                  unitMult={unitMult}
+                  legs={mapLegs}
+                  onPointChange={setMapPoint}
+                  spot={analyticsSpot}
+                  dV={somDV}
+                  openingAt={openingAt}
+                  daysSinceOpen={openingSimBasis && !isExpiredOpening ? openingSimBasis.daysSinceOpen : undefined}
+                  emptyText={needSymbol ? t("chart.noSpot") : t("chart.addLegs")}
+                />
+              </div>
+              ) : (
+              <div className={showChartTabs ? "h-[calc(100%-30px)]" : "h-full"}>
               <PayoffChart
-                legs={activeLegs}
+                // 分析模式用开仓基准腿位（第0天=开仓日），跟滑块的dT、头部盈亏、归因、地形图同一份数据；
+                // 用实时腿位的话，开仓日在过去时"已过去的天数"会被重复扣一次。
+                legs={isCompareMode ? activeLegs : mapLegs}
                 spot={analyticsSpot}
                 shifts={analyticsShifts}
                 symbol={symbol}
@@ -1078,13 +1197,19 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 expired={isExpiredOpening}
                 openingAt={openingAt}
                 compareCurves={!isCompareMode ? compareCurves : undefined}
+                hideHeadline={showChartTabs}
               />
+              </div>
+              )}
             </ErrorBoundary>
           </div>
 
           {/* Sliders（手机上的跟踪对比不显示：对比模式滑块是冻结的，内容跟统计网格重复） */}
           {!(isMobile && isCompareMode) && (
           <div className="shrink-0 border-t border-slate-800 px-3 py-1.5">
+            {showStockOptionMap ? (
+              <IvShiftSlider value={somDV} onChange={setSomDV} baseIv={somBaseIv} />
+            ) : (
             <ShiftSliders
               shifts={shifts}
               spot={spot}
@@ -1098,9 +1223,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               trackedDays={isCompareMode ? effectiveDaysElapsed : undefined}
               trackedVolShift={trackedVolShift}
               // 分析模式下没有腿位时滑块也锁住；frozen只看isCompareMode，避免标题误显示成"情景偏移对比"。
-              disabled={isCompareMode || activeLegs.length === 0}
+              disabled={isCompareMode || activeLegs.length === 0 || needSymbol}
               frozen={isCompareMode}
+              guideBadge={showGuide5 && !showChartTabs ? <StepBadge n={5} title={t("guide.step5")} /> : undefined}
+              hideTitle={showChartTabs}
             />
+            )}
           </div>
           )}
         </div>

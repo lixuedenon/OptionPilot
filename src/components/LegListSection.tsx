@@ -304,7 +304,7 @@ export default function LegListSection({
               )}
               {/* 不要求"必须有改动"才能保存（跟B/C一致）；完全重复时保存对话框会提示覆盖。 */}
               <span className="relative flex">
-              {showSaveGuide && <StepBadge n={4} title={t("guide.step4")} optional />}
+              {showSaveGuide && <StepBadge n={4} title={t("guide.step4")} />}
               <button
                 onClick={onSaveStrategy}
                 title={t("toolbar.saveStrategy")}
@@ -332,6 +332,7 @@ export default function LegListSection({
                     <span
                       key={i}
                       role="link"
+                      data-lock-exempt-symbol={target === "library" ? "" : undefined}
                       onClick={() => clickGuideTarget(target)}
                       className="cursor-pointer font-semibold text-sky-400 underline decoration-sky-400/40 underline-offset-2 hover:text-sky-300"
                     >

@@ -2,19 +2,25 @@
 // 新用户引导的步骤编号：贴在控件右上角的小圆圈数字，悬停（手机上点一下）立刻显示说明。
 // 不用原生title：浏览器要等约1秒才弹，而且在label/按钮上容易被父元素的title盖住。
 // 说明框用portal挂到body、fixed定位，避免被左栏的overflow/sticky裁掉。
-// optional=true（第3、4步）用浅色，表示可选。父元素需要是relative定位。
+// 每一步一个颜色（STEP_COLORS），父元素需要是relative定位。
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 interface Props {
   n: number;
   title: string;
-  optional?: boolean;
 }
 
 const TIP_WIDTH = 240;
+const STEP_COLORS: Record<number, string> = {
+  1: "bg-amber-400",
+  2: "bg-sky-400",
+  3: "bg-emerald-400",
+  4: "bg-violet-400",
+  5: "bg-pink-400",
+};
 
-export default function StepBadge({ n, title, optional }: Props) {
+export default function StepBadge({ n, title }: Props) {
   const ref = useRef<HTMLSpanElement>(null);
   const lastPointer = useRef<string>("mouse");
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
@@ -60,9 +66,7 @@ export default function StepBadge({ n, title, optional }: Props) {
           if (pos) hide();
           else show();
         }}
-        className={`pointer-events-auto absolute -right-1.5 -top-1.5 z-10 flex h-3.5 w-3.5 cursor-help items-center justify-center rounded-full text-[9px] font-bold leading-none shadow ${
-          optional ? "bg-slate-400 text-slate-900" : "bg-amber-400 text-slate-950"
-        }`}
+        className={`pointer-events-auto absolute -right-1.5 -top-1.5 z-10 flex h-3.5 w-3.5 cursor-help items-center justify-center rounded-full text-[9px] font-bold leading-none text-slate-950 shadow ${STEP_COLORS[n] ?? "bg-slate-400"}`}
       >
         {n}
       </span>

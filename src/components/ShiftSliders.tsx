@@ -1,5 +1,6 @@
 // src/components/ShiftSliders.tsx
 import { RotateCcw } from "lucide-react";
+import type { ReactNode } from "react";
 import type { Shifts } from "@/lib/types";
 import { useI18n } from "@/i18n/I18nContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -35,6 +36,10 @@ interface Props {
   // frozen=false：标题仍显示"未来情景模拟"（不会被误当成对比模式），重置
   // 按钮也照常显示（虽然此时shifts本来就该是0,0,0，点了也无副作用）。
   frozen?: boolean;
+  // 新用户引导步骤编号（StepBadge），贴在标题右上角。
+  guideBadge?: ReactNode;
+  // 电脑版分析模式下标题"未来情景模拟"挪到图表标签那一行（盈亏图和地形图都属于它），这里不再显示。
+  hideTitle?: boolean;
 }
 
 function Slider({
@@ -131,13 +136,18 @@ function Slider({
   );
 }
 
-export default function ShiftSliders({ shifts, onChange, spot, maxDte, todayDte, onJumpToday, onReset, trackedSpot, trackedDays, trackedVolShift, disabled, frozen }: Props) {
+export default function ShiftSliders({ shifts, onChange, spot, maxDte, todayDte, onJumpToday, onReset, trackedSpot, trackedDays, trackedVolShift, disabled, frozen, guideBadge, hideTitle }: Props) {
   const { t } = useI18n();
   return (
     <div className={disabled ? "pointer-events-none" : ""}>
       <div className="mb-1 flex items-center justify-between">
         <div className="pointer-events-auto flex items-center gap-2">
-          <span className="text-[13px] font-bold text-sky-400">{frozen ? t("shift.scenarioFrozen") : t("shift.scenario")}</span>
+          {!hideTitle && (
+          <span className="relative pr-1 text-[13px] font-bold text-sky-400">
+            {guideBadge}
+            {frozen ? t("shift.scenarioFrozen") : t("shift.scenario")}
+          </span>
+          )}
         </div>
         {!frozen && (
           // 2026-09-17：改大改醒目——一旦滑块动过，这是唯一能解锁所有输入

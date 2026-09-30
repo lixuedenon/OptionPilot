@@ -2,7 +2,7 @@
 import { useMemo, useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import type { Leg, Shifts } from "@/lib/types";
 import { blackScholes } from "@/lib/bs";
-import { resolveOpeningLeg, impliedVol } from "@/lib/pricing";
+import { resolveOpeningLeg, impliedVol, pnlAtExpiry } from "@/lib/pricing";
 import { addCalendarDays, formatDateInput } from "@/lib/dateUtils";
 import { useI18n } from "@/i18n/I18nContext";
 import { RefreshCw, AlertTriangle } from "lucide-react";
@@ -48,6 +48,8 @@ interface Props {
   compareCurves?: { id: string; label: string; color: string; legs: Leg[] }[];
   // 手机精简版：不显示各腿明细、时间衰减/实时价开关、缩放提示和底部图例。
   compact?: boolean;
+  // 电脑版分析模式下盈亏头部（日期/盈亏/净值）挪到图表标签那一行（PnlHeadline），这里不再重复显示。
+  hideHeadline?: boolean;
 }
 
 const POINTS = 200;
@@ -151,7 +153,7 @@ function calcTrackedPnLAtTime(trackedLegs: Leg[], openingLegs: Leg[], spot: numb
 
 const FAN_COLORS = ["#fbbf24", "#f59e0b", "#a3a3a3", "#475569"];
 
-export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot, expired, openingAt, compareCurves, compact }: Props) {
+export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot, expired, openingAt, compareCurves, compact, hideHeadline }: Props) {
   const { t } = useI18n();
   // 固定用mm/dd/yyyy（xue指定），不用toLocaleDateString（中文环境会变成yyyy/mm/dd）。
   const scenarioDateTs = !compareMode && openingAt !== undefined
@@ -290,6 +292,18 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
     return pts;
   }, [active, legs, spot, shifts, sMin, sMax]);
 
+  // 到期时的盈亏曲线（分析模式常驻叠加）：主曲线跟随情景日期，时间越往后越贴近这条线。
+  // 多到期日组合按最早到期日计算（pnlAtExpiry内部处理）。
+  const expiryPoints = useMemo(() => {
+    if (!active || compareMode) return [];
+    const pts: { s: number; pnl: number }[] = [];
+    for (let i = 0; i <= POINTS; i++) {
+      const s = sMin + (i / POINTS) * (sMax - sMin);
+      pts.push({ s, pnl: pnlAtExpiry(legs, s, spot) });
+    }
+    return pts;
+  }, [active, compareMode, legs, spot, sMin, sMax]);
+
   // Tracked (持仓组合) — model curve anchored to the actual current P&L.
   const hasTracked = (trackedLegs?.length ?? 0) > 0;
   const trackedCurrentPnl = compareMode && hasTracked && openingLegs && netChange !== undefined ? netChange : null;
@@ -360,6 +374,10 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
       if (p.pnl < rawMin) rawMin = p.pnl;
       if (p.pnl > rawMax) rawMax = p.pnl;
     }
+    for (const p of expiryPoints) {
+      if (p.pnl < rawMin) rawMin = p.pnl;
+      if (p.pnl > rawMax) rawMax = p.pnl;
+    }
     for (const set of comparePointSets) {
       for (const p of set.points) {
         if (p.pnl < rawMin) rawMin = p.pnl;
@@ -371,7 +389,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
       rawMax = Math.max(rawMax, trackedCurrentPnl);
     }
     return { rawMin, rawMax, maxProfit, maxProfitS, maxLoss, maxLossS };
-  }, [points, trackedPoints, compareMode, comparePointSets]);
+  }, [points, trackedPoints, compareMode, comparePointSets, expiryPoints]);
 
   const fanBounds = useMemo(() => {
     if (!showFan || fanPaths.length === 0) return { fMin: 0, fMax: 0 };
@@ -479,10 +497,11 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
       <div className="mb-1 flex flex-col gap-0.5 rounded-lg border border-slate-800 bg-slate-900/60 px-2.5 py-1">
         <div className="flex items-center justify-between">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-sm font-extrabold text-slate-50">{symbol}</span>
+            {!hideHeadline && <span className="text-sm font-extrabold text-slate-50">{symbol}</span>}
             {modeSwitchButton}
-            <span className="text-[9px] text-slate-500">{t("chart.currentPnl")}</span>
+            {!hideHeadline && <span className="text-[9px] text-slate-500">{t("chart.currentPnl")}</span>}
           </div>
+          {!hideHeadline && (
           <div className="flex items-baseline gap-3">
             {scenarioDateLabel && scenarioDateTs !== null && (
               <span
@@ -502,7 +521,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
                 return (
                   <>
                     <span className={`text-lg font-black tabular-nums leading-none ${amountCls}`}>
-                      {sign === "profit" ? "+" : ""}${Math.abs(currentPnL).toFixed(2)}
+                      {sign === "profit" ? "+" : sign === "loss" ? "−" : ""}${Math.abs(currentPnL).toFixed(2)}
                     </span>
                     <span className={`text-[9px] font-bold ${labelCls}`}>{label}</span>
                   </>
@@ -510,6 +529,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
               })()}
             </div>
           </div>
+          )}
         </div>
         {perLegValues && perLegValues.length > 0 && !compact && (
           <div className="flex flex-wrap items-center gap-0.5">
@@ -527,9 +547,9 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
                 </span>
               </div>
             ))}
-            {netValue !== undefined && (
+            {netValue !== undefined && !hideHeadline && (
               <span className="ml-auto shrink-0 rounded border border-slate-700 bg-slate-900 px-1.5 py-0 text-[9px]">
-                <span className="text-slate-500">{t("chart.net")} </span>
+                <span className="text-slate-500" title={t("chart.netHint")}>{netValue >= 0 ? t("chart.netReceive") : t("chart.netPay")} </span>
                 <span className="font-bold tabular-nums text-slate-100">${Math.abs(netValue).toFixed(2)}</span>
                 {netChange !== undefined && (() => {
                   // 右上角已有盈亏金额，这里改显示盈亏百分比（相对开仓权利金），方便对照"盈利50%/亏损50%平仓"。
@@ -542,7 +562,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
                       className={"ml-1 font-semibold tabular-nums " + (netChange >= 0 ? "text-emerald-400" : "text-rose-400")}
                       title={pct !== null ? t("chart.pnlPctHint") : undefined}
                     >
-                      {netChange >= 0 ? "+" : ""}{pct !== null ? `${pct.toFixed(1)}%` : netChange.toFixed(2)}
+                      {netChange >= 0 || Math.abs(netChange) < 0.005 ? "+" : "−"}{pct !== null ? `${Math.abs(pct).toFixed(1)}%` : Math.abs(netChange).toFixed(2)}
                     </span>
                   );
                 })()}
@@ -706,6 +726,14 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
                 opacity={0.85} clipPath="url(#chart-clip)" />
             ))}
 
+            {/* 到期曲线：紫色虚线，画在主曲线下面 */}
+            {expiryPoints.length > 0 && (
+              <path
+                d={expiryPoints.map((p, i) => `${i === 0 ? "M" : "L"}${toX(p.s).toFixed(1)},${toY(p.pnl).toFixed(1)}`).join(" ")}
+                fill="none" stroke="#a78bfa" strokeWidth="1.8" strokeDasharray="6 4" clipPath="url(#chart-clip)"
+              />
+            )}
+
             {/* Main P&L curve */}
             <path d={pathD} fill="none" stroke="#34d399" strokeWidth="2" clipPath="url(#chart-clip)" />
 
@@ -768,7 +796,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
                     stroke="#1e293b" strokeWidth="1.5" />
                   <rect x={labelX} y={labelY} width={labelW} height={labelH} rx={3} fill="#1e293b" fillOpacity={0.95} stroke={accent} strokeWidth="0.8" />
                   <text x={labelX + labelW / 2} y={labelY + labelH - 4} textAnchor="middle" fontSize="10" fill={accent} fontWeight="bold">
-                    {!isFlat && currentPnL > 0 ? "+" : ""}{currentPnL.toFixed(2)}
+                    {isFlat ? "0.00" : `${currentPnL > 0 ? "+" : "−"}${Math.abs(currentPnL).toFixed(2)}`}
                   </text>
                 </g>
               );
@@ -959,8 +987,14 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
           )}
           <span className="flex items-center gap-1">
             <span className="inline-block h-0.5 w-4 rounded bg-emerald-400" />
-            <span className="font-semibold text-emerald-400">{t("chart.openCombo")}</span>
+            <span className="font-semibold text-emerald-400">{compareMode ? t("chart.openCombo") : t("chart.scenarioCurve")}</span>
           </span>
+          {!compareMode && (
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-4" style={{ borderTop: "2px dashed #a78bfa" }} />
+              <span className="font-semibold text-violet-400">{t("chart.expiryCurve")}</span>
+            </span>
+          )}
         </div>
       </div>
     </div>

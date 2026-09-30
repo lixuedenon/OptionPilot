@@ -1,6 +1,6 @@
 // src/components/AppHeader.tsx
 // src/components/AppHeader.tsx
-import { RefreshCw, TrendingUp, TrendingDown, ChevronDown, HelpCircle, Target } from "lucide-react";
+import { RefreshCw, TrendingUp, TrendingDown, ChevronDown, HelpCircle } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -60,7 +60,7 @@ function EpsValuationBadge({ estimate }: { estimate: EpsEstimate }) {
         title={t("valuation.tooltip")}
         className="flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] text-amber-300/80 transition hover:border-amber-500/50 hover:text-amber-300"
       >
-        <Target size={11} />
+        <span className="font-black leading-none tracking-tighter">$$</span>
       </button>
 
       {open && createPortal(
@@ -165,6 +165,8 @@ interface Props {
   // 2026-09-17新增：分析模式情景滑块离开(0,0,0)时由App.tsx算出的
   // isExploring，锁定策略库选择器、标的代码输入框及其下拉——直到点击"重置"。
   locked?: boolean;
+  // 还没有有效股票代码：预设策略不可用（使用顺序第一步是输入代码）。
+  needSymbol?: boolean;
   // 新用户引导：组合还空着时在代码框显示1、预设策略显示2（见StepBadge.tsx）。
   showGuideSteps?: boolean;
 }
@@ -195,6 +197,7 @@ export default function AppHeader({
   epsLoading,
   onOpenHelp,
   locked = false,
+  needSymbol = false,
   showGuideSteps = false,
 }: Props) {
   const { t } = useI18n();
@@ -231,7 +234,7 @@ export default function AppHeader({
           customPresets={customPresets}
           onDeleteCustom={onDeleteCustomPreset}
           onSelect={onSelectPreset}
-          disabled={isCompareMode || locked}
+          disabled={isCompareMode || locked || needSymbol}
         />
 
         <div ref={symbolWrapRef} className="relative flex items-center gap-1.5">
