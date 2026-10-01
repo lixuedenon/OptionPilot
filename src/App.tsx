@@ -23,7 +23,7 @@ import { useComboAnalytics } from "@/hooks/useComboAnalytics";
 import { useCompareSlots, COMPARE_SLOT_COLORS, MAX_COMPARE_SLOT_LEGS, MAX_COMPARE_SLOTS, isSlotDirty } from "@/hooks/useCompareSlots";
 import ComboCompareSlots from "@/components/ComboCompareSlots";
 import { useStrategyOrchestration } from "@/hooks/useStrategyOrchestration";
-import { nearestFridayDte, formatDateInput, parseDateInput, addCalendarDays } from "@/lib/dateUtils";
+import { nearestFridayDte, formatDateInput, parseDateInput, addCalendarDays, calendarDaysBetween } from "@/lib/dateUtils";
 import { uid, PRESET_DTE_SET } from "@/lib/legFactory";
 import { getOptionChain, resolveFromCache } from "@/lib/optionChain";
 import { estimateRescaledPremium } from "@/lib/pricing";
@@ -34,7 +34,8 @@ import LockedOverlay, { type LockReason } from "@/components/LockedOverlay";
 import StepBadge from "@/components/StepBadge";
 import PnlHeadline from "@/components/PnlHeadline";
 import StockOptionMap, { IvShiftSlider } from "@/components/StockOptionMap";
-import { comboBaseIv } from "@/lib/stockOptionMap";
+import WinRateSim from "@/components/WinRateSim";
+import { comboBaseIv, buildTrackedHistory, buildAttributionTimeline, trackedTotalPnl, type TrackedState } from "@/lib/stockOptionMap";
 import { STEP_GUIDE_ENABLED } from "@/lib/featureFlags";
 import LegPanelTitleRow from "@/components/LegPanelTitleRow";
 import TrackedComboSection from "@/components/TrackedComboSection";
@@ -478,7 +479,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // 右侧图表标签："盈亏图"（原有，配三个情景滑块）/"股价 vs 期权价"（地形图，只配IV滑块）。
   // 地形图标签下，鼠标指向（或钉住）的点换算成一组临时偏移，只喂给图表头部盈亏/归因/情景估值这些显示；
   // 真实的shifts保持0——左栏不锁、自动拉价不停、保存策略时存的也是真实shifts，绝不能用mapPoint。
-  const [chartView, setChartView] = useState<"payoff" | "stockVsOption">("payoff");
+  const [chartView, setChartView] = useState<"payoff" | "stockVsOption" | "winRate">("payoff");
   const [somDV, setSomDV] = useState(0);
   const [mapPoint, setMapPoint] = useState<{ day: number; price: number } | null>(null);
   // 金额显示单位：1=每股，100=每张合约（只影响图表头部和地形图的金额显示）；记在浏览器里，下次沿用。
@@ -665,7 +666,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     }
   }, [legs.length]);
   useEffect(() => {
-    if (chartView === "stockVsOption") setGuideMapSeen(true);
+    if (chartView !== "payoff") setGuideMapSeen(true);
   }, [chartView]);
   useEffect(() => {
     if (isExploring) setGuideSlid(true);
@@ -710,7 +711,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   };
 
 
-  // 分析↔对比模式切换按钮，渲染在图表标题栏（PayoffChart.tsx）。
+  // 分析↔对比模式切换按钮，渲染在图表标签行最右端（电脑版；手机版不显示）。
   const modeSwitchButton = (
     <>
       {!simOrigin && !isCompareMode && legs.length > 0 && (
@@ -771,11 +772,39 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const showGuide12 = STEP_GUIDE_ENABLED && !isCompareMode && legs.length === 0;
   const showGuide34 = STEP_GUIDE_ENABLED && !isCompareMode && !isMobile && !guideSaved;
   const showGuide5 = STEP_GUIDE_ENABLED && !isCompareMode && !isMobile && legs.length > 0 && !guideSlid && !guideMapSeen;
-  const showChartTabs = !isCompareMode && !isMobile;
+  const showChartTabs = !isMobile;
   const showStockOptionMap = showChartTabs && chartView === "stockVsOption";
+  const showWinRate = showChartTabs && chartView === "winRate";
   // 地形图用开仓基准的腿位（第0天=开仓日），跟图表头部盈亏/归因用的是同一份数据。
   const mapLegs = useMemo(() => analyticsLegs.filter((l) => !l.disabled), [analyticsLegs]);
-  const somBaseIv = useMemo(() => (showStockOptionMap ? comboBaseIv(mapLegs, analyticsSpot) : null), [showStockOptionMap, mapLegs, analyticsSpot]);
+  const somBaseIv = useMemo(
+    () => (!showStockOptionMap ? null : isCompareMode ? comboBaseIv(activeTrackedLegs ?? [], effectiveTrackedSpot) : comboBaseIv(mapLegs, analyticsSpot)),
+    [showStockOptionMap, isCompareMode, activeTrackedLegs, effectiveTrackedSpot, mapLegs, analyticsSpot],
+  );
+  // 跟踪对比模式的地形图：左边真实走过的路（开仓点+快照），右边从今天推演、全部按开仓至今的总账显示。
+  const trackedMap = useMemo(() => {
+    if (!isCompareMode || !showStockOptionMap || !trackedResult) return undefined;
+    const snaps = trackedStrategy?.trackedSnapshots ?? [];
+    const { points, markers } = buildTrackedHistory(snaps, legs, spot, openingAt);
+    const todayDay = Math.max(0, effectiveDaysElapsed);
+    const pnlOffset = trackedResult.change + realizedTrackedPnl;
+    // 今昔对比：开仓点 → 每条快照 → 今天（今日组合+现价），逐段把盈亏变化拆成股价/时间/波动率/调整。
+    const byDay = new Map<number, TrackedState>([[0, { legs, spot, day: 0, pnl: 0 }]]);
+    for (const sn of [...snaps].sort((x, y) => x.savedAt - y.savedAt)) {
+      const day = Math.max(0, calendarDaysBetween(openingAt, sn.savedAt));
+      if (sn.spot > 0 && day > 0 && day < todayDay) byDay.set(day, { legs: sn.legs, spot: sn.spot, day, pnl: trackedTotalPnl(legs, sn.legs, sn.spot, spot), estimated: sn.estimated });
+    }
+    if (trackedLegs && todayDay > 0) byDay.set(todayDay, { legs: trackedLegs, spot: effectiveTrackedSpot, day: todayDay, pnl: pnlOffset });
+    const { segments, totals } = buildAttributionTimeline([...byDay.values()]);
+    return {
+      todayDay,
+      pnlOffset,
+      history: points.filter((p) => p.day <= todayDay),
+      markers: markers.filter((m) => m.day <= todayDay),
+      segments,
+      totals,
+    };
+  }, [isCompareMode, showStockOptionMap, trackedResult, trackedStrategy, legs, spot, openingAt, effectiveDaysElapsed, realizedTrackedPnl, trackedLegs, effectiveTrackedSpot]);
 
   const legToolbar = (
     <>
@@ -937,11 +966,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                       onWheel={(e) => e.currentTarget.blur()}
                       className="w-20 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] tabular-nums text-emerald-400 outline-none transition focus:border-emerald-500 focus:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
                     />
-                    {quote && quote.price > 0 && Math.abs(quote.price - spot) > 0.005 && (
-                      <span className="text-[9px] tabular-nums text-slate-600" title={t("stock.live")}>
-                        {`${t("stock.live")} ${quote.price.toFixed(2)}`}
-                      </span>
-                    )}
                   </label>
                       <label className="relative flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] text-slate-500" title={t("stock.openDate")}>
                     {showGuide34 && <StepBadge n={3} title={t("guide.step3")} />}
@@ -1119,17 +1143,16 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 <span className={`flex items-baseline gap-2 self-center border-r border-slate-700 pb-1 pr-3 mr-2 ${needSymbol ? "opacity-40" : ""}`}>
                   <span className="relative pr-1 text-[13px] font-bold text-sky-400">
                     {showGuide5 && <StepBadge n={5} title={t("guide.step5")} />}
-                    {t("shift.scenario")}
+                      {isCompareMode ? t("shift.scenarioFrozen") : t("shift.scenario")}
                   </span>
-                  {symbol && <span className="text-sm font-extrabold text-slate-50">{symbol}</span>}
                 </span>
-                {(["payoff", "stockVsOption"] as const).map((v) => (
+                {(["payoff", "stockVsOption", "winRate"] as const).map((v) => (
                   <button
                     key={v}
                     disabled={needSymbol}
                     onClick={() => {
-                      // 进入地形图时把三个情景滑块归零，释放左栏锁定（地形图不用这三个滑块）。
-                      if (v === "stockVsOption") setShifts({ dS: 0, dT: 0, dV: 0 });
+                      // 进入地形图/胜率模拟时把三个情景滑块归零，释放左栏锁定（这两个标签不用这三个滑块）。
+                      if (v !== "payoff") setShifts({ dS: 0, dT: 0, dV: 0 });
                       setChartView(v);
                     }}
                     className={`relative -mb-px rounded-t-md border px-3 py-1 text-[12px] font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
@@ -1138,12 +1161,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                         : "border-transparent text-slate-500 hover:bg-slate-800/50 hover:text-slate-300"
                     }`}
                   >
-                    {t(v === "payoff" ? "chart.tabPayoff" : "chart.tabStockVsOption")}
+                    {t(v === "payoff" ? "chart.tabPayoff" : v === "stockVsOption" ? "chart.tabStockVsOption" : "chart.tabWinRate")}
                   </button>
                 ))}
-                {activeLegs.length > 0 && (
+                {/* 右端：分析模式的盈亏头部 + 分析↔对比模式切换（两种模式、三个标签下都在这里）。 */}
+                <div className="ml-auto flex items-center gap-3 self-center pb-1">
+                {!isCompareMode && activeLegs.length > 0 && (
                   <PnlHeadline
-                    className="ml-auto self-center pb-1"
                     dateTs={addCalendarDays(openingAt, analyticsShifts.dT)}
                     pnl={result.change}
                     netValue={result.shiftedValue}
@@ -1153,17 +1177,42 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                     onUnitChange={changeUnitMult}
                   />
                 )}
+                {modeSwitchButton}
+                </div>
               </div>
             )}
             <ErrorBoundary>
-              {showStockOptionMap ? (
+              {showWinRate ? (
+              <div className="h-[calc(100%-30px)]">
+                <WinRateSim
+                  symbol={symbol}
+                  mode={isCompareMode ? "tracked" : "analysis"}
+                  simLegs={isCompareMode ? activeTrackedLegs ?? [] : mapLegs}
+                  spot={isCompareMode ? effectiveTrackedSpot : analyticsSpot}
+                  openingLegs={isCompareMode ? activeLegs : mapLegs}
+                  pnlOffset={isCompareMode && trackedResult ? trackedResult.change + realizedTrackedPnl : 0}
+                  openingAt={openingAt}
+                  unitMult={unitMult}
+                  onUnitChange={isCompareMode ? changeUnitMult : undefined}
+                  emptyText={needSymbol ? t("chart.noSpot") : activeLegs.length === 0 ? t("chart.addLegs") : null}
+                  retro={isCompareMode ? {
+                    openingLegs: activeLegs,
+                    openingSpot: spot,
+                    todayDay: Math.max(0, effectiveDaysElapsed),
+                    adjusted: (trackedLegs ?? []).some((l) => l.derivedFrom || l.closedPnl != null),
+                  } : undefined}
+                />
+              </div>
+              ) : showStockOptionMap ? (
               <div className={showChartTabs ? "h-[calc(100%-30px)]" : "h-full"}>
                 <StockOptionMap
+                  symbol={symbol}
                   liveSpot={quote?.price}
                   unitMult={unitMult}
-                  legs={mapLegs}
+                  legs={isCompareMode ? activeTrackedLegs ?? [] : mapLegs}
                   onPointChange={setMapPoint}
-                  spot={analyticsSpot}
+                  tracked={trackedMap}
+                  spot={isCompareMode ? effectiveTrackedSpot : analyticsSpot}
                   dV={somDV}
                   openingAt={openingAt}
                   daysSinceOpen={openingSimBasis && !isExpiredOpening ? openingSimBasis.daysSinceOpen : undefined}
@@ -1179,7 +1228,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 spot={analyticsSpot}
                 shifts={analyticsShifts}
                 symbol={symbol}
-                modeSwitchButton={isMobile ? undefined : modeSwitchButton}
                 compact={isMobile}
                 breakevens={breakevens}
                 trackedLegs={activeTrackedLegs ?? undefined}
@@ -1197,7 +1245,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 expired={isExpiredOpening}
                 openingAt={openingAt}
                 compareCurves={!isCompareMode ? compareCurves : undefined}
-                hideHeadline={showChartTabs}
+                hideHeadline={showChartTabs && !isCompareMode}
               />
               </div>
               )}
@@ -1205,10 +1253,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           </div>
 
           {/* Sliders（手机上的跟踪对比不显示：对比模式滑块是冻结的，内容跟统计网格重复） */}
-          {!(isMobile && isCompareMode) && (
+          {!(isMobile && isCompareMode) && !showWinRate && (
           <div className="shrink-0 border-t border-slate-800 px-3 py-1.5">
             {showStockOptionMap ? (
-              <IvShiftSlider value={somDV} onChange={setSomDV} baseIv={somBaseIv} />
+              <IvShiftSlider value={somDV} onChange={setSomDV} baseIv={somBaseIv} baseIsToday={isCompareMode} />
             ) : (
             <ShiftSliders
               shifts={shifts}

@@ -1,3 +1,4 @@
+// src/i18n/I18nContext.tsx
 import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
 import { translations, type Lang } from "./translations";
 
@@ -25,7 +26,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const t = useCallback(
     (key: string, vars?: Record<string, string | number>) => {
       let s = translations[lang][key] ?? translations.zh[key] ?? key;
-      if (vars) for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, String(v));
+      if (vars) for (const [k, v] of Object.entries(vars)) s = s.split(`{${k}}`).join(String(v));
       return s;
     },
     [lang],

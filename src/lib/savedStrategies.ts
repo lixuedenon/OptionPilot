@@ -243,7 +243,6 @@ export async function backfillTrackedSnapshots(id: string): Promise<SavedStrateg
 
   const strategy = strategies[idx];
   const existing = strategy.trackedSnapshots ?? [];
-  const existingDates = new Set(existing.map((snap) => formatDateInput(snap.savedAt)));
   // `strategy.legs` is only guaranteed accurate "as of" legsAsOf (when it
   // was last saved), not openingAt (when the position truly opened) — see
   // SavedStrategy.legsAsOf's doc comment. Backfilling from the wrong
@@ -261,26 +260,40 @@ export async function backfillTrackedSnapshots(id: string): Promise<SavedStrateg
     return strategies;
   }
 
-  const toAdd: TrackedSnapshot[] = [];
+  // 估算快照从它前面最近的"真实状态"（开仓点或手动保存的快照）出发推算：沿用那时的腿位（展期/平仓之后的组合）
+  // 和那时各腿的隐含波动率，只让股价和时间变化。否则调整之后的估算日仍按开仓组合算，盈亏会凭空跳一下；
+  // 隐含波动率也会跳回开仓时的值，盈亏拆解里凭空多出一笔"波动率影响"。
+  const real = existing.filter((snap) => !snap.estimated);
+  const anchors = [
+    { dateISO: openedISO, legs: strategy.legs, spot: strategy.spot },
+    ...real.map((snap) => ({ dateISO: formatDateInput(snap.savedAt), legs: snap.legs, spot: snap.spot })),
+  ].sort((a, b) => (a.dateISO < b.dateISO ? -1 : a.dateISO > b.dateISO ? 1 : 0));
+  const realDates = new Set(real.map((snap) => formatDateInput(snap.savedAt)));
+  const barDates = new Set(bars.map((bar) => bar.dateISO));
+
+  const regenerated: TrackedSnapshot[] = [];
   for (const bar of bars) {
     if (bar.dateISO < openedISO) continue; // before this strategy existed
     if (bar.dateISO >= todayIso) continue; // today — a live save's job, not an estimate's
-    if (existingDates.has(bar.dateISO)) continue; // already has a real or backfilled entry
-
-    const daysElapsed = daysBetweenLocalDates(openedISO, bar.dateISO);
-    const repriced = repriceLegsAtDate(strategy.legs, strategy.spot, bar.avgPrice, daysElapsed);
-    toAdd.push({
+    if (realDates.has(bar.dateISO)) continue; // a real snapshot always wins
+    let base = anchors[0];
+    for (const a of anchors) if (a.dateISO <= bar.dateISO) base = a;
+    if (!(base.spot > 0)) continue;
+    const daysElapsed = daysBetweenLocalDates(base.dateISO, bar.dateISO);
+    regenerated.push({
       id: `snap-${bar.dateISO}-backfill`,
-      legs: repriced,
+      legs: repriceLegsAtDate(base.legs, base.spot, bar.avgPrice, daysElapsed),
       spot: bar.avgPrice,
       savedAt: parseDateInput(bar.dateISO) ?? Date.now(),
       estimated: true,
     });
   }
 
-  if (toAdd.length === 0) return strategies;
-
-  const merged = [...existing, ...toAdd].sort((a, b) => a.savedAt - b.savedAt);
+  // 数据窗口（约2个月）内的估算快照每次都按上面的规则重新生成；窗口外的旧估算保留原样。
+  const keptEstimated = existing.filter((snap) => snap.estimated && !barDates.has(formatDateInput(snap.savedAt)));
+  const merged = [...real, ...keptEstimated, ...regenerated].sort((a, b) => a.savedAt - b.savedAt);
+  const unchanged = merged.length === existing.length && JSON.stringify(merged) === JSON.stringify([...existing].sort((a, b) => a.savedAt - b.savedAt));
+  if (unchanged) return strategies;
   strategies[idx] = { ...strategy, trackedSnapshots: merged, tracking: true };
   saveToStorage(strategies);
   return strategies;

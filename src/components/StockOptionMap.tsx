@@ -5,9 +5,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Leg } from "@/lib/types";
 import { useI18n } from "@/i18n/I18nContext";
-import { PATH_GROUPS, buildMapModel, summarizePath, type MapModel, type PathId } from "@/lib/stockOptionMap";
+import { PATH_GROUPS, buildMapModel, summarizePath, type MapModel, type PathId, type HistoryPoint, type AdjustMarker, type SegmentAttribution, type PnlParts } from "@/lib/stockOptionMap";
 
 interface Props {
+  symbol: string;
   legs: Leg[];
   spot: number;
   dV: number;
@@ -18,6 +19,10 @@ interface Props {
   onPointChange?: (p: { day: number; price: number } | null) => void;
   // 实时现价：开仓日在过去时，可以切换成"从今天、现价出发"画走势线和概率范围。
   liveSpot?: number;
+  // 跟踪对比模式：左半边画开仓至今真实走过的股价（history）和展期/保护/对冲标记，
+  // 右半边从今天（todayDay）、现价推演，所有盈亏都加上开仓至今的总盈亏（pnlOffset），显示总账。
+  // segments/totals：今昔对比——开仓至今的盈亏逐段拆成股价/时间/波动率/调整，画在左半边底部，读数和图下方的总结都用它。
+  tracked?: { todayDay: number; pnlOffset: number; history: HistoryPoint[]; markers: AdjustMarker[]; segments?: SegmentAttribution[]; totals?: PnlParts & { total: number } };
   // 金额显示倍数：1=每股，100=每张合约（跟图表头部的切换一致）。
   unitMult?: number;
 }
@@ -29,6 +34,10 @@ const M = { l: 46, r: 62, t: 20, b: 34 };
 const PATH_COLORS = ["#38bdf8", "#fbbf24"];
 const FLAT_COLOR = "#e2e8f0";
 const DAY_MS = 86400000;
+
+const PART_KEYS = ["price", "time", "iv", "adjust"] as const;
+const PART_COLORS: Record<(typeof PART_KEYS)[number], string> = { price: "#38bdf8", time: "#a3e635", iv: "#c084fc", adjust: "#fbbf24" };
+const BAND_H = 46;
 
 const fmtPnlRaw = (v: number) => (Math.abs(v) < 0.005 ? "$0.00" : `${v > 0 ? "+" : "−"}$${Math.abs(v).toFixed(2)}`);
 const pnlColor = (v: number) => (Math.abs(v) < 0.005 ? "#cbd5e1" : v > 0 ? "#34d399" : "#fb7185");
@@ -42,13 +51,14 @@ function niceStep(span: number, target: number) {
 
 // 盈利按最大盈利、亏损按最大亏损各自换算深浅。
 function cellColor(v: number, maxProfit: number, maxLoss: number): [number, number, number] {
+  if (!Number.isFinite(v)) return [15, 23, 42]; // 没有推演的区域（跟踪对比模式的"已走过"半边）
   const k = Math.sqrt(Math.min(1, v >= 0 ? v / maxProfit : -v / maxLoss));
   const base: [number, number, number] = [22, 30, 46];
   const to: [number, number, number] = v >= 0 ? [16, 185, 129] : [244, 63, 94];
   return [0, 1, 2].map((i) => Math.round(base[i] + (to[i] - base[i]) * k)) as [number, number, number];
 }
 
-export default function StockOptionMap({ legs, spot, dV, openingAt, daysSinceOpen, emptyText, onPointChange, liveSpot, unitMult = 1 }: Props) {
+export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, daysSinceOpen, emptyText, onPointChange, liveSpot, unitMult = 1, tracked }: Props) {
   const { t } = useI18n();
   const [groupId, setGroupId] = useState(PATH_GROUPS[0].id);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -80,11 +90,22 @@ export default function StockOptionMap({ legs, spot, dV, openingAt, daysSinceOpe
     onPointChangeRef.current?.(null);
   }, []);
 
-  const canStartToday = daysSinceOpen !== undefined && daysSinceOpen > 0 && liveSpot !== undefined && liveSpot > 0;
+  const canStartToday = !tracked && daysSinceOpen !== undefined && daysSinceOpen > 0 && liveSpot !== undefined && liveSpot > 0;
   const useToday = startMode === "today" && canStartToday;
+  const todayDay = tracked ? tracked.todayDay : daysSinceOpen;
   const model = useMemo(
-    () => buildMapModel(legs, spot, dV, useToday ? { start: { day: daysSinceOpen!, price: liveSpot! } } : {}),
-    [legs, spot, dV, useToday, daysSinceOpen, liveSpot],
+    () =>
+      buildMapModel(
+        legs,
+        spot,
+        dV,
+        tracked
+          ? { timeOffset: tracked.todayDay, pnlOffset: tracked.pnlOffset, extraPrices: tracked.history.map((h) => h.price) }
+          : useToday
+            ? { start: { day: daysSinceOpen!, price: liveSpot! } }
+            : {},
+      ),
+    [legs, spot, dV, useToday, daysSinceOpen, liveSpot, tracked],
   );
   const group = PATH_GROUPS.find((g) => g.id === groupId) ?? PATH_GROUPS[0];
   const summaries = useMemo(
@@ -130,7 +151,7 @@ export default function StockOptionMap({ legs, spot, dV, openingAt, daysSinceOpe
     g.clearRect(0, 0, size.w, size.h);
     draw(g, model, size.w, size.h);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model, size, group, hover, daysSinceOpen, point, pinned, unitMult]);
+  }, [model, size, group, hover, daysSinceOpen, point, pinned, unitMult, symbol]);
 
   function draw(g: CanvasRenderingContext2D, m: MapModel, W: number, H: number) {
     const pw = W - M.l - M.r;
@@ -178,6 +199,13 @@ export default function StockOptionMap({ legs, spot, dV, openingAt, daysSinceOpe
       g.restore();
     }
     g.fillText(`${t("som.axisTime")} →`, M.l + pw / 2, H - 4);
+    g.font = "10px ui-sans-serif, system-ui, sans-serif";
+
+    // 股票代码：图的上方正中间
+    g.font = "bold 13px ui-sans-serif, system-ui, sans-serif";
+    g.fillStyle = "#f8fafc";
+    g.textAlign = "center";
+    g.fillText(symbol, M.l + pw / 2, 14);
     g.font = "10px ui-sans-serif, system-ui, sans-serif";
 
     // 价格刻度
@@ -288,17 +316,107 @@ export default function StockOptionMap({ legs, spot, dV, openingAt, daysSinceOpe
     }
 
     // 今天
-    if (daysSinceOpen !== undefined && daysSinceOpen > 0 && daysSinceOpen < m.horizon) {
+    if (todayDay !== undefined && todayDay > 0 && todayDay < m.horizon) {
       g.strokeStyle = "#94a3b8";
       g.beginPath();
-      g.moveTo(tx(daysSinceOpen), M.t);
-      g.lineTo(tx(daysSinceOpen), M.t + ph);
+      g.moveTo(tx(todayDay), M.t);
+      g.lineTo(tx(todayDay), M.t + ph);
       g.stroke();
       g.fillStyle = "#cbd5e1";
       g.textAlign = "center";
-      g.fillText(t("som.today"), tx(daysSinceOpen), M.t + 10);
+      g.fillText(t("som.today"), tx(todayDay), M.t + 10);
     }
     g.setLineDash([]);
+
+    // 跟踪对比模式：左半边标题、展期/保护/对冲标记、真实走过的股价线（快照点按当时总盈亏上色）
+    if (tracked) {
+      g.font = "bold 11px ui-sans-serif, system-ui, sans-serif";
+      g.textAlign = "center";
+      g.fillStyle = "#cbd5e1";
+      if (tracked.todayDay > 0) g.fillText(t("som.pastTitle"), tx(tracked.todayDay / 2), M.t + 24);
+      g.fillText(t("som.futureTitle"), tx((tracked.todayDay + m.horizon) / 2), M.t + 24);
+      g.font = "10px ui-sans-serif, system-ui, sans-serif";
+      g.setLineDash([3, 3]);
+      g.strokeStyle = "#f59e0b";
+      g.lineWidth = 1;
+      for (const mk of tracked.markers) {
+        g.beginPath();
+        g.moveTo(tx(mk.day), M.t);
+        g.lineTo(tx(mk.day), M.t + ph);
+        g.stroke();
+        g.fillStyle = "#fbbf24";
+        g.textAlign = "left";
+        g.fillText(t(`som.adjust.${mk.via}`), tx(mk.day) + 3, M.t + ph - (tracked.segments?.length ? BAND_H + 6 : 4));
+      }
+      g.setLineDash([]);
+      const pts = [...tracked.history, { day: tracked.todayDay, price: spot, pnl: tracked.pnlOffset }];
+      g.beginPath();
+      pts.forEach((h, i) => (i === 0 ? g.moveTo(tx(h.day), ty(h.price)) : g.lineTo(tx(h.day), ty(h.price))));
+      g.strokeStyle = "#020617";
+      g.lineWidth = 5;
+      g.stroke();
+      g.strokeStyle = "#f8fafc";
+      g.lineWidth = 2.5;
+      g.stroke();
+      for (const h of tracked.history.slice(1)) {
+        g.fillStyle = pnlColor(h.pnl);
+        g.beginPath();
+        g.arc(tx(h.day), ty(h.price), h.estimated ? 2.5 : 4.5, 0, Math.PI * 2);
+        g.fill();
+      }
+      // 盈亏拆解条：每一段一根柱，正的部分往上叠、负的往下叠，颜色=股价/时间/波动率/调整。
+      const segs = tracked.segments ?? [];
+      if (segs.length && tracked.todayDay > 0) {
+        const bx0 = M.l;
+        const bx1 = tx(tracked.todayDay);
+        const by0 = M.t + ph - BAND_H;
+        const mid = by0 + BAND_H / 2 + 4;
+        g.fillStyle = "rgba(2,6,23,0.8)";
+        g.fillRect(bx0, by0, bx1 - bx0, BAND_H);
+        g.strokeStyle = "#475569";
+        g.beginPath();
+        g.moveTo(bx0, mid);
+        g.lineTo(bx1, mid);
+        g.stroke();
+        g.fillStyle = "#94a3b8";
+        g.textAlign = "left";
+        g.fillText(t("som.attrBand"), bx0 + 4, by0 + 10);
+        let maxStack = 1e-9;
+        for (const sg of segs) {
+          let up = 0;
+          let dn = 0;
+          for (const k of PART_KEYS) {
+            if (sg[k] > 0) up += sg[k];
+            else dn -= sg[k];
+          }
+          maxStack = Math.max(maxStack, up, dn);
+        }
+        const half = BAND_H / 2 - 6;
+        for (const sg of segs) {
+          const x0 = tx(sg.fromDay);
+          const x1 = tx(sg.toDay);
+          const w = Math.max(2, Math.min(18, (x1 - x0) * 0.7));
+          const cx = (x0 + x1) / 2;
+          let up = 0;
+          let dn = 0;
+          g.globalAlpha = sg.estimated ? 0.6 : 1;
+          for (const k of PART_KEYS) {
+            const v = sg[k];
+            if (Math.abs(v) < 1e-9) continue;
+            const h = (Math.abs(v) / maxStack) * half;
+            g.fillStyle = PART_COLORS[k];
+            if (v > 0) {
+              g.fillRect(cx - w / 2, mid - up - h, w, h);
+              up += h;
+            } else {
+              g.fillRect(cx - w / 2, mid + dn, w, h);
+              dn += h;
+            }
+          }
+          g.globalAlpha = 1;
+        }
+      }
+    }
 
     // 走势线 + 终点盈亏标签
     group.paths.forEach((id, i) => {
@@ -336,11 +454,28 @@ export default function StockOptionMap({ legs, spot, dV, openingAt, daysSinceOpe
       g.font = "10px ui-sans-serif, system-ui, sans-serif";
     });
 
-    // 起点
+    // 起点（跟踪对比模式是"今天"：标出开仓至今的总盈亏）
     g.fillStyle = "#f8fafc";
     g.beginPath();
-    g.arc(tx(m.start.day), ty(m.start.price), 3.5, 0, Math.PI * 2);
+    g.arc(tx(m.start.day), ty(m.start.price), tracked ? 5 : 3.5, 0, Math.PI * 2);
     g.fill();
+    if (tracked) {
+      // 深色底框，避免文字压在红/绿背景上看不清
+      g.font = "bold 11px ui-sans-serif, system-ui, sans-serif";
+      g.textAlign = "left";
+      const lbl = `${t("som.totalNow")} ${fmtPnl(tracked.pnlOffset)}`;
+      const lw = g.measureText(lbl).width;
+      const lx = tx(m.start.day) + 8;
+      const ly = ty(m.start.price) - 22;
+      g.fillStyle = "rgba(2,6,23,0.88)";
+      g.fillRect(lx - 4, ly, lw + 8, 16);
+      g.strokeStyle = "#475569";
+      g.lineWidth = 1;
+      g.strokeRect(lx - 4, ly, lw + 8, 16);
+      g.fillStyle = pnlColor(tracked.pnlOffset);
+      g.fillText(lbl, lx, ly + 12);
+      g.font = "10px ui-sans-serif, system-ui, sans-serif";
+    }
 
     // 选中点标记：钉住时琥珀色；未钉住且鼠标不在图上时（停在最后位置）白色
     const hoverInside = hover && hover.x >= M.l && hover.x <= M.l + pw && hover.y >= M.t && hover.y <= M.t + ph;
@@ -374,6 +509,7 @@ export default function StockOptionMap({ legs, spot, dV, openingAt, daysSinceOpe
       const day = Math.round(((hover.x - M.l) / pw) * m.horizon);
       const price = m.sMax - ((hover.y - M.t) / ph) * (m.sMax - m.sMin);
       const v = m.pnlAt(day, price);
+      const inPast = !!tracked && day < tracked.todayDay;
       g.strokeStyle = "rgba(226,232,240,0.5)";
       g.lineWidth = 1;
       g.beginPath();
@@ -383,12 +519,27 @@ export default function StockOptionMap({ legs, spot, dV, openingAt, daysSinceOpe
       g.lineTo(M.l + pw, hover.y);
       g.stroke();
       // 读数：日期、股价、组合盈亏、组合净值、每条腿的价值（每股计，跟"盈亏图"标签口径一致）。
+      // 跟踪对比模式"已走过"半边：显示离鼠标最近的那条真实快照（当天股价和当时的总盈亏）。
+      const near = inPast && tracked
+        ? tracked.history.reduce((a, b) => (Math.abs(b.day - day) < Math.abs(a.day - day) ? b : a))
+        : null;
       const legVals = m.legValuesAt(day, price);
       const net = legVals.reduce((a, b) => a + b, 0);
-      const lines: { text: string; color: string }[] = [
+      const seg = inPast && tracked?.segments ? tracked.segments.find((sg) => day > sg.fromDay - 1e-9 && day <= sg.toDay + 1e-9 && sg.toDay > sg.fromDay) : undefined;
+      const segLines: { text: string; color: string }[] = seg ? [
+        { text: `${dateLabel(seg.fromDay)} → ${dateLabel(seg.toDay)}  ${t("som.attrChange")} ${fmtPnl(seg.total)}`, color: pnlColor(seg.total) },
+        ...PART_KEYS.map((k) => ({ text: `  ${t(`som.attr_${k}`)} ${fmtPnl(seg[k])}`, color: PART_COLORS[k] })),
+        ...(seg.estimated ? [{ text: t("som.attrSegEst"), color: "#94a3b8" }] : []),
+      ] : [];
+      const lines: { text: string; color: string }[] = near ? [
+        { text: `${dateLabel(near.day)} · ${t("som.day", { n: near.day })}${near.estimated ? ` · ${t("som.estimated")}` : ""}`, color: "#e2e8f0" },
+        { text: `${t("som.tipPrice")} ${near.price.toFixed(2)}`, color: "#e2e8f0" },
+        { text: `${t("som.tipTotal")} ${fmtPnl(near.pnl)}`, color: pnlColor(near.pnl) },
+        ...segLines,
+      ] : [
         { text: `${dateLabel(day)} · ${t("som.day", { n: day })}`, color: "#e2e8f0" },
         { text: `${t("som.tipPrice")} ${price.toFixed(2)}`, color: "#e2e8f0" },
-        { text: `${t("som.tipPnl")} ${fmtPnl(v)}`, color: pnlColor(v) },
+        { text: `${tracked ? t("som.tipTotal") : t("som.tipPnl")} ${fmtPnl(v)}`, color: pnlColor(v) },
         { text: `${t("som.tipNet")} ${net >= 0 ? t("chart.netReceive") : t("chart.netPay")} ${fmtVal(net)}`, color: "#e2e8f0" },
         ...legs.map((l, i) => {
           const act = l.action === "buy" ? t("saveStrategy.buy") : t("saveStrategy.sell");
@@ -411,7 +562,7 @@ export default function StockOptionMap({ legs, spot, dV, openingAt, daysSinceOpe
       lines.forEach((ln, i) => {
         g.fillStyle = ln.color;
         g.fillText(ln.text, bx + 6, by + 14 + i * 13);
-        if (i === 3) {
+        if (i === (near ? 2 : 3)) {
           g.strokeStyle = "#334155";
           g.beginPath();
           g.moveTo(bx + 4, by + 17 + i * 13);
@@ -494,10 +645,38 @@ export default function StockOptionMap({ legs, spot, dV, openingAt, daysSinceOpe
           }}
         />
       </div>
+      {tracked?.totals && tracked.segments && tracked.segments.length > 0 && (() => {
+        const tot = tracked.totals;
+        // "为什么是今天这样"：跟总结果同方向、贡献最大的那一项；反方向更大的一项算"抵消了一部分"。
+        const sameSign = PART_KEYS.filter((k) => tot[k] * tot.total > 0);
+        const main = sameSign.length ? sameSign.reduce((a, b) => (Math.abs(tot[b]) > Math.abs(tot[a]) ? b : a)) : null;
+        const opp = PART_KEYS.filter((k) => tot[k] * tot.total < 0).sort((a, b) => Math.abs(tot[b]) - Math.abs(tot[a]))[0];
+        return (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
+            <span className="font-semibold text-slate-200">
+              {t("som.attrTitle")} <span className="tabular-nums" style={{ color: pnlColor(tot.total) }}>{fmtPnl(tot.total)}</span> =
+            </span>
+            {PART_KEYS.map((k) => (
+              <span key={k} className="flex items-center gap-1 text-slate-400">
+                <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: PART_COLORS[k] }} />
+                {t(`som.attr_${k}`)} <span className="tabular-nums" style={{ color: pnlColor(tot[k]) }}>{fmtPnl(tot[k])}</span>
+              </span>
+            ))}
+            {main && Math.abs(tot.total) > 0.005 && (
+              <span className="font-semibold text-amber-200">
+                {t(tot.total > 0 ? "som.attrMainGain" : "som.attrMainLoss", { name: t(`som.attr_${main}`) })}
+                {opp && Math.abs(tot[opp]) > 0.005 && t("som.attrOffset", { name: t(`som.attr_${opp}`), v: fmtPnl(tot[opp]) })}
+              </span>
+            )}
+          </div>
+        );
+      })()}
       <div className="text-[10px] text-slate-500">
-        {pinned && point
-          ? <span className="text-amber-300">{t("som.pinned", { date: dateLabel(point.day), price: point.price.toFixed(2) })}</span>
-          : t("som.pinHint")}
+        {tracked
+          ? t("som.trackedHint")
+          : pinned && point
+            ? <span className="text-amber-300">{t("som.pinned", { date: dateLabel(point.day), price: point.price.toFixed(2) })}</span>
+            : t("som.pinHint")}
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px]">
         {summaries.map((s, i) => (
@@ -518,7 +697,7 @@ export default function StockOptionMap({ legs, spot, dV, openingAt, daysSinceOpe
 }
 
 // 这个标签下只保留隐含波动率滑块（时间和股价已经体现在图上）。baseIv是开仓时各期权腿IV的平均值（小数）。
-export function IvShiftSlider({ value, onChange, baseIv }: { value: number; onChange: (v: number) => void; baseIv: number | null }) {
+export function IvShiftSlider({ value, onChange, baseIv, baseIsToday }: { value: number; onChange: (v: number) => void; baseIv: number | null; baseIsToday?: boolean }) {
   const { t } = useI18n();
   const pct = ((value + 100) / 200) * 100;
   const basePct = baseIv !== null ? baseIv * 100 : null;
@@ -538,7 +717,7 @@ export function IvShiftSlider({ value, onChange, baseIv }: { value: number; onCh
       </div>
       <div className="flex items-center gap-3">
         <span className="w-28 shrink-0 text-[10px] text-slate-400">
-          {t("som.ivBase")} <span className="font-bold tabular-nums text-slate-200">{basePct !== null ? `${basePct.toFixed(1)}%` : "—"}</span>
+          {t(baseIsToday ? "som.ivBaseToday" : "som.ivBase")} <span className="font-bold tabular-nums text-slate-200">{basePct !== null ? `${basePct.toFixed(1)}%` : "—"}</span>
         </span>
         <input
           type="range"

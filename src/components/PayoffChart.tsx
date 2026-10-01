@@ -495,7 +495,11 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
       )}
       {/* Headline P&L + per-leg values */}
       <div className="mb-1 flex flex-col gap-0.5 rounded-lg border border-slate-800 bg-slate-900/60 px-2.5 py-1">
-        <div className="flex items-center justify-between">
+        <div className="relative flex items-center justify-between">
+          {/* 电脑版分析模式：股票代码放在这一行正中间（标题行只留"未来情景模拟"）。 */}
+          {hideHeadline && (
+            <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-sm font-extrabold text-slate-50">{symbol}</span>
+          )}
           <div className="flex flex-wrap items-center gap-1.5">
             {!hideHeadline && <span className="text-sm font-extrabold text-slate-50">{symbol}</span>}
             {modeSwitchButton}

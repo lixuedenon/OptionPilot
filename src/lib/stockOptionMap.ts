@@ -3,7 +3,9 @@
 // 盈亏口径跟priceCombo完全一致（legShiftedPrice之和 − 开仓净权利金，每股计），
 // 保证跟"盈亏图"标签同一个时间/股价/波动率下的数字相同。
 import type { Leg } from "@/lib/types";
-import { impliedVol, legShiftedPrice } from "@/lib/pricing";
+import { impliedVol, legShiftedPrice, resolveOpeningLeg } from "@/lib/pricing";
+import { bsPrice } from "@/lib/bs";
+import { calendarDaysBetween } from "@/lib/dateUtils";
 
 export type PathId =
   | "up" | "down" | "flat"
@@ -79,12 +81,21 @@ export interface MapModel {
 
 export interface MapOptions {
   start?: { day: number; price: number };
+  // 跟踪对比模式：legs是"今日组合"、spot是现价，推演从第timeOffset天（今天）开始；
+  // 之前的日子没有推演（pnlAt返回NaN），盈亏统一加上pnlOffset（开仓至今的总盈亏），显示的是总账。
+  timeOffset?: number;
+  pnlOffset?: number;
+  // 需要包进价格区间的额外价格（比如真实走过的历史股价）
+  extraPrices?: number[];
 }
 
 export function buildMapModel(legs: Leg[], spot: number, dV: number, opts: MapOptions = {}, cols = 120, rows = 80): MapModel | null {
   if (legs.length === 0 || spot <= 0) return null;
   const options = legs.filter((l) => l.kind !== "stock");
-  const horizon = options.length > 0 ? Math.max(1, Math.min(...options.map((l) => l.dte))) : 30;
+  const t0 = Math.max(0, opts.timeOffset ?? 0);
+  const pnlOffset = opts.pnlOffset ?? 0;
+  const innerHorizon = options.length > 0 ? Math.max(1, Math.min(...options.map((l) => l.dte))) : 30;
+  const horizon = t0 + innerHorizon;
 
   const ivs = legs.map((l) => (l.kind === "stock" ? undefined : impliedVol(spot, l.strike, l.dte, l.premium, l.type)));
   const netPremium = legs.reduce((sum, l) => {
@@ -95,10 +106,12 @@ export function buildMapModel(legs: Leg[], spot: number, dV: number, opts: MapOp
 
   // 走势幅度只按开仓时的隐含波动率（不跟IV滑块），否则拖IV会同时改变"市场怎么走"和"期权怎么定价"两件事。
   const baseIv = averageIv(ivs);
-  const move = spot * baseIv * Math.sqrt(horizon / 365);
-  const start = opts.start && opts.start.day > 0 && opts.start.day < horizon && opts.start.price > 0
-    ? opts.start
-    : { day: 0, price: spot };
+  const move = spot * baseIv * Math.sqrt(innerHorizon / 365);
+  const start = t0 > 0
+    ? { day: t0, price: spot }
+    : opts.start && opts.start.day > 0 && opts.start.day < horizon && opts.start.price > 0
+      ? opts.start
+      : { day: 0, price: spot };
   const remaining = horizon - start.day;
   const pathMove = start.price * baseIv * Math.sqrt(remaining / 365);
 
@@ -110,17 +123,24 @@ export function buildMapModel(legs: Leg[], spot: number, dV: number, opts: MapOp
     if (k < sMin && k > spot * 0.4) sMin = k - 0.15 * move;
     if (k > sMax && k < spot * 1.6) sMax = k + 0.15 * move;
   }
+  for (const p of opts.extraPrices ?? []) {
+    if (!(p > 0)) continue;
+    if (p < sMin) sMin = p - 0.1 * move;
+    if (p > sMax) sMax = p + 0.1 * move;
+  }
   sMin = Math.max(0.01, sMin);
 
   const legValuesAt = (day: number, price: number) => {
-    const s = { dS: price - spot, dT: day, dV };
+    if (day < t0 - 1e-9) return legs.map(() => NaN);
+    const s = { dS: price - spot, dT: day - t0, dV };
     return legs.map((l, i) => legShiftedPrice(l, s, spot, ivs[i]));
   };
   const pnlAt = (day: number, price: number) => {
-    const s = { dS: price - spot, dT: day, dV };
+    if (day < t0 - 1e-9) return NaN;
+    const s = { dS: price - spot, dT: day - t0, dV };
     let v = 0;
     for (let i = 0; i < legs.length; i++) v += legShiftedPrice(legs[i], s, spot, ivs[i]);
-    return v - netPremium;
+    return v - netPremium + pnlOffset;
   };
 
   const grid = new Float64Array(rows * cols);
@@ -133,6 +153,7 @@ export function buildMapModel(legs: Leg[], spot: number, dV: number, opts: MapOp
       const day = (c / (cols - 1)) * horizon;
       const v = pnlAt(day, price);
       grid[r * cols + c] = v;
+      if (!Number.isFinite(v)) continue;
       if (Math.abs(v) > maxAbs) maxAbs = Math.abs(v);
       if (v > maxProfit) maxProfit = v;
       if (-v > maxLoss) maxLoss = -v;
@@ -172,4 +193,163 @@ export function summarizePath(model: MapModel, id: PathId, steps = 60): PathSumm
     if (i === steps) end = v;
   }
   return { end, best, worst };
+}
+
+// ── 跟踪对比模式 ──────────────────────────────────────────────
+
+// 某个时刻"今日组合"相对开仓组合的总盈亏（每股计）：未平仓腿按当时权利金对比开仓权利金，
+// 再加上已平仓/展期掉的腿已实现的closedPnl。跟useComboAnalytics的trackedResult.change + realizedTrackedPnl同一口径。
+export function trackedTotalPnl(openingLegs: Leg[], legsNow: Leg[], spotNow: number, openingSpot: number): number {
+  const openActive = openingLegs.filter((l) => !l.disabled);
+  const openingById = new Map(openActive.map((l) => [l.id, l]));
+  let total = 0;
+  legsNow.filter((l) => !l.disabled).forEach((leg, index) => {
+    const o = resolveOpeningLeg(leg, index, openActive, openingById);
+    const sign = leg.action === "buy" ? 1 : -1;
+    const qty = leg.kind === "stock" ? 1 : (leg.qty ?? 1);
+    const shifted = leg.kind === "stock" ? sign * (spotNow - leg.strike) : sign * qty * leg.premium;
+    const oSign = o?.action === "buy" ? 1 : -1;
+    const base = o ? (o.kind === "stock" ? oSign * (openingSpot - o.strike) : oSign * qty * o.premium) : 0;
+    total += shifted - base;
+  });
+  for (const l of legsNow) total += l.closedPnl ?? 0;
+  return total;
+}
+
+export interface HistoryPoint {
+  day: number; // 开仓后第几天
+  price: number;
+  pnl: number; // 当时的总盈亏
+  estimated?: boolean; // 自动回填的估算快照
+}
+
+export interface AdjustMarker {
+  day: number;
+  via: "roll" | "protect" | "hedge";
+}
+
+// 从开仓到今天真实走过的路：开仓点 + 每条快照（按时间排序）；以及每次展期/保护/对冲第一次出现的那天。
+export function buildTrackedHistory(
+  snapshots: { legs: Leg[]; spot: number; savedAt: number; estimated?: boolean }[],
+  openingLegs: Leg[],
+  openingSpot: number,
+  openingAt: number,
+): { points: HistoryPoint[]; markers: AdjustMarker[] } {
+  const points: HistoryPoint[] = [{ day: 0, price: openingSpot, pnl: 0 }];
+  const markers: AdjustMarker[] = [];
+  const seen = new Set<string>();
+  for (const l of openingLegs) if (l.derivedFrom) seen.add(l.id);
+  const sorted = [...snapshots].sort((a, b) => a.savedAt - b.savedAt);
+  for (const sn of sorted) {
+    const day = Math.max(0, calendarDaysBetween(openingAt, sn.savedAt));
+    if (sn.spot > 0) {
+      points.push({ day, price: sn.spot, pnl: trackedTotalPnl(openingLegs, sn.legs, sn.spot, openingSpot), estimated: sn.estimated });
+    }
+    for (const l of sn.legs) {
+      if (l.derivedFrom && !seen.has(l.id)) {
+        seen.add(l.id);
+        markers.push({ day, via: l.derivedFrom.via });
+      }
+    }
+  }
+  return { points, markers };
+}
+
+// ── 今昔对比：把开仓至今的总盈亏逐段拆回股价/时间/波动率/调整 ──────────────
+
+export interface PnlParts {
+  price: number; // 股价变化带来的
+  time: number; // 时间流逝带来的
+  iv: number; // 隐含波动率变化带来的
+  adjust: number; // 展期/平仓/保护/对冲等调整（已实现部分、新增或去掉的腿）
+}
+
+export interface TrackedState {
+  legs: Leg[];
+  spot: number;
+  day: number; // 开仓后第几天
+  pnl: number; // 这个时刻开仓以来的总盈亏（含已实现）
+  estimated?: boolean;
+}
+
+export interface SegmentAttribution extends PnlParts {
+  fromDay: number;
+  toDay: number;
+  total: number;
+  estimated: boolean;
+}
+
+const RATE = 0.05; // 跟pricing.ts的定价利率一致
+
+function legPriceAt(l: Leg, S: number, dte: number, iv: number): number {
+  if (l.kind === "stock") return S;
+  if (dte <= 0) return l.type === "call" ? Math.max(0, S - l.strike) : Math.max(0, l.strike - S);
+  return bsPrice(Math.max(0.01, S), l.strike, dte, Math.max(0.01, iv), RATE, l.type);
+}
+
+// 两个时刻之间"同一条腿"的配对：先按id/openLegId，再按(买卖、类型、行权价、到期那天、张数)。
+function matchLegs(a: TrackedState, b: TrackedState): [Leg, Leg][] {
+  const aLegs = a.legs.filter((l) => !l.disabled);
+  const bLegs = b.legs.filter((l) => !l.disabled);
+  const used = new Set<Leg>();
+  const pairs: [Leg, Leg][] = [];
+  const key = (l: Leg) => `${l.kind ?? "opt"}|${l.action}|${l.type}|${l.strike}|${l.qty ?? 1}`;
+  const expiry = (l: Leg, day: number) => day + l.dte;
+  for (const la of aLegs) {
+    let hit = bLegs.find((lb) => !used.has(lb) && (lb.id === la.id || lb.openLegId === la.id || (la.openLegId && lb.openLegId === la.openLegId)));
+    if (!hit) {
+      hit = bLegs.find(
+        (lb) => !used.has(lb) && key(lb) === key(la) && (la.kind === "stock" || Math.abs(expiry(lb, b.day) - expiry(la, a.day)) <= 2),
+      );
+    }
+    if (hit) {
+      used.add(hit);
+      pairs.push([la, hit]);
+    }
+  }
+  return pairs;
+}
+
+// 逐段、按顺序拆：先只动股价（沿用前一时刻的剩余天数和隐含波动率），再加上时间，剩下的就是隐含波动率——三部分加起来正好等于这条腿的价值变化。
+// 两个时刻都有的腿按这个办法拆；其余（新开/平掉/展期）的变化都算"调整"，所以四部分之和=总盈亏变化。
+export function attributeSegment(a: TrackedState, b: TrackedState): PnlParts {
+  let price = 0;
+  let time = 0;
+  let iv = 0;
+  for (const [la, lb] of matchLegs(a, b)) {
+    const sign = la.action === "buy" ? 1 : -1;
+    if (la.kind === "stock") {
+      price += sign * (b.spot - a.spot);
+      continue;
+    }
+    const q = sign * (la.qty ?? 1);
+    const ivA = impliedVol(a.spot, la.strike, la.dte, la.premium, la.type);
+    const p1 = legPriceAt(la, b.spot, la.dte, ivA);
+    const p2 = legPriceAt(la, b.spot, lb.dte, ivA);
+    price += q * (p1 - la.premium);
+    time += q * (p2 - p1);
+    iv += q * (lb.premium - p2);
+  }
+  const total = b.pnl - a.pnl;
+  return { price, time, iv, adjust: total - price - time - iv };
+}
+
+export function buildAttributionTimeline(states: TrackedState[]): { segments: SegmentAttribution[]; totals: PnlParts & { total: number } } {
+  const sorted = [...states].sort((x, y) => x.day - y.day);
+  const segments: SegmentAttribution[] = [];
+  const totals = { price: 0, time: 0, iv: 0, adjust: 0, total: 0 };
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    const parts = attributeSegment(a, b);
+    const total = b.pnl - a.pnl;
+    // 终点是估算快照时，它沿用前一个真实状态的隐含波动率，这一段只有股价和时间；终点是真实快照时，波动率变化是真的（从上一个真实状态累积过来）。
+    segments.push({ ...parts, fromDay: a.day, toDay: b.day, total, estimated: !!b.estimated });
+    totals.price += parts.price;
+    totals.time += parts.time;
+    totals.iv += parts.iv;
+    totals.adjust += parts.adjust;
+    totals.total += total;
+  }
+  return { segments, totals };
 }

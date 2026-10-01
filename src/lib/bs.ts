@@ -1,3 +1,4 @@
+// src/lib/bs.ts
 // Standard normal PDF
 function npdf(x: number): number {
   return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
@@ -26,6 +27,17 @@ export interface BSGreeks {
   gamma: number;
   theta: number; // per calendar day
   vega: number; // per 1% vol
+}
+
+// 只算价格（跟blackScholes().price同一公式、同一结果），不算希腊字母——胜率模拟每条走势每天都要重算，省掉约三分之二的计算量。
+export function bsPrice(S: number, K: number, dte: number, sigma: number, r: number, type: "call" | "put"): number {
+  const T = Math.max(dte, 0.01) / 365;
+  const sqrtT = Math.sqrt(T);
+  const d1 = (Math.log(S / K) + (r + (sigma * sigma) / 2) * T) / (sigma * sqrtT);
+  const d2 = d1 - sigma * sqrtT;
+  return type === "call"
+    ? S * ncdf(d1) - K * Math.exp(-r * T) * ncdf(d2)
+    : K * Math.exp(-r * T) * ncdf(-d2) - S * ncdf(-d1);
 }
 
 // Black-Scholes price + Greeks for a single option.

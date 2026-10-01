@@ -3,7 +3,7 @@
 import { describe, it, expect } from "vitest";
 import type { Leg } from "@/lib/types";
 import { priceCombo } from "@/lib/pricing";
-import { buildMapModel, summarizePath, PATH_GROUPS, comboBaseIv } from "@/lib/stockOptionMap";
+import { buildMapModel, summarizePath, PATH_GROUPS, comboBaseIv, trackedTotalPnl, buildTrackedHistory, buildAttributionTimeline } from "@/lib/stockOptionMap";
 
 const leg = (over: Partial<Leg>): Leg => ({ id: Math.random().toString(36), action: "buy", type: "call", strike: 100, dte: 30, premium: 5, ...over });
 
@@ -66,5 +66,73 @@ describe("stockOptionMap", () => {
   it("base IV ignores legs whose premium is not filled yet", () => {
     const iv = comboBaseIv([leg({ premium: 0 }), leg({ strike: 105, premium: 3 })], 100)!;
     expect(iv).toBeGreaterThan(0.05);
+  });
+});
+
+describe("stockOptionMap tracked mode", () => {
+  const opening = [
+    { id: "a", action: "sell", type: "put", strike: 95, dte: 40, premium: 2 },
+    { id: "b", action: "buy", type: "put", strike: 90, dte: 40, premium: 1 },
+  ] as Leg[];
+
+  it("trackedTotalPnl = sum(current - opening) + realized", () => {
+    const now = [
+      { ...opening[0], premium: 1.2, dte: 30 },
+      { ...opening[1], premium: 0.4, dte: 30 },
+      { id: "x", action: "buy", type: "call", strike: 110, dte: 30, premium: 1, disabled: true, closedPnl: 0.5 },
+    ] as Leg[];
+    // 卖出腿 -1.2 - (-2) = +0.8；买入腿 0.4 - 1 = -0.6；已实现 +0.5
+    expect(trackedTotalPnl(opening, now, 100, 100)).toBeCloseTo(0.7, 10);
+  });
+
+  it("timeOffset model: NaN before today, equals the offset at today's price", () => {
+    const m = buildMapModel(opening.map((l) => ({ ...l, dte: 30 })), 102, 0, { timeOffset: 10, pnlOffset: 0.7 })!;
+    expect(m.horizon).toBe(40);
+    expect(Number.isNaN(m.pnlAt(5, 100))).toBe(true);
+    expect(m.pnlAt(10, 102)).toBeCloseTo(0.7, 8);
+    expect(m.start).toEqual({ day: 10, price: 102 });
+  });
+
+  it("history lists snapshots in time order and marks the first appearance of a roll", () => {
+    const openAt = new Date(2026, 8, 1).getTime();
+    const day = (n: number) => new Date(2026, 8, 1 + n, 12).getTime();
+    const rolled = { id: "r", action: "sell", type: "put", strike: 93, dte: 45, premium: 1.5, derivedFrom: { legId: "a", via: "roll" } } as Leg;
+    const { points, markers } = buildTrackedHistory(
+      [
+        { legs: [opening[0], opening[1], rolled], spot: 97, savedAt: day(6) },
+        { legs: opening, spot: 101, savedAt: day(3), estimated: true },
+        { legs: [opening[0], opening[1], rolled], spot: 98, savedAt: day(8) },
+      ],
+      opening, 100, openAt,
+    );
+    expect(points.map((p) => p.day)).toEqual([0, 3, 6, 8]);
+    expect(points[1].estimated).toBe(true);
+    expect(markers).toEqual([{ day: 6, via: "roll" }]);
+  });
+});
+
+describe("attribution timeline", () => {
+  const L = (id: string, action: "buy" | "sell", type: "call" | "put", strike: number, premium: number, dte: number, extra: Partial<Leg> = {}): Leg => ({ id, action, type, strike, premium, dte, qty: 1, ...extra });
+  const open: Leg[] = [L("a", "sell", "put", 95, 1.6, 30), L("b", "buy", "put", 90, 0.6, 30)];
+  it("parts sum to the P&L change and a pure time step is mostly theta", () => {
+    const s0 = { legs: open, spot: 100, day: 0, pnl: 0 };
+    const later: Leg[] = [L("a2", "sell", "put", 95, 1.2, 25, { openLegId: "a" }), L("b2", "buy", "put", 90, 0.4, 25, { openLegId: "b" })];
+    const s1 = { legs: later, spot: 100, day: 5, pnl: trackedTotalPnl(open, later, 100, 100) };
+    const { segments, totals } = buildAttributionTimeline([s0, s1]);
+    const seg = segments[0];
+    expect(seg.price + seg.time + seg.iv + seg.adjust).toBeCloseTo(seg.total, 10);
+    expect(Math.abs(seg.price)).toBeLessThan(1e-9);
+    expect(seg.time).toBeGreaterThan(0);
+    expect(Math.abs(seg.adjust)).toBeLessThan(1e-9);
+    expect(totals.total).toBeCloseTo(0.2, 10);
+  });
+  it("a closed leg shows up as adjustment, price move as price", () => {
+    const s0 = { legs: open, spot: 100, day: 0, pnl: 0 };
+    const later: Leg[] = [L("a2", "sell", "put", 95, 3, 28, { openLegId: "a", disabled: true, closedPnl: -1.4 }), L("b2", "buy", "put", 90, 1.1, 28, { openLegId: "b" })];
+    const s1 = { legs: later, spot: 96, day: 2, pnl: trackedTotalPnl(open, later, 96, 100) };
+    const seg = buildAttributionTimeline([s0, s1]).segments[0];
+    expect(seg.price).toBeGreaterThan(0); // 买入的put在跌价中赚钱
+    expect(seg.adjust).toBeLessThan(0); // 平掉卖出put的已实现亏损
+    expect(seg.price + seg.time + seg.iv + seg.adjust).toBeCloseTo(seg.total, 10);
   });
 });

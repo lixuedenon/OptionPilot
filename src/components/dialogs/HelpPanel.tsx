@@ -46,6 +46,7 @@ const MODULE_SECTIONS: Record<HelpModuleId, { titleKey: string; sections: { titl
       { titleKey: "help.moduleAnalysisScenario", descKey: "help.moduleAnalysisScenarioDesc" },
       { titleKey: "help.moduleAnalysisChart", descKey: "help.moduleAnalysisChartDesc" },
       { titleKey: "help.moduleAnalysisMap", descKey: "help.moduleAnalysisMapDesc" },
+      { titleKey: "help.moduleAnalysisWinRate", descKey: "help.moduleAnalysisWinRateDesc" },
       { titleKey: "help.moduleAnalysisAttribution", descKey: "help.moduleAnalysisAttributionDesc" },
       { titleKey: "help.moduleAnalysisHealth", descKey: "help.moduleAnalysisHealthDesc" },
       { titleKey: "help.moduleAnalysisPreset", descKey: "help.moduleAnalysisPresetDesc" },

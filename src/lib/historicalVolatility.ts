@@ -8,22 +8,57 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 // math can be tested/reasoned about independently — this function's only
 // job is "get the numbers," not "know what a trading day's return means."
 export async function fetchHistoricalCloses(symbol: string): Promise<number[]> {
-  const url = `${SUPABASE_URL}/functions/v1/historical-prices?symbol=${encodeURIComponent(symbol)}`;
-  const resp = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      "Content-Type": "application/json",
-    },
-  });
-  if (!resp.ok) {
-    const body = await resp.json().catch(() => ({}));
-    throw new Error(body.error || `Request failed (${resp.status})`);
-  }
-  const data = await resp.json();
-  if (!Array.isArray(data.closes) || data.closes.length === 0) {
-    throw new Error("Invalid historical price data");
-  }
-  return data.closes as number[];
+  return (await fetchHistoricalSeries(symbol)).closes;
+}
+
+export interface HistoricalSeries {
+  closes: number[]; // oldest first
+  timestamps: number[]; // unix seconds, index-aligned with closes
+}
+
+// 同一个代码10分钟内不重复请求（胜率模拟标签来回切换时会反复用到）。只在内存里，不落盘。
+const seriesCache = new Map<string, { at: number; p: Promise<HistoricalSeries> }>();
+
+export function fetchHistoricalSeries(symbol: string): Promise<HistoricalSeries> {
+  const key = symbol.toUpperCase();
+  const hit = seriesCache.get(key);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.p;
+  const p = (async () => {
+    const url = `${SUPABASE_URL}/functions/v1/historical-prices?symbol=${encodeURIComponent(symbol)}`;
+    const resp = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        "Content-Type": "application/json",
+      },
+    });
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      throw new Error(body.error || `Request failed (${resp.status})`);
+    }
+    const data = await resp.json();
+    if (!Array.isArray(data.closes) || data.closes.length === 0) {
+      throw new Error("Invalid historical price data");
+    }
+    const closes = data.closes as number[];
+    const timestamps = Array.isArray(data.timestamps) && data.timestamps.length === closes.length ? (data.timestamps as number[]) : [];
+    return { closes, timestamps };
+  })();
+  seriesCache.set(key, { at: Date.now(), p });
+  p.catch(() => seriesCache.delete(key));
+  return p;
+}
+
+// 开仓以来的实际波动：只用开仓日之后的收盘价。开仓早于数据窗口（约2个月）时只能用整个窗口，limited=true。
+export function realizedVolSince(series: HistoricalSeries, sinceMs: number): { vol: number; days: number; limited: boolean } | null {
+  if (series.timestamps.length !== series.closes.length || series.closes.length < 3) return null;
+  const sinceSec = sinceMs / 1000 - 86400;
+  let start = series.timestamps.findIndex((t) => t >= sinceSec);
+  if (start < 0) return null;
+  const limited = start === 0 && series.timestamps[0] > sinceSec + 3 * 86400;
+  start = Math.max(0, start - 1);
+  const closes = series.closes.slice(start);
+  if (closes.length < 6) return null;
+  return { vol: computeHV(closes, closes.length), days: closes.length - 1, limited };
 }
 
 // Annualized historical (realized) volatility — the standard deviation of

@@ -1,0 +1,419 @@
+// src/lib/winRateSim.ts
+// "胜率模拟"标签的计算层：按假设的未来实际波动随机生成股价走势，逐日用现有定价函数重算组合，
+// 按止盈/止损/到期前平仓规则决定每条走势在哪天、因为什么出场，再汇总成统计和盈亏平衡波动率。
+// 盈亏口径跟priceCombo/地形图一致（legShiftedPrice之和 − 起点净权利金，每股计），另加pnlOffset（对比模式的开仓至今总盈亏）。
+import type { Leg } from "@/lib/types";
+import { impliedVol, legShiftedPrice } from "@/lib/pricing";
+
+export interface SimRules {
+  takeProfitPct: number | null; // 0.5 = 赚到基准的50%就平仓；null=不设
+  stopMult: number | null; // 1 = 亏到基准的1倍就平仓；null=不设
+  // 剩下开仓总期限的多少比例时平仓（0.25=剩1/4时间）；0=持有到期。按比例而不是固定天数：30天和1年期的组合"提前7天"意义完全不同。
+  closeFrac: number;
+}
+
+export type ExitReason = "tp" | "sl" | "time" | "expiry";
+
+export interface SimSetup {
+  legs: Leg[]; // 模拟起点的腿位（分析模式=开仓腿位；对比模式=今日组合），已去掉屏蔽的腿
+  spot: number; // 起点股价
+  basis: number; // 止盈止损的基准：开仓组合净权利金的绝对值（每股）
+  pnlOffset: number; // 起点时已有的总盈亏（对比模式含已实现部分；分析模式为0）
+  rules: SimRules;
+  totalTerm?: number; // 开仓时（最早到期的）总期限天数；不传=起点剩余天数（分析模式从开仓日出发时两者相同）
+  drift?: number; // 假设的年化涨跌（小数），默认0=不预测方向；买方方向性组合用
+}
+
+export interface Prepared {
+  legs: Leg[];
+  spot: number;
+  ivs: (number | undefined)[];
+  netNow: number;
+  horizon: number; // 起点到最早到期日的天数
+  endDay: number; // 按规则最晚在第几天出场（到期前平仓时 < horizon；0=现在就该平仓）
+  closeAtRemaining: number; // 剩多少天时平仓（0=持有到期）
+  drift: number;
+  basis: number;
+  pnlOffset: number;
+  tpLine: number;
+  slLine: number;
+  optionLegCount: number;
+}
+
+export type StartStatus = "normal" | "atTakeProfit" | "atStop" | "inCloseWindow";
+
+export function prepareSim(setup: SimSetup): Prepared | null {
+  const legs = setup.legs.filter((l) => !l.disabled);
+  const options = legs.filter((l) => l.kind !== "stock");
+  if (options.length === 0 || !(setup.spot > 0) || !(setup.basis > 1e-6)) return null;
+  const ivs = legs.map((l) => (l.kind === "stock" ? undefined : impliedVol(setup.spot, l.strike, l.dte, l.premium, l.type)));
+  const netNow = legs.reduce((sum, l, i) => sum + legShiftedPrice(l, { dS: 0, dT: 0, dV: 0 }, setup.spot, ivs[i]), 0);
+  const horizon = Math.max(1, Math.round(Math.min(...options.map((l) => l.dte))));
+  const { takeProfitPct, stopMult, closeFrac } = setup.rules;
+  const term = Math.max(horizon, Math.round(setup.totalTerm ?? horizon));
+  const closeAtRemaining = closeFrac > 0 ? Math.max(1, Math.round(term * closeFrac)) : 0;
+  const endDay = closeAtRemaining > 0 ? Math.max(0, horizon - closeAtRemaining) : horizon;
+  return {
+    legs,
+    spot: setup.spot,
+    ivs,
+    netNow,
+    horizon,
+    endDay,
+    closeAtRemaining,
+    drift: setup.drift ?? 0,
+    basis: setup.basis,
+    pnlOffset: setup.pnlOffset,
+    tpLine: takeProfitPct != null ? takeProfitPct * setup.basis : Infinity,
+    slLine: stopMult != null ? -stopMult * setup.basis : -Infinity,
+    optionLegCount: options.length,
+  };
+}
+
+export function startStatus(p: Prepared): StartStatus {
+  if (p.pnlOffset >= p.tpLine) return "atTakeProfit";
+  if (p.pnlOffset <= p.slLine) return "atStop";
+  if (p.endDay === 0) return "inCloseWindow";
+  return "normal";
+}
+
+// 第day天（从起点算）、股价price时的总盈亏（每股）。
+export function simPnlAt(p: Prepared, day: number, price: number): number {
+  const s = { dS: price - p.spot, dT: day, dV: 0 };
+  let v = 0;
+  for (let i = 0; i < p.legs.length; i++) v += legShiftedPrice(p.legs[i], s, p.spot, p.ivs[i]);
+  return v - p.netNow + p.pnlOffset;
+}
+
+// 可复现的随机数（同一个seed每次得到同一组走势），盈亏平衡波动率的各个试算点共用同一组随机数，结果才平滑可比。
+export function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function gaussian(rand: () => number): () => number {
+  let spare: number | null = null;
+  return () => {
+    if (spare !== null) {
+      const s = spare;
+      spare = null;
+      return s;
+    }
+    let u = 0;
+    while (u <= 1e-12) u = rand();
+    const v = rand();
+    const r = Math.sqrt(-2 * Math.log(u));
+    spare = r * Math.sin(2 * Math.PI * v);
+    return r * Math.cos(2 * Math.PI * v);
+  };
+}
+
+export interface PathOutcome {
+  reason: ExitReason;
+  day: number;
+  pnl: number;
+}
+
+export interface SamplePath {
+  prices: number[]; // 第0天到出场那天
+  reason: ExitReason;
+}
+
+// 走势按日（日历日，跟定价的dte/365一致）生成。默认零漂移：不预测涨跌方向（跟probabilityOfProfit的POP_DRIFT_RATE=0同一约定）；
+// 买方方向性组合可以传入假设的年化涨跌（p.drift）。
+function runPath(p: Prepared, vol: number, z: () => number, keep: boolean): { out: PathOutcome; prices?: number[] } {
+  if (p.endDay === 0) return { out: { reason: "time", day: 0, pnl: p.pnlOffset }, prices: keep ? [p.spot] : undefined };
+  const dt = 1 / 365;
+  const drift = (p.drift - 0.5 * vol * vol) * dt;
+  const diff = vol * Math.sqrt(dt);
+  let S = p.spot;
+  const prices = keep ? [S] : undefined;
+  let pnl = p.pnlOffset;
+  for (let d = 1; d <= p.endDay; d++) {
+    S *= Math.exp(drift + diff * z());
+    prices?.push(S);
+    pnl = simPnlAt(p, d, S);
+    if (pnl >= p.tpLine) return { out: { reason: "tp", day: d, pnl }, prices };
+    if (pnl <= p.slLine) return { out: { reason: "sl", day: d, pnl }, prices };
+  }
+  return { out: { reason: p.endDay < p.horizon ? "time" : "expiry", day: p.endDay, pnl }, prices };
+}
+
+export function runBatch(p: Prepared, vol: number, n: number, seed: number, sampleCount = 0): { outcomes: PathOutcome[]; samples: SamplePath[] } {
+  const z = gaussian(mulberry32(seed));
+  const outcomes: PathOutcome[] = [];
+  const samples: SamplePath[] = [];
+  for (let i = 0; i < n; i++) {
+    const keep = i < sampleCount;
+    const { out, prices } = runPath(p, vol, z, keep);
+    outcomes.push(out);
+    if (keep && prices) samples.push({ prices, reason: out.reason });
+  }
+  return { outcomes, samples };
+}
+
+export interface ReasonStat {
+  pct: number; // 0..100
+  avgPnl: number;
+  avgDay: number;
+}
+
+export interface SimStats {
+  n: number;
+  byReason: Record<ExitReason, ReasonStat>;
+  avg: number;
+  winPct: number;
+  worst5: number; // 最差5%的平均
+  min: number;
+  max: number;
+  avgDays: number;
+  percentiles: { p5: number; p25: number; p50: number; p75: number; p95: number };
+}
+
+export function computeStats(outcomes: PathOutcome[]): SimStats {
+  const n = outcomes.length;
+  const reasons: ExitReason[] = ["tp", "sl", "time", "expiry"];
+  const byReason = {} as Record<ExitReason, ReasonStat>;
+  for (const r of reasons) {
+    const sel = outcomes.filter((o) => o.reason === r);
+    byReason[r] = {
+      pct: n ? (sel.length / n) * 100 : 0,
+      avgPnl: sel.length ? sel.reduce((a, o) => a + o.pnl, 0) / sel.length : 0,
+      avgDay: sel.length ? sel.reduce((a, o) => a + o.day, 0) / sel.length : 0,
+    };
+  }
+  const sorted = outcomes.map((o) => o.pnl).sort((a, b) => a - b);
+  const q = (f: number) => (n ? sorted[Math.min(n - 1, Math.max(0, Math.floor(f * (n - 1))))] : 0);
+  const k = Math.max(1, Math.floor(n / 20));
+  return {
+    n,
+    byReason,
+    avg: n ? sorted.reduce((a, b) => a + b, 0) / n : 0,
+    winPct: n ? (outcomes.filter((o) => o.pnl > 0).length / n) * 100 : 0,
+    worst5: n ? sorted.slice(0, k).reduce((a, b) => a + b, 0) / k : 0,
+    min: n ? sorted[0] : 0,
+    max: n ? sorted[n - 1] : 0,
+    avgDays: n ? outcomes.reduce((a, o) => a + o.day, 0) / n : 0,
+    percentiles: { p5: q(0.05), p25: q(0.25), p50: q(0.5), p75: q(0.75), p95: q(0.95) },
+  };
+}
+
+export interface Histogram {
+  lo: number;
+  hi: number;
+  counts: number[];
+}
+
+export function histogram(outcomes: PathOutcome[], bins = 30): Histogram {
+  const vals = outcomes.map((o) => o.pnl);
+  let lo = Math.min(...vals);
+  let hi = Math.max(...vals);
+  if (!(hi > lo)) {
+    lo -= 1;
+    hi += 1;
+  }
+  const counts = new Array(bins).fill(0);
+  const w = (hi - lo) / bins;
+  for (const v of vals) counts[Math.min(bins - 1, Math.max(0, Math.floor((v - lo) / w)))]++;
+  return { lo, hi, counts };
+}
+
+// ── 批次稳定性 ────────────────────────────────────────────────
+
+export interface Stability {
+  similar: boolean;
+  first: SimStats;
+  all: SimStats;
+}
+
+// 第1批（1000条）跟10批合计（1万条）比：止盈比例差不超过4个百分点、止损差不超过3个百分点、
+// 平均盈亏差不超过基准的10%，算"相仿"——第1批的结论可信；否则以合计为准。
+export function batchStability(first: SimStats, all: SimStats, basis: number): Stability {
+  const similar =
+    Math.abs(first.byReason.tp.pct - all.byReason.tp.pct) <= 4 &&
+    Math.abs(first.byReason.sl.pct - all.byReason.sl.pct) <= 3 &&
+    Math.abs(first.avg - all.avg) <= 0.1 * basis;
+  return { similar, first, all };
+}
+
+// ── 盈亏平衡波动率 ────────────────────────────────────────────
+
+// 同一组随机数下，按实际波动vol走完规则后，相对起点平均多赚/多亏多少（每股，不含pnlOffset）。
+export function meanIncrement(p: Prepared, vol: number, n: number, seed: number): number {
+  const { outcomes } = runBatch(p, vol, n, seed);
+  return outcomes.reduce((a, o) => a + o.pnl - p.pnlOffset, 0) / Math.max(1, n);
+}
+
+// 试算路数按计算量自适应：长期期权（每天都要重算）路数少一些，保证一两秒内算完。
+export function curvePathCount(p: Prepared, evaluations: number, cap = 3000): number {
+  const perPath = Math.max(1, p.endDay) * p.legs.length;
+  return Math.max(200, Math.min(cap, Math.floor(1.2e7 / (evaluations * perPath))));
+}
+
+export interface CurvePoint {
+  vol: number;
+  avg: number; // 相对起点的平均盈亏增量（每股）
+}
+
+export interface Breakeven {
+  vol: number | null; // null=范围内找不到平衡点
+  // short：实际波动越低越赚（卖方）；long：越高越赚（买方）
+  side: "short" | "long";
+  // 找不到平衡点时，整段范围内平均都是赚(true)还是都亏(false)
+  alwaysPositive?: boolean;
+}
+
+export function volGrid(center: number, assumed: number, count = 10): number[] {
+  const lo = Math.max(0.05, Math.min(center, assumed) * 0.45);
+  const hi = Math.max(lo + 0.05, Math.max(center, assumed) * 1.8);
+  return Array.from({ length: count }, (_, i) => lo + ((hi - lo) * i) / (count - 1));
+}
+
+export function breakevenCurve(p: Prepared, vols: number[], n: number, seed: number): CurvePoint[] {
+  return vols.map((vol) => ({ vol, avg: meanIncrement(p, vol, n, seed) }));
+}
+
+export function findBreakeven(p: Prepared, curve: CurvePoint[], n: number, seed: number): Breakeven {
+  const first = curve[0];
+  const last = curve[curve.length - 1];
+  const side: "short" | "long" = last.avg < first.avg ? "short" : "long";
+  for (let i = 0; i < curve.length - 1; i++) {
+    const a = curve[i];
+    const b = curve[i + 1];
+    if (a.avg === 0) return { vol: a.vol, side };
+    if (Math.sign(a.avg) !== Math.sign(b.avg)) {
+      let lo = a;
+      let hi = b;
+      for (let k = 0; k < 4; k++) {
+        const mid = (lo.vol + hi.vol) / 2;
+        const m = { vol: mid, avg: meanIncrement(p, mid, n, seed) };
+        if (Math.sign(m.avg) === Math.sign(lo.avg)) lo = m;
+        else hi = m;
+      }
+      const vol = lo.avg === hi.avg ? (lo.vol + hi.vol) / 2 : lo.vol + ((hi.vol - lo.vol) * lo.avg) / (lo.avg - hi.avg);
+      return { vol, side };
+    }
+  }
+  return { vol: null, side, alwaysPositive: curve.every((c) => c.avg > 0) };
+}
+
+export type CushionTier = "ample" | "thin" | "none";
+
+// 安全垫：卖方 = 1 − 假设波动/平衡波动；买方 = 假设波动/平衡波动 − 1。分档是经验值，以后可以按实际效果调。
+export function cushion(be: Breakeven, assumedVol: number): { value: number; tier: CushionTier } | null {
+  if (be.vol == null || !(be.vol > 0)) return null;
+  const value = be.side === "short" ? 1 - assumedVol / be.vol : assumedVol / be.vol - 1;
+  const tier: CushionTier = value >= 0.2 ? "ample" : value >= 0.05 ? "thin" : "none";
+  return { value, tier };
+}
+
+// 开仓组合的净权利金绝对值（每股）——止盈止损的基准。含正股腿的组合没有合适的基准，返回null。
+export function openingBasis(openingLegs: Leg[]): number | null {
+  const active = openingLegs.filter((l) => !l.disabled);
+  if (active.some((l) => l.kind === "stock")) return null;
+  const net = active.reduce((s, l) => s + (l.action === "buy" ? 1 : -1) * (l.qty ?? 1) * l.premium, 0);
+  return Math.abs(net) > 1e-6 ? Math.abs(net) : null;
+}
+
+// 开仓时是收钱（信用）还是付钱（借方）。
+export function isCreditCombo(openingLegs: Leg[]): boolean {
+  const net = openingLegs
+    .filter((l) => !l.disabled && l.kind !== "stock")
+    .reduce((s, l) => s + (l.action === "buy" ? 1 : -1) * (l.qty ?? 1) * l.premium, 0);
+  return net < 0;
+}
+
+// ── 回看（今昔对比）：站在开仓那天，按当时的隐含波动率（市场的预期），组合一直不动，到"今天"这一天会是什么样 ──
+
+export interface RetroInput {
+  legs: Leg[]; // 开仓组合
+  spot: number; // 开仓价
+  day: number; // 开仓后第几天（今天）
+  vol: number; // 开仓时的隐含波动率（市场定价时的预期）
+}
+
+// 返回按大小排好的盈亏样本（每股），用来看今天的真实结果排在所有可能里的什么位置。
+export function retroDistribution(input: RetroInput, n: number, seed: number): number[] {
+  const p = prepareSim({ legs: input.legs, spot: input.spot, basis: 1, pnlOffset: 0, rules: { takeProfitPct: null, stopMult: null, closeFrac: 0 } });
+  if (!p) return [];
+  const endDay = Math.max(1, Math.min(p.horizon, Math.round(input.day)));
+  const { outcomes } = runBatch({ ...p, endDay }, input.vol, n, seed);
+  return outcomes.map((o) => o.pnl).sort((a, b) => a - b);
+}
+
+// 真实结果比多少比例的可能情况好（0..100）。
+export function percentileOf(sorted: number[], v: number): number {
+  if (!sorted.length) return 50;
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid] < v) lo = mid + 1;
+    else hi = mid;
+  }
+  return (lo / sorted.length) * 100;
+}
+
+// 开仓至今股价走了几个标准差（按开仓时的隐含波动率）。
+export function moveInSigma(openSpot: number, nowSpot: number, vol: number, days: number): number {
+  if (!(openSpot > 0) || !(nowSpot > 0) || !(vol > 0) || !(days > 0)) return 0;
+  return Math.log(nowSpot / openSpot) / (vol * Math.sqrt(days / 365));
+}
+
+// ── 买方：方向性组合的"盈亏平衡年化涨跌" ──────────────────────────
+
+// 起点附近的组合Delta（每股），除以期权腿张数之和得到"每张平均Delta"——判断这个组合主要靠方向还是靠波动赚钱。
+export function deltaPerContract(p: Prepared): number {
+  const h = p.spot * 0.005;
+  const d = (simPnlAt(p, 0, p.spot + h) - simPnlAt(p, 0, p.spot - h)) / (2 * h);
+  const contracts = p.legs.filter((l) => l.kind !== "stock").reduce((a, l) => a + (l.qty ?? 1), 0);
+  return contracts > 0 ? d / contracts : 0;
+}
+
+export function driftGrid(): number[] {
+  return [-0.6, -0.45, -0.3, -0.15, 0, 0.15, 0.3, 0.45, 0.6];
+}
+
+export interface DriftPoint {
+  drift: number;
+  avg: number;
+}
+
+// 同一组随机数、同样的实际波动，只改年化涨跌，看平均盈亏增量。
+export function driftCurve(p: Prepared, vol: number, drifts: number[], n: number, seed: number): DriftPoint[] {
+  return drifts.map((drift) => ({ drift, avg: meanIncrement({ ...p, drift }, vol, n, seed) }));
+}
+
+// 平均不亏需要的年化涨跌（向上需要涨=正数，向下需要跌=负数）；范围内找不到返回null。
+export function findDriftBreakeven(p: Prepared, vol: number, curve: DriftPoint[], n: number, seed: number): number | null {
+  for (let i = 0; i < curve.length - 1; i++) {
+    const a = curve[i];
+    const b = curve[i + 1];
+    if (a.avg === 0) return a.drift;
+    if (Math.sign(a.avg) !== Math.sign(b.avg)) {
+      let lo = a;
+      let hi = b;
+      for (let k = 0; k < 4; k++) {
+        const mid = (lo.drift + hi.drift) / 2;
+        const m = { drift: mid, avg: meanIncrement({ ...p, drift: mid }, vol, n, seed) };
+        if (Math.sign(m.avg) === Math.sign(lo.avg)) lo = m;
+        else hi = m;
+      }
+      return lo.avg === hi.avg ? (lo.drift + hi.drift) / 2 : lo.drift + ((hi.drift - lo.drift) * lo.avg) / (lo.avg - hi.avg);
+    }
+  }
+  return null;
+}
+
+// 方向安全垫：你假设的年化涨跌比"平均不亏需要的"多出多少个百分点（按需要的方向算）。≥10个百分点充足、≥3偏薄，否则没有优势。
+export function driftCushion(required: number, assumed: number): { value: number; tier: CushionTier } {
+  const value = required >= 0 ? assumed - required : required - assumed;
+  const tier: CushionTier = value >= 0.1 ? "ample" : value >= 0.03 ? "thin" : "none";
+  return { value, tier };
+}

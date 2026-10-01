@@ -1,6 +1,6 @@
 // src/lib/pricing.ts
 import type { Leg, Shifts, GreekBreakdown } from "./types";
-import { blackScholes, ncdf } from "./bs";
+import { blackScholes, bsPrice, ncdf } from "./bs";
 
 const RATE = 0.05;
 
@@ -103,7 +103,7 @@ export function legShiftedPrice(leg: Leg, s: Shifts, spot: number, ivOverride?: 
       ? Math.max(0, newSpot - leg.strike)
       : Math.max(0, leg.strike - newSpot);
   } else {
-    newPrice = blackScholes({ spot: newSpot, strike: leg.strike, dte: newDte, vol: newVol, rate: RATE, type: leg.type }).price;
+    newPrice = bsPrice(newSpot, leg.strike, newDte, newVol, RATE, leg.type);
   }
   return newPrice * sign * qty;
 }
