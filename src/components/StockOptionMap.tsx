@@ -24,7 +24,6 @@ interface Props {
   // segments/totals：今昔对比——开仓至今的盈亏逐段拆成股价/时间/波动率/调整，画在左半边底部，读数和图下方的总结都用它。
   tracked?: { todayDay: number; pnlOffset: number; history: HistoryPoint[]; markers: AdjustMarker[]; segments?: SegmentAttribution[]; totals?: PnlParts & { total: number } };
   // 金额显示倍数：1=每股，100=每张合约（跟图表头部的切换一致）。
-  unitMult?: number;
 }
 
 type MapPoint = { day: number; price: number };
@@ -58,7 +57,7 @@ function cellColor(v: number, maxProfit: number, maxLoss: number): [number, numb
   return [0, 1, 2].map((i) => Math.round(base[i] + (to[i] - base[i]) * k)) as [number, number, number];
 }
 
-export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, daysSinceOpen, emptyText, onPointChange, liveSpot, unitMult = 1, tracked }: Props) {
+export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, daysSinceOpen, emptyText, onPointChange, liveSpot, tracked }: Props) {
   const { t } = useI18n();
   const [groupId, setGroupId] = useState(PATH_GROUPS[0].id);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -68,8 +67,8 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
   const [point, setPoint] = useState<MapPoint | null>(null);
   const [pinned, setPinned] = useState(false);
   const [startMode, setStartMode] = useState<"open" | "today">("open");
-  const fmtPnl = (v: number) => fmtPnlRaw(v * unitMult);
-  const fmtVal = (v: number) => `$${(Math.abs(v) * unitMult).toFixed(2)}`;
+  const fmtPnl = (v: number) => fmtPnlRaw(v);
+  const fmtVal = (v: number) => `$${Math.abs(v).toFixed(2)}`;
 
   // 节流汇报选中点：最多每EMIT_INTERVAL_MS一次，并保证最后一次一定送达。
   const emitRef = useRef<{ last: number; timer: ReturnType<typeof setTimeout> | null }>({ last: 0, timer: null });
@@ -151,7 +150,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     g.clearRect(0, 0, size.w, size.h);
     draw(g, model, size.w, size.h);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model, size, group, hover, daysSinceOpen, point, pinned, unitMult, symbol]);
+  }, [model, size, group, hover, daysSinceOpen, point, pinned, symbol]);
 
   function draw(g: CanvasRenderingContext2D, m: MapModel, W: number, H: number) {
     const pw = W - M.l - M.r;

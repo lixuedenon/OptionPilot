@@ -2,7 +2,7 @@
 import type { Leg, Shifts, GreekBreakdown } from "./types";
 import { blackScholes, bsPrice, ncdf } from "./bs";
 
-const RATE = 0.05;
+export const RATE = 0.05;
 
 // probabilityOfProfit's lognormal terminal-distribution drift, deliberately
 // a SEPARATE constant from RATE above — the two answer different questions

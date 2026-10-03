@@ -1,5 +1,5 @@
 // src/components/PnlHeadline.tsx
-// 图表区的盈亏头部：情景日期 + 组合盈亏（金额+盈利/亏损）+ 平仓净值（收/付）和盈亏百分比 + 每股/每张切换。
+// 图表区的盈亏头部：情景日期 + 组合盈亏（金额+盈利/亏损）+ 平仓净值（收/付）和盈亏百分比。金额统一按每股（跟期权报价同一个数，用户自己×100就是每张），不再有每股/每张切换。
 // 电脑版分析模式放在"盈亏图 / 股价 vs 期权价"标签同一行，两个标签共用；跟踪对比模式和手机版仍由PayoffChart自己显示。
 import { useI18n } from "@/i18n/I18nContext";
 import { formatDateInput } from "@/lib/dateUtils";
@@ -10,9 +10,6 @@ interface Props {
   netValue: number;
   netChange: number;
   hasStock: boolean;
-  // 1=每股，100=每张合约；金额都乘这个倍数显示，百分比不受影响。
-  unitMult: number;
-  onUnitChange: (mult: number) => void;
   className?: string;
 }
 
@@ -22,7 +19,7 @@ function fmtDate(ts: number) {
   return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
 }
 
-export default function PnlHeadline({ dateTs, pnl, netValue, netChange, hasStock, unitMult, onUnitChange, className }: Props) {
+export default function PnlHeadline({ dateTs, pnl, netValue, netChange, hasStock, className }: Props) {
   const { t } = useI18n();
   const isFlat = Math.abs(pnl) < 0.005;
   const sign = isFlat ? "flat" : pnl > 0 ? "profit" : "loss";
@@ -32,7 +29,7 @@ export default function PnlHeadline({ dateTs, pnl, netValue, netChange, hasStock
   // 盈亏占开仓权利金的百分比（对照"盈利50%/亏损50%平仓"）；含正股腿或开仓权利金≈0时退回显示金额。
   const basis = Math.abs(netValue - netChange);
   const pct = !hasStock && basis > 0.005 ? (netChange / basis) * 100 : null;
-  const money = (v: number) => (Math.abs(v) * unitMult).toFixed(2);
+  const money = (v: number) => Math.abs(v).toFixed(2);
   return (
     <div className={`flex items-center gap-3 ${className ?? ""}`}>
       {dateTs !== null && (
@@ -56,17 +53,6 @@ export default function PnlHeadline({ dateTs, pnl, netValue, netChange, hasStock
         >
           {netChange >= 0 || Math.abs(netChange) < 0.005 ? "+" : "−"}{pct !== null ? `${Math.abs(pct).toFixed(1)}%` : money(netChange)}
         </span>
-      </span>
-      <span className="flex shrink-0 items-center rounded border border-slate-700 p-0.5 text-[9px]" title={t("chart.unitHint")}>
-        {[1, 100].map((m) => (
-          <button
-            key={m}
-            onClick={() => onUnitChange(m)}
-            className={`rounded px-1.5 py-0.5 font-semibold ${unitMult === m ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-300"}`}
-          >
-            {t(m === 1 ? "chart.unitShare" : "chart.unitContract")}
-          </button>
-        ))}
       </span>
     </div>
   );

@@ -2,6 +2,7 @@
 // "胜率模拟"标签的计算层：按假设的未来实际波动随机生成股价走势，逐日用现有定价函数重算组合，
 // 按止盈/止损/到期前平仓规则决定每条走势在哪天、因为什么出场，再汇总成统计和盈亏平衡波动率。
 // 盈亏口径跟priceCombo/地形图一致（legShiftedPrice之和 − 起点净权利金，每股计），另加pnlOffset（对比模式的开仓至今总盈亏）。
+import { ncdf } from "@/lib/bs";
 import type { Leg } from "@/lib/types";
 import { impliedVol, legShiftedPrice } from "@/lib/pricing";
 
@@ -416,4 +417,13 @@ export function driftCushion(required: number, assumed: number): { value: number
   const value = required >= 0 ? assumed - required : required - assumed;
   const tier: CushionTier = value >= 0.1 ? "ample" : value >= 0.03 ? "thin" : "none";
   return { value, tier };
+}
+
+// 跟走势同一个模型（对数正态、按假设的实际波动和年化涨跌）：第days天时股价"走到target或更远"的概率。
+// target在起点上方算"在target以上"，在下方算"在target以下"。分析模式用来说明滑块推演的情景点有多常见。
+export function probPriceBeyond(spot: number, target: number, vol: number, drift: number, days: number): number {
+  if (!(spot > 0) || !(target > 0) || !(vol > 0) || !(days > 0)) return target === spot ? 1 : 0;
+  const t = days / 365;
+  const z = (Math.log(target / spot) - (drift - 0.5 * vol * vol) * t) / (vol * Math.sqrt(t));
+  return target >= spot ? 1 - ncdf(z) : ncdf(z);
 }

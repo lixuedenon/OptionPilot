@@ -7,7 +7,7 @@ import { priceCombo } from "@/lib/pricing";
 import {
   prepareSim, simPnlAt, runBatch, computeStats, batchStability, breakevenCurve, findBreakeven,
   cushion, openingBasis, isCreditCombo, startStatus, volGrid, retroDistribution, percentileOf, moveInSigma,
-  deltaPerContract, driftGrid, driftCurve, findDriftBreakeven, driftCushion, type SimRules,
+  deltaPerContract, driftGrid, driftCurve, findDriftBreakeven, driftCushion, probPriceBeyond, mulberry32, type SimRules,
 } from "@/lib/winRateSim";
 import { blackScholes } from "@/lib/bs";
 
@@ -135,5 +135,24 @@ describe("winRateSim", () => {
     expect(req).toBeLessThan(0.15);
     expect(driftCushion(req, 0.2).tier).toBe("ample");
     expect(driftCushion(req, 0).tier).toBe("none");
+  });
+
+  it("情景点概率跟同一模型的逐日随机走势一致", () => {
+    const rand = mulberry32(99);
+    const vol = 0.4, days = 20, n = 20000;
+    let up = 0, down = 0;
+    for (let i = 0; i < n; i++) {
+      let lnS = Math.log(100);
+      for (let d = 0; d < days; d++) {
+        const z = Math.sqrt(-2 * Math.log(rand() || 1e-12)) * Math.cos(2 * Math.PI * rand());
+        lnS += -0.5 * vol * vol / 365 + vol * Math.sqrt(1 / 365) * z;
+      }
+      const S = Math.exp(lnS);
+      if (S >= 108) up++;
+      if (S <= 93) down++;
+    }
+    expect(probPriceBeyond(100, 108, vol, 0, days)).toBeCloseTo(up / n, 1);
+    expect(probPriceBeyond(100, 93, vol, 0, days)).toBeCloseTo(down / n, 1);
+    expect(probPriceBeyond(100, 108, vol, 0.5, days)).toBeGreaterThan(probPriceBeyond(100, 108, vol, 0, days));
   });
 });

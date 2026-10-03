@@ -55,6 +55,8 @@ interface Props {
 const POINTS = 200;
 const RATE = 0.05;
 const PAD = { t: 12, r: 16, b: 32, l: 52 };
+// 电脑版多留出坐标轴说明的位置：左边竖排"↑期权组合盈亏"，底部右端"股价 →"（放右端，避开中间的现价/实时价标签）。手机版不变。
+const PAD_AXIS = { t: 12, r: 16, b: 46, l: 62 };
 
 
 function calcPnL(legs: Leg[], spot: number, shifts: Shifts, sTest: number): number {
@@ -196,10 +198,11 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
     return () => ro.disconnect();
   }, [active]);
 
+  const pad = compact ? PAD : PAD_AXIS;
   const W = dims.w;
   const H = dims.h;
-  const CW = W - PAD.l - PAD.r;
-  const CH = H - PAD.t - PAD.b;
+  const CW = W - pad.l - pad.r;
+  const CH = H - pad.t - pad.b;
 
   // Base range (unzoomed)
   const baseRange = active ? Math.max(20, spot * 0.55) : 20;
@@ -221,7 +224,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
     if (!svgContainerRef.current) return;
     const rect = svgContainerRef.current.getBoundingClientRect();
     // Map mouse X to chart fraction [0,1]
-    const chartLeft = rect.left + rect.width * (PAD.l / W);
+    const chartLeft = rect.left + rect.width * (pad.l / W);
     const chartWidth = rect.width * (CW / W);
     const mouseFrac = Math.max(0, Math.min(1, (e.clientX - chartLeft) / chartWidth));
     // The spot price under the mouse cursor in current view
@@ -408,8 +411,8 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
   const yMax = Math.max(rawMax, fanBounds.fMax) + yPad;
 
   const ySpan = yMax - yMin || 1;
-  const toX = (s: number) => PAD.l + ((s - sMin) / (sMax - sMin || 1)) * CW;
-  const toY = (pnl: number) => PAD.t + (1 - (pnl - yMin) / ySpan) * CH;
+  const toX = (s: number) => pad.l + ((s - sMin) / (sMax - sMin || 1)) * CW;
+  const toY = (pnl: number) => pad.t + (1 - (pnl - yMin) / ySpan) * CH;
   const zeroY = toY(0);
   const currentSpot = compareMode && hasTracked ? effectiveTrackedSpot : (active ? spot + shifts.dS : spot);
   const currentX = toX(currentSpot);
@@ -663,7 +666,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
 
         {/* Zoom hint — only when not zoomed */}
         {!isZoomed && !compact && (
-          <div className="pointer-events-none absolute bottom-6 right-0 z-10 text-[9px] text-slate-600">
+          <div className="pointer-events-none absolute bottom-0 right-0 z-10 text-[9px] text-slate-600">
             {t("chart.zoomHint")}
           </div>
         )}
@@ -680,30 +683,30 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
           <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="h-full w-full" style={{ overflow: "visible", display: "block" }}>
             <defs>
               <clipPath id="chart-clip">
-                <rect x={PAD.l} y={PAD.t} width={CW} height={CH} />
+                <rect x={pad.l} y={pad.t} width={CW} height={CH} />
               </clipPath>
             </defs>
 
             {/* Grid */}
             {yTicks.map((v) => (
-              <line key={v} x1={PAD.l} x2={PAD.l + CW} y1={toY(v)} y2={toY(v)} stroke="rgb(51 65 85)" strokeWidth="0.5" />
+              <line key={v} x1={pad.l} x2={pad.l + CW} y1={toY(v)} y2={toY(v)} stroke="rgb(51 65 85)" strokeWidth="0.5" />
             ))}
 
             {/* Strike lines */}
             {strikes.map((k) => (
-              <line key={k} x1={toX(k)} x2={toX(k)} y1={PAD.t} y2={PAD.t + CH}
+              <line key={k} x1={toX(k)} x2={toX(k)} y1={pad.t} y2={pad.t + CH}
                 stroke="rgb(148 163 184)" strokeWidth="0.8" strokeDasharray="3 3" clipPath="url(#chart-clip)" />
             ))}
 
             {/* Breakeven lines */}
             {breakevens.map((be, i) => {
               const bx = toX(be);
-              if (bx < PAD.l || bx > PAD.l + CW) return null;
+              if (bx < pad.l || bx > pad.l + CW) return null;
               const labelAtTop = i % 2 === 1;
-              const labelY = labelAtTop ? PAD.t + 2 : PAD.t + CH - 14;
+              const labelY = labelAtTop ? pad.t + 2 : pad.t + CH - 14;
               return (
                 <g key={`be-${i}`} clipPath="url(#chart-clip)">
-                  <line x1={bx} x2={bx} y1={PAD.t} y2={PAD.t + CH}
+                  <line x1={bx} x2={bx} y1={pad.t} y2={pad.t + CH}
                     stroke="rgb(56 189 248)" strokeWidth="1.2" strokeDasharray="4 2" />
                   <rect x={bx - 26} y={labelY} width={52} height={14} rx={2} fill="rgb(15 23 42)" fillOpacity={0.9} />
                   <text x={bx} y={labelY + 10} textAnchor="middle" fontSize="9" fill="rgb(56 189 248)" fontWeight="bold">
@@ -719,8 +722,8 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
             <path d={lossD} fill="rgb(244 63 94)" fillOpacity="0.15" clipPath="url(#chart-clip)" />
 
             {/* Zero line */}
-            {zeroY >= PAD.t && zeroY <= PAD.t + CH && (
-              <line x1={PAD.l} x2={PAD.l + CW} y1={zeroY} y2={zeroY} stroke="rgb(100 116 139)" strokeWidth="1" />
+            {zeroY >= pad.t && zeroY <= pad.t + CH && (
+              <line x1={pad.l} x2={pad.l + CW} y1={zeroY} y2={zeroY} stroke="rgb(100 116 139)" strokeWidth="1" />
             )}
 
             {/* Fan curves */}
@@ -756,7 +759,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
             {/* Max profit annotation */}
             {maxProfit > 0.5 && (() => {
               const px = toX(maxProfitS), py = toY(maxProfit);
-              if (px < PAD.l || px > PAD.l + CW) return null;
+              if (px < pad.l || px > pad.l + CW) return null;
               return (
                 <g clipPath="url(#chart-clip)">
                   <circle cx={px} cy={py} r="3" fill="#34d399" stroke="#1e293b" strokeWidth="1" />
@@ -771,7 +774,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
             {/* Max loss annotation */}
             {maxLoss < -0.5 && (() => {
               const px = toX(maxLossS), py = toY(maxLoss);
-              if (px < PAD.l || px > PAD.l + CW) return null;
+              if (px < pad.l || px > pad.l + CW) return null;
               return (
                 <g clipPath="url(#chart-clip)">
                   <circle cx={px} cy={py} r="3" fill="#f43f5e" stroke="#1e293b" strokeWidth="1" />
@@ -784,13 +787,13 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
             })()}
 
             {/* Current spot line */}
-            <line x1={currentX} x2={currentX} y1={PAD.t} y2={PAD.t + CH}
+            <line x1={currentX} x2={currentX} y1={pad.t} y2={pad.t + CH}
               stroke="#fbbf24" strokeWidth="1.5" clipPath="url(#chart-clip)" />
-            {currentX >= PAD.l && currentX <= PAD.l + CW && (() => {
+            {currentX >= pad.l && currentX <= pad.l + CW && (() => {
               const py = toY(currentPnL);
               const labelW = 56, labelH = 16;
               const labelX = currentX + 8;
-              const labelY = Math.max(PAD.t + 2, Math.min(PAD.t + CH - labelH, py - labelH / 2));
+              const labelY = Math.max(pad.t + 2, Math.min(pad.t + CH - labelH, py - labelH / 2));
               const isFlat = Math.abs(currentPnL) < 0.005;
               const accent = isFlat ? "#cbd5e1" : currentPnL > 0 ? "#34d399" : "#f43f5e";
               return (
@@ -814,14 +817,14 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
                 effectiveTrackedSpot); this line is purely "here's where the
                 real market price is right now" and says nothing about P&L,
                 so it never has to agree with where the curve sits. */}
-            {showLiveSpot && liveX !== null && liveX >= PAD.l && liveX <= PAD.l + CW && (
+            {showLiveSpot && liveX !== null && liveX >= pad.l && liveX <= pad.l + CW && (
               <g clipPath="url(#chart-clip)">
-                <line x1={liveX} x2={liveX} y1={PAD.t} y2={PAD.t + CH}
+                <line x1={liveX} x2={liveX} y1={pad.t} y2={pad.t + CH}
                   stroke="#38bdf8" strokeWidth="1.25" strokeDasharray="4 3" />
                 {(() => {
                   const labelW = 52, labelH = 14;
-                  const labelX = Math.max(PAD.l, Math.min(PAD.l + CW - labelW, liveX - labelW / 2));
-                  const labelY = PAD.t + CH + 18;
+                  const labelX = Math.max(pad.l, Math.min(pad.l + CW - labelW, liveX - labelW / 2));
+                  const labelY = pad.t + CH + 18;
                   return (
                     <g>
                       <rect x={labelX} y={labelY} width={labelW} height={labelH} rx={2} fill="#0c4a6e" stroke="#38bdf8" strokeWidth="0.8" />
@@ -835,16 +838,16 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
             )}
 
             {/* Fan curve intersection markers at current spot */}
-            {showFan && currentX >= PAD.l && currentX <= PAD.l + CW && FAN_SLICES.map((days, i) => {
+            {showFan && currentX >= pad.l && currentX <= pad.l + CW && FAN_SLICES.map((days, i) => {
               const fanPnl = compareMode && trackedLegs && openingLegs
                 ? calcTrackedPnLAtTime(trackedLegs, openingLegs, effectiveTrackedSpot, currentSpot, days)
                 : calcPnLAtTime(legs, spot, currentSpot, days);
               const fy = toY(fanPnl);
-              if (fy < PAD.t || fy > PAD.t + CH) return null;
+              if (fy < pad.t || fy > pad.t + CH) return null;
               const label = `${fanPnl >= 0 ? "+" : ""}${fanPnl.toFixed(1)}`;
               const labelW = 48;
               const labelH = 16;
-              const labelY = Math.max(PAD.t + 2, Math.min(PAD.t + CH - labelH, fy - labelH / 2));
+              const labelY = Math.max(pad.t + 2, Math.min(pad.t + CH - labelH, fy - labelH / 2));
               const labelX = i % 2 === 0 ? currentX + 8 : currentX - labelW - 8;
               const accentColor = fanPnl >= 0 ? "#fde047" : "#4ade80";
               return (
@@ -859,14 +862,14 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
             })}
 
             {/* Current spot price label at x-axis intersection */}
-            {currentX >= PAD.l && currentX <= PAD.l + CW && (() => {
+            {currentX >= pad.l && currentX <= pad.l + CW && (() => {
               const labelW = 52;
               const labelH = 14;
-              const labelX = Math.max(PAD.l, Math.min(PAD.l + CW - labelW, currentX - labelW / 2));
+              const labelX = Math.max(pad.l, Math.min(pad.l + CW - labelW, currentX - labelW / 2));
               return (
                 <g>
-                  <rect x={labelX} y={PAD.t + CH + 2} width={labelW} height={labelH} rx={2} fill="#fbbf24" />
-                  <text x={labelX + labelW / 2} y={PAD.t + CH + 12} textAnchor="middle" fontSize="9" fill="#1e293b" fontWeight="bold">
+                  <rect x={labelX} y={pad.t + CH + 2} width={labelW} height={labelH} rx={2} fill="#fbbf24" />
+                  <text x={labelX + labelW / 2} y={pad.t + CH + 12} textAnchor="middle" fontSize="9" fill="#1e293b" fontWeight="bold">
                     {currentSpot.toFixed(currentSpot < 10 ? 2 : currentSpot < 100 ? 1 : 0)}
                   </text>
                 </g>
@@ -874,14 +877,14 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
             })()}
 
             {/* Implied-spot info badge — only in compare mode, placed next to the yellow price label */}
-            {compareMode && hasTracked && currentX >= PAD.l && currentX <= PAD.l + CW && (() => {
+            {compareMode && hasTracked && currentX >= pad.l && currentX <= pad.l + CW && (() => {
               const labelW = 52;
-              const labelX = Math.max(PAD.l, Math.min(PAD.l + CW - labelW, currentX - labelW / 2));
+              const labelX = Math.max(pad.l, Math.min(pad.l + CW - labelW, currentX - labelW / 2));
               const badgeR = 6;
-              const badgeY = PAD.t + CH + 9;
+              const badgeY = pad.t + CH + 9;
               const rightX = labelX + labelW + 6 + badgeR;
               const leftX = labelX - 6 - badgeR;
-              const badgeX = rightX + badgeR <= PAD.l + CW ? rightX : leftX;
+              const badgeX = rightX + badgeR <= pad.l + CW ? rightX : leftX;
               return (
                 <g
                   style={{ cursor: "pointer" }}
@@ -895,7 +898,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
 
             {/* Y axis labels */}
             {yTicks.map((v) => (
-              <text key={v} x={PAD.l - 4} y={toY(v) + 3.5} textAnchor="end" fontSize="9" fill="rgb(100 116 139)">
+              <text key={v} x={pad.l - 4} y={toY(v) + 3.5} textAnchor="end" fontSize="9" fill="rgb(100 116 139)">
                 {Math.abs(v) < 1 ? v.toFixed(2) : v.toFixed(0)}
               </text>
             ))}
@@ -906,7 +909,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
               if (acc.length === 0 || x - acc[acc.length - 1].x >= 32) acc.push({ v: s, x });
               return acc;
             }, []).map(({ v, x }) => (
-              <text key={v} x={x} y={PAD.t + CH + 14} textAnchor="middle" fontSize="9" fill="rgb(100 116 139)">
+              <text key={v} x={x} y={pad.t + CH + 14} textAnchor="middle" fontSize="9" fill="rgb(100 116 139)">
                 {v.toFixed(v < 10 ? 2 : v < 100 ? 1 : 0)}
               </text>
             ))}
@@ -914,9 +917,9 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
             {/* Strike labels */}
             {strikes.map((k, idx) => {
               const kx = toX(k);
-              if (kx < PAD.l || kx > PAD.l + CW) return null;
+              if (kx < pad.l || kx > pad.l + CW) return null;
               const labelAtTop = idx % 2 === 0;
-              const labelY = labelAtTop ? PAD.t + 2 : PAD.t + CH - 14;
+              const labelY = labelAtTop ? pad.t + 2 : pad.t + CH - 14;
               return (
                 <g key={k} clipPath="url(#chart-clip)">
                   <rect x={kx - 20} y={labelY} width={40} height={14} rx={2} fill="rgb(15 23 42)" fillOpacity={0.8} />
@@ -927,9 +930,27 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
               );
             })}
 
+            {/* 坐标轴说明（电脑版）：纵轴竖排"↑期权组合盈亏"（中文逐字上下排，英文旋转90°），横轴"股价 →"放在横轴右端、刻度下面 */}
+            {!compact && (() => {
+              const yLabel = t("chart.axisPnl");
+              const midY = pad.t + CH / 2;
+              const cjk = /[\u4e00-\u9fff]/.test(yLabel);
+              const chars = ["↑", ...yLabel];
+              const lineH = 13;
+              const top = midY - ((chars.length - 1) * lineH) / 2;
+              return (
+                <g fontSize="11" fontWeight="bold" fill="#e2e8f0" textAnchor="middle" style={{ pointerEvents: "none" }}>
+                  {cjk
+                    ? chars.map((ch, i) => <text key={i} x={9} y={top + i * lineH + 4}>{ch}</text>)
+                    : <text x={10} y={midY + 4} transform={`rotate(-90 10 ${midY + 4})`}>{`${yLabel} →`}</text>}
+                  <text x={pad.l + CW} y={pad.t + CH + 30} textAnchor="end">{`${t("chart.axisPrice")} →`}</text>
+                </g>
+              );
+            })()}
+
             {/* Axes */}
-            <line x1={PAD.l} x2={PAD.l} y1={PAD.t} y2={PAD.t + CH} stroke="rgb(71 85 105)" strokeWidth="1" />
-            <line x1={PAD.l} x2={PAD.l + CW} y1={PAD.t + CH} y2={PAD.t + CH} stroke="rgb(71 85 105)" strokeWidth="1" />
+            <line x1={pad.l} x2={pad.l} y1={pad.t} y2={pad.t + CH} stroke="rgb(71 85 105)" strokeWidth="1" />
+            <line x1={pad.l} x2={pad.l + CW} y1={pad.t + CH} y2={pad.t + CH} stroke="rgb(71 85 105)" strokeWidth="1" />
           </svg>
         </div>
 

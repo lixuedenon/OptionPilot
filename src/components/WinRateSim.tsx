@@ -7,12 +7,13 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@/i18n/I18nContext";
 import type { Leg } from "@/lib/types";
 import {
-  openingBasis, isCreditCombo, prepareSim, startStatus, batchStability, cushion, percentileOf, moveInSigma,
+  openingBasis, isCreditCombo, prepareSim, startStatus, simPnlAt, probPriceBeyond, batchStability, cushion, percentileOf, moveInSigma,
   driftCushion, type DriftPoint, type CushionTier,
   type SimRules, type SimStats, type SamplePath, type Histogram, type CurvePoint, type Breakeven, type ExitReason,
 } from "@/lib/winRateSim";
 import type { SimRequest, SimResponse } from "@/lib/winRateSim.worker";
 import { comboBaseIv } from "@/lib/stockOptionMap";
+import { useSimSettings, setSideRules, setVolOverride as setVolOverrideFor, setDriftPct as setDriftPctFor, fracLabel, type Side } from "@/lib/simSettings";
 import { computeHV, fetchHistoricalSeries, realizedVolSince } from "@/lib/historicalVolatility";
 
 interface Props {
@@ -23,40 +24,22 @@ interface Props {
   openingLegs: Leg[]; // 开仓组合——止盈止损的基准
   pnlOffset: number; // 起点时已有的总盈亏（每股）
   openingAt: number;
-  unitMult: number;
-  onUnitChange?: (m: number) => void; // 传了就在控制栏显示每股/每张切换（跟踪对比模式没有头部）
   emptyText: string | null;
   // 今昔对比的"回看"：开仓组合（开仓那天的剩余天数）、开仓价、今天是开仓后第几天、中途是否调整过。
   retro?: { openingLegs: Leg[]; openingSpot: number; todayDay: number; adjusted: boolean };
+  // 推演未来：滑块定的情景点（开仓后第几天、股价、隐含波动率加减的百分点）。模拟本身仍从开仓那天算，这里只把情景点标在走势图上并加说明。
+  scenario?: { day: number; price: number; dV: number } | null;
 }
 
 const BATCHES = 10;
 const PER_BATCH = 1000;
 const SAMPLES = 60;
 const REVEAL_MS = 330;
-const RULES_KEY = "optionpilot.winRateRules2";
 const LIMIT_KEY = "optionpilot.winRateLossLimit";
-// 卖方（收钱开仓）和买方（付钱开仓）的规则习惯不同，分开记：卖方赚权利金的一半就走、亏到1倍止损；买方赚1倍、亏一半止损。
-type Side = "credit" | "debit";
-const DEFAULT_RULES: Record<Side, SimRules> = {
-  credit: { takeProfitPct: 0.5, stopMult: 1, closeFrac: 0.25 },
-  debit: { takeProfitPct: 1, stopMult: 0.5, closeFrac: 0.25 },
-};
 const TP_OPTIONS: Record<Side, number[]> = { credit: [0.25, 0.5, 0.75], debit: [0.5, 1, 2] };
 const SL_OPTIONS: Record<Side, number[]> = { credit: [0.5, 1, 1.5, 2, 3], debit: [0.25, 0.5, 0.75] };
 const CLOSE_FRACS = [0.25, 1 / 3, 0.5];
-const fracLabel = (f: number) => (Math.abs(f - 0.25) < 1e-6 ? "1/4" : Math.abs(f - 1 / 3) < 1e-6 ? "1/3" : Math.abs(f - 0.5) < 1e-6 ? "1/2" : `${Math.round(f * 100)}%`);
 const REASON_COLOR: Record<ExitReason, string> = { tp: "#34d399", sl: "#fb7185", time: "#fbbf24", expiry: "#38bdf8" };
-
-function loadRules(): Record<Side, SimRules> {
-  try {
-    const r = JSON.parse(localStorage.getItem(RULES_KEY) ?? "null");
-    if (r && typeof r.credit?.closeFrac === "number" && typeof r.debit?.closeFrac === "number") return r as Record<Side, SimRules>;
-  } catch {
-    /* 用默认 */
-  }
-  return DEFAULT_RULES;
-}
 
 function loadLimit(): number {
   try {
@@ -115,25 +98,19 @@ interface RunView {
 
 const EMPTY_RUN: RunView = { batches: [], samples: [], combined: null, hist: null, curve: null, breakeven: null, retroSorted: null, delta: null, driftCurve: null, driftBreakeven: null, error: null };
 
-export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, pnlOffset, openingAt, unitMult, onUnitChange, emptyText, retro }: Props) {
+export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, pnlOffset, openingAt, emptyText, retro, scenario }: Props) {
   const { t } = useI18n();
-  const [rulesBySide, setRulesBySide] = useState<Record<Side, SimRules>>(loadRules);
-  const [driftPct, setDriftPct] = useState(0); // 买方：假设的年化涨跌（%），默认0=不预测方向
+  // 规则、手填波动、买方年化涨跌跟持仓建议卡片共用一份（simSettings.ts）。
+  const { rules: rulesBySide, volOverride, driftPct } = useSimSettings(symbol);
+  const setVolOverride = (v: number | null) => setVolOverrideFor(symbol, v);
+  const setDriftPct = (v: number) => setDriftPctFor(symbol, v);
   const [lossLimit, setLossLimit] = useState<number>(loadLimit);
-  const [volOverride, setVolOverride] = useState<number | null>(null);
   const [hv, setHv] = useState<{ status: "loading" | "ok" | "error"; hv20?: number; since?: { vol: number; days: number; limited: boolean } | null }>({ status: "loading" });
   const [run, setRun] = useState<RunView>(EMPTY_RUN);
   const [runNonce, setRunNonce] = useState(0);
   const workerRef = useRef<Worker | null>(null);
   const queueRef = useRef<SimResponse[]>([]);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(RULES_KEY, JSON.stringify(rulesBySide));
-    } catch {
-      /* 存不了就只在本次生效 */
-    }
-  }, [rulesBySide]);
   useEffect(() => {
     try {
       localStorage.setItem(LIMIT_KEY, String(lossLimit));
@@ -144,7 +121,6 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
 
   // 历史波动率：最近20个交易日；跟踪对比模式另算开仓以来的实际波动作参考。
   useEffect(() => {
-    setVolOverride(null);
     if (!symbol) return;
     let alive = true;
     setHv({ status: "loading" });
@@ -164,7 +140,7 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
   const credit = useMemo(() => isCreditCombo(openingLegs), [openingLegs]);
   const side: Side = credit ? "credit" : "debit";
   const rules = rulesBySide[side];
-  const setRules = (r: SimRules) => setRulesBySide((all) => ({ ...all, [side]: r }));
+  const setRules = (r: SimRules) => setSideRules(side, r);
   // 开仓时（最早到期的）总期限：到期前平仓的天数按它的比例算。
   const totalTerm = useMemo(() => {
     const d = openingLegs.filter((l) => !l.disabled && l.kind !== "stock").map((l) => l.dte);
@@ -249,12 +225,8 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
     return () => window.clearInterval(id);
   }, []);
 
-  const money = (v: number, mult = unitMult) => {
-    const x = v * mult;
-    const a = Math.abs(x);
-    const s = a >= 100 ? Math.round(a).toLocaleString() : a.toFixed(2);
-    return `${x < -0.005 ? "−" : ""}$${s}`;
-  };
+  // 金额统一按每股显示（跟期权报价同一个数），跟盈亏图、地形图一致。
+  const money = (v: number) => `${v < -0.005 ? "−" : ""}$${Math.abs(v).toFixed(2)}`;
   const pct = (v: number) => `${Math.round(v * 100)}%`;
 
   if (emptyText) {
@@ -355,15 +327,6 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
         {chip(t("winRate.volIv", { v: (ivCenter * 100).toFixed(1) }), ivCenter, "iv")}
       </span>
       <span className="ml-auto flex items-center gap-2">
-        {onUnitChange && (
-          <span className="flex items-center rounded border border-slate-700 p-0.5 text-[9px]">
-            {[1, 100].map((m) => (
-              <button key={m} onClick={() => onUnitChange(m)} className={`rounded px-1.5 py-0.5 font-semibold ${unitMult === m ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:text-slate-300"}`}>
-                {t(m === 1 ? "chart.unitShare" : "chart.unitContract")}
-              </button>
-            ))}
-          </span>
-        )}
         <button onClick={() => setRunNonce((n) => n + 1)} className="rounded border border-slate-600 px-2 py-0.5 text-[11px] font-semibold text-slate-200 hover:bg-slate-800">
           {t("winRate.rerun")}
         </button>
@@ -381,8 +344,15 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
     if (k < pLo && k > spot * 0.5) pLo = k - (pHi - pLo) * 0.04;
     if (k > pHi && k < spot * 1.5) pHi = k + (pHi - pLo) * 0.04;
   }
+  // 情景点在到期前才标；纵轴范围放宽到能看见它。
+  const scen = mode === "analysis" && scenario && scenario.day < horizon && scenario.price > 0 ? scenario : null;
+  if (scen) {
+    pLo = Math.min(pLo, scen.price * 0.97);
+    pHi = Math.max(pHi, scen.price * 1.03);
+  }
   const drawPaths = (g: CanvasRenderingContext2D, W: number, H: number) => {
-    const L = 38, R = 8, T = 8, B = 18;
+    // 上方正中间是标题；左边竖排"↑股价"；底部第一行是开仓/平仓日/到期，第二行是横轴说明。
+    const L = 58, R = 8, T = 24, B = 34;
     const X = (d: number) => L + (d / lastDay) * (W - L - R);
     const Y = (s: number) => T + ((pHi - Math.min(pHi, Math.max(pLo, s))) / (pHi - pLo)) * (H - T - B);
     g.fillStyle = "#020617";
@@ -410,16 +380,79 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
       g.stroke();
       g.setLineDash([]);
     }
+    const row1 = H - B + 13;
     g.fillStyle = "#64748b";
     g.textAlign = "left";
-    g.fillText(t(mode === "tracked" ? "winRate.axisToday" : "winRate.axisOpen"), L, H - 4);
+    g.fillText(t(mode === "tracked" ? "winRate.axisToday" : "winRate.axisOpen"), L, row1);
     g.textAlign = "right";
-    g.fillText(t("winRate.axisExpiry", { d: horizon }), W - R, H - 4);
+    g.fillText(t("winRate.axisExpiry", { d: horizon }), W - R, row1);
     if (p.endDay < horizon && p.endDay > 0) {
       g.textAlign = "center";
       g.fillStyle = "#b45309";
-      g.fillText(t("winRate.axisClose"), X(p.endDay), H - 4);
+      g.fillText(t("winRate.axisClose"), X(p.endDay), row1);
     }
+    // 坐标轴说明和标题（写法跟"股价 vs 期权价"地形图一致）
+    g.font = "bold 11px sans-serif";
+    g.fillStyle = "#e2e8f0";
+    g.textAlign = "center";
+    g.fillText(`${t(mode === "tracked" ? "winRate.axisTimeToday" : "winRate.axisTimeOpen")} →`, L + (W - L - R) / 2, H - 4);
+    const yLabel = t("som.axisPrice");
+    const midY = T + (H - T - B) / 2;
+    if (/[\u4e00-\u9fff]/.test(yLabel)) {
+      const chars = ["↑", ...yLabel];
+      const lineH = 14;
+      const top = midY - ((chars.length - 1) * lineH) / 2;
+      chars.forEach((ch, i) => g.fillText(ch, 9, top + i * lineH + 4));
+    } else {
+      g.save();
+      g.translate(10, midY);
+      g.rotate(-Math.PI / 2);
+      g.fillText(`${yLabel} →`, 0, 4);
+      g.restore();
+    }
+    g.font = "bold 12px sans-serif";
+    g.fillStyle = "#f8fafc";
+    g.fillText(t("winRate.pathsTitle", { s: symbol }), L + (W - L - R) / 2, 15);
+    g.font = "10px sans-serif";
+    const drawScenario = () => {
+      if (!scen) return;
+      const sx = X(scen.day);
+      const sy = Y(scen.price);
+      g.strokeStyle = "rgba(56,189,248,0.9)";
+      g.lineWidth = 1;
+      g.setLineDash([4, 3]);
+      g.beginPath();
+      g.moveTo(L, sy);
+      g.lineTo(sx, sy);
+      g.moveTo(sx, H - B);
+      g.lineTo(sx, sy);
+      g.stroke();
+      g.setLineDash([]);
+      g.fillStyle = "#0ea5e9";
+      g.strokeStyle = "#f8fafc";
+      g.lineWidth = 1.5;
+      g.beginPath();
+      g.moveTo(sx, sy - 6);
+      g.lineTo(sx + 6, sy);
+      g.lineTo(sx, sy + 6);
+      g.lineTo(sx - 6, sy);
+      g.closePath();
+      g.fill();
+      g.stroke();
+      g.lineWidth = 1;
+      const label = t("winRate.scenMark", { d: Math.round(scen.day), s: scen.price.toFixed(2) });
+      g.font = "bold 11px sans-serif";
+      const tw = g.measureText(label).width;
+      const onLeft = sx + 10 + tw > W - R;
+      const lx = onLeft ? sx - 10 - tw : sx + 10;
+      const ly = Math.max(T + 12, Math.min(H - B - 6, sy - 8));
+      g.fillStyle = "rgba(2,6,23,0.85)";
+      g.fillRect(lx - 3, ly - 11, tw + 6, 15);
+      g.fillStyle = "#7dd3fc";
+      g.textAlign = "left";
+      g.fillText(label, lx, ly);
+      g.font = "10px sans-serif";
+    };
     for (const sp of run.samples) {
       g.strokeStyle = REASON_COLOR[sp.reason];
       g.globalAlpha = 0.45;
@@ -434,6 +467,7 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
       g.arc(X(d), Y(sp.prices[d]), 2.2, 0, Math.PI * 2);
       g.fill();
     }
+    drawScenario();
   };
 
   // ── 每批结果对比条 ──
@@ -444,8 +478,9 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
       { label: t("winRate.stripAvg"), get: (s) => s.avg, color: "#93c5fd", fmt: (v) => money(v) },
     ];
     const rh = H / rows.length;
-    const L = 44, R = 10;
     g.font = "10px sans-serif";
+    const R = 10;
+    const L = Math.max(44, ...rows.map((r) => g.measureText(r.label).width + 8)); // 标签多长，左边就留多宽
     rows.forEach((row, i) => {
       const y = i * rh + rh / 2 - 4;
       const vals = run.batches.map(row.get);
@@ -482,6 +517,44 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
     });
   };
 
+  // ── 推演未来的情景点说明（模拟仍从开仓算，这里只说明情景点在这些走势里处于什么位置）──
+  let scenBlock: ReactNode = null;
+  if (mode === "analysis" && scenario && (scenario.day !== 0 || Math.abs(scenario.price - spot) > 0.005 || scenario.dV !== 0)) {
+    const lines: string[] = [];
+    const d = Math.round(scenario.day);
+    const sTxt = scenario.price.toFixed(2);
+    if (scenario.day >= horizon) {
+      lines.push(t("winRate.scenExpired"));
+    } else {
+      const chg = scenario.price / spot - 1;
+      lines.push(t("winRate.scenHead", { d, s: sTxt, chg: `${chg >= 0 ? "+" : "−"}${Math.abs(chg * 100).toFixed(1)}%` }));
+      if (scenario.day > 0 && Math.abs(scenario.price - spot) > 0.005) {
+        const prob = probPriceBeyond(spot, scenario.price, vol, credit ? 0 : driftPct / 100, scenario.day);
+        lines.push(
+          t(scenario.price >= spot ? "winRate.scenProbUp" : "winRate.scenProbDown", {
+            d, s: sTxt, v: (vol * 100).toFixed(1), p: prob < 0.01 ? "<1" : String(Math.round(prob * 100)),
+          }),
+        );
+      }
+      if (p.closeAtRemaining > 0 && scenario.day > p.endDay) {
+        lines.push(t("winRate.scenAfterClose", { d: p.endDay }));
+      } else if (scenario.day > 0) {
+        const pnl = simPnlAt(p, scenario.day, scenario.price);
+        if (pnl >= p.tpLine) lines.push(t("winRate.scenHitTp", { v: `$${Math.abs(pnl).toFixed(2)}` }));
+        else if (pnl <= p.slLine) lines.push(t("winRate.scenHitSl", { v: `$${Math.abs(pnl).toFixed(2)}` }));
+      }
+    }
+    if (scenario.dV !== 0) lines.push(t("winRate.scenIv", { dv: `${scenario.dV > 0 ? "+" : "−"}${Math.abs(scenario.dV)}` }));
+    lines.push(t("winRate.scenAdvice"));
+    scenBlock = (
+      <div className="mt-1.5 rounded border border-sky-700/50 bg-sky-950/30 px-2 py-1.5 text-[11px] leading-relaxed text-sky-100">
+        {lines.map((l, i) => (
+          <div key={i} className={i === lines.length - 1 ? "text-slate-400" : ""}>{l}</div>
+        ))}
+      </div>
+    );
+  }
+
   // ── 结论卡片 ──
   const cardLines: ReactNode[] = [];
   if (finished && run.combined && stability) {
@@ -508,7 +581,6 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
     cardLines.push(
       <div key="head" className="text-[13px] font-semibold text-slate-100">
         {mode === "tracked" ? t("winRate.headTracked", { d: horizon }) : t("winRate.headAnalysis")}
-        <span className="ml-1 text-[10px] font-normal text-slate-500">({t(unitMult === 100 ? "chart.unitContract" : "chart.unitShare")})</span>
       </div>,
     );
     // 做10次里的次数；不到半次时说"不到1次"，不显示"0次"。
@@ -532,7 +604,12 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
     );
     cardLines.push(
       <div key="avg">
-        {t(mode === "tracked" ? "winRate.lineAvgTracked" : "winRate.lineAvg", { v: money(s.avg), w: s.winPct.toFixed(0), d: Math.round(s.avgDays) })}
+        {t(mode === "tracked" ? "winRate.lineAvgTracked" : "winRate.lineAvg", {
+          gl: t(mode === "tracked" ? (s.avg >= 0 ? "winRate.endUp" : "winRate.endDown") : s.avg >= 0 ? "winRate.gain" : "winRate.loss"), v: `$${Math.abs(s.avg).toFixed(2)}`, w: s.winPct.toFixed(0), d: Math.round(s.avgDays),
+        })}
+        {/* 赚钱的次数和平均盈亏方向相反时，补一句为什么，不然"赚钱概率51%、平均每次亏"读起来像矛盾 */}
+        {s.winPct >= 50 && s.avg < -0.005 && <> {t("winRate.mixWinButLose")}</>}
+        {s.winPct < 50 && s.avg > 0.005 && <> {t("winRate.mixLoseButWin")}</>}
       </div>,
     );
     if (s.worst5 < 0) {
@@ -540,7 +617,7 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
       const maxSets = Math.floor(lossLimit / perSet);
       cardLines.push(
         <div key="worst" className="flex flex-wrap items-center gap-1">
-          <span>{t("winRate.worst", { v: money(s.worst5) })}</span>
+          <span>{t("winRate.worst", { v: `$${Math.abs(s.worst5).toFixed(2)}` })}</span>
           <span>{t("winRate.sizingPre")}</span>
           <span>$</span>
           <input
@@ -558,7 +635,7 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
         </div>,
       );
     } else {
-      cardLines.push(<div key="worst">{t("winRate.worstPositive", { v: money(s.worst5) })}</div>);
+      cardLines.push(<div key="worst">{t("winRate.worstPositive", { v: `$${Math.abs(s.worst5).toFixed(2)}` })}</div>);
     }
     // 安全垫：卖方/波动型组合看盈亏平衡波动率；买方方向型组合（每张平均|Delta|≥0.3，比如Leap Call）看盈亏平衡年化涨跌。
     const directional = !credit && run.delta != null && Math.abs(run.delta) >= 0.3;
@@ -607,7 +684,11 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
             {pct(cush.value)}（{t(`winRate.tier_${cush.tier}`)}）
           </span>
           <span className="ml-1">
-            {t(be.side === "short" ? "winRate.cushionShort" : "winRate.cushionLong", { bev: (be.vol * 100).toFixed(1), rv: (vol * 100).toFixed(1) })}
+            {t(be.side === "short" ? "winRate.cushionShort" : "winRate.cushionLong", { bev: (be.vol * 100).toFixed(1) })}{" "}
+            {t(
+              `winRate.cushion${be.side === "short" ? "Short" : "Long"}${cush.value < 0 ? "Neg" : cush.tier === "none" ? "Small" : "Pos"}`,
+              { rv: (vol * 100).toFixed(1), pp: (Math.abs(vol - be.vol) * 100).toFixed(1) },
+            )}
           </span>
         </div>,
       );
@@ -649,7 +730,7 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
     const L = 46, R = 10, T = 16, B = 20;
     const vols = c.map((x) => x.vol);
     const vLo = Math.min(...vols), vHi = Math.max(...vols);
-    const ys = c.map((x) => x.avg * unitMult);
+    const ys = c.map((x) => x.avg);
     let yLo = Math.min(0, ...ys), yHi = Math.max(0, ...ys);
     const pad = (yHi - yLo) * 0.1 || 1;
     yLo -= pad;
@@ -664,8 +745,8 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
     g.stroke();
     g.fillStyle = "#64748b";
     g.textAlign = "right";
-    g.fillText(money(yHi / unitMult), L - 3, T + 4);
-    g.fillText(money(yLo / unitMult), L - 3, H - B);
+    g.fillText(money(yHi), L - 3, T + 4);
+    g.fillText(money(yLo), L - 3, H - B);
     g.textAlign = "center";
     for (let i = 0; i < c.length; i += 3) g.fillText(`${(c[i].vol * 100).toFixed(0)}%`, X(c[i].vol), H - 5);
     const mark = (v: number, label: string, color: string, row: number) => {
@@ -687,7 +768,7 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
     g.strokeStyle = "#60a5fa";
     g.lineWidth = 2;
     g.beginPath();
-    c.forEach((x, i) => (i ? g.lineTo(X(x.vol), Y(x.avg * unitMult)) : g.moveTo(X(x.vol), Y(x.avg * unitMult))));
+    c.forEach((x, i) => (i ? g.lineTo(X(x.vol), Y(x.avg)) : g.moveTo(X(x.vol), Y(x.avg))));
     g.stroke();
     g.lineWidth = 1;
   };
@@ -697,7 +778,7 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
     const L = 46, R = 10, T = 16, B = 20;
     const xs = c.map((x) => x.drift);
     const xLo = Math.min(...xs), xHi = Math.max(...xs);
-    const ys = c.map((x) => x.avg * unitMult);
+    const ys = c.map((x) => x.avg);
     let yLo = Math.min(0, ...ys), yHi = Math.max(0, ...ys);
     const pad = (yHi - yLo) * 0.1 || 1;
     yLo -= pad;
@@ -712,8 +793,8 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
     g.stroke();
     g.fillStyle = "#64748b";
     g.textAlign = "right";
-    g.fillText(money(yHi / unitMult), L - 3, T + 4);
-    g.fillText(money(yLo / unitMult), L - 3, H - B);
+    g.fillText(money(yHi), L - 3, T + 4);
+    g.fillText(money(yLo), L - 3, H - B);
     g.textAlign = "center";
     for (let i = 0; i < c.length; i += 2) g.fillText(`${c[i].drift >= 0 ? "+" : ""}${Math.round(c[i].drift * 100)}%`, X(c[i].drift), H - 5);
     const mark = (v: number, label: string, color: string, row: number) => {
@@ -734,7 +815,7 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
     g.strokeStyle = "#60a5fa";
     g.lineWidth = 2;
     g.beginPath();
-    c.forEach((x, i) => (i ? g.lineTo(X(x.drift), Y(x.avg * unitMult)) : g.moveTo(X(x.drift), Y(x.avg * unitMult))));
+    c.forEach((x, i) => (i ? g.lineTo(X(x.drift), Y(x.avg)) : g.moveTo(X(x.drift), Y(x.avg))));
     g.stroke();
     g.lineWidth = 1;
   };
@@ -857,7 +938,7 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
               {retro.adjusted && <div className="text-[10px] text-slate-500">{t("winRate.retroAdjusted")}</div>}
             </div>
             <div className="min-w-0">
-              <CanvasBox className="h-[110px]" draw={drawRetro} deps={[sorted, pnlOffset, unitMult, t]} label={t("winRate.retroTitle")} />
+              <CanvasBox className="h-[110px]" draw={drawRetro} deps={[sorted, pnlOffset, t]} label={t("winRate.retroTitle")} />
               <div className="text-center text-[10px] text-slate-500">{t("winRate.retroHistHint")}</div>
             </div>
           </div>
@@ -880,20 +961,21 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
       {retroOn && retroSection}
       {retroOn && <div className="mt-1 text-[13px] font-bold text-sky-300">{t("winRate.forwardTitle")}</div>}
       {controls}
-      <div className="grid min-h-[210px] grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-3">
+      <div className="grid min-h-[240px] shrink-0 grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-3">
         <div className="flex min-w-0 flex-col">
-          <CanvasBox className="h-[200px]" draw={drawPaths} deps={[run.samples, pLo, pHi, horizon, p.endDay, t]} label={t("winRate.pathsAria")} />
+          <CanvasBox className="h-[230px]" draw={drawPaths} deps={[run.samples, pLo, pHi, horizon, p.endDay, symbol, scen?.day, scen?.price, t]} label={t("winRate.pathsAria")} />
           <div className="mt-1 flex flex-wrap items-center gap-3 text-[10px] text-slate-500">
             <span>{revealed === 0 ? t("winRate.running") : t("winRate.batchLabel", { i: revealed, n: BATCHES, per: PER_BATCH.toLocaleString(), s: SAMPLES })}</span>
             {legend}
           </div>
+          {scenBlock}
         </div>
         <div className="flex min-w-0 flex-col">
           <div className="mb-1 text-[10px] text-slate-500">{t("winRate.stripTitle")}</div>
-          <CanvasBox className="h-[180px]" draw={drawStrip} deps={[run.batches, unitMult, t]} label={t("winRate.stripTitle")} />
+          <CanvasBox className="h-[180px]" draw={drawStrip} deps={[run.batches, t]} label={t("winRate.stripTitle")} />
         </div>
       </div>
-      <div className="rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 leading-relaxed">
+      <div className="shrink-0 rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 leading-relaxed">
         {run.error ? (
           <span className="text-rose-300">{t("winRate.error")}</span>
         ) : finished ? (
@@ -902,13 +984,13 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
           <span className="text-slate-500">{revealed === 0 ? t("winRate.running") : t("winRate.firstDone", { n: BATCHES - 1 })}</span>
         )}
       </div>
-      <details className="rounded-md border border-slate-800 px-3 py-1.5">
+      <details className="shrink-0 rounded-md border border-slate-800 px-3 py-1.5">
         <summary className="cursor-pointer select-none text-slate-400">{t("winRate.advanced")}</summary>
         <div className="mt-2 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3">
           <div className="min-w-0">
             <div className="mb-1 text-[10px] text-slate-500">{t("winRate.curveTitle")}</div>
             {run.curve ? (
-              <CanvasBox className="h-[170px]" draw={drawCurve} deps={[run.curve, be, vol, unitMult, ivCenter, t]} label={t("winRate.curveTitle")} />
+              <CanvasBox className="h-[170px]" draw={drawCurve} deps={[run.curve, be, vol, ivCenter, t]} label={t("winRate.curveTitle")} />
             ) : (
               <div className="flex h-[170px] items-center justify-center text-slate-600">{t("winRate.cushionPending")}</div>
             )}
@@ -916,13 +998,13 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
             {run.driftCurve && (
               <>
                 <div className="mb-1 mt-2 text-[10px] text-slate-500">{t("winRate.driftCurveTitle")}</div>
-                <CanvasBox className="h-[140px]" draw={drawDrift} deps={[run.driftCurve, run.driftBreakeven, driftPct, unitMult, t]} label={t("winRate.driftCurveTitle")} />
+                <CanvasBox className="h-[140px]" draw={drawDrift} deps={[run.driftCurve, run.driftBreakeven, driftPct, t]} label={t("winRate.driftCurveTitle")} />
               </>
             )}
           </div>
           <div className="min-w-0">
             <div className="mb-1 text-[10px] text-slate-500">{t("winRate.distTitle", { n: (BATCHES * PER_BATCH).toLocaleString() })}</div>
-            <CanvasBox className="h-[130px]" draw={drawHist} deps={[run.hist, unitMult]} label={t("winRate.distTitle", { n: BATCHES * PER_BATCH })} />
+            <CanvasBox className="h-[130px]" draw={drawHist} deps={[run.hist]} label={t("winRate.distTitle", { n: BATCHES * PER_BATCH })} />
             {run.combined && (
               <div className="mt-1 grid grid-cols-5 gap-1 text-center text-[10px]">
                 {(["p5", "p25", "p50", "p75", "p95"] as const).map((k) => (
