@@ -2,7 +2,43 @@
 
 # OptionPilot 交接文档（整合版）
 
-**版本**：整合版，更新于 2026-10-01。**本轮：通用持仓建议（引擎+卡片，推演未来/今昔对比都有）+ 去掉每股/每张切换**——
+**版本**：整合版，更新于 2026-10-03（第六轮）。**本轮：阶梯图挪到左边盈亏归因下面**（xue：盈亏归因和阶梯图都留，给不同理解方式的人；阶梯图要竖版、总高度定死）——`PnlAttributionPanel`在横条和合计下面画竖版阶梯图（开仓0→价格→时间→IV→调整→情景/现在，`endLabel`：推演未来"情景"、今昔对比"现在"），容器固定120px；纵向按柱子缩放，但跨度至少是到期最大赚/亏的10%（`drawWaterfall`的`minSpan`，滑块刚动一点时几分钱不会被放大成满屏）。画法挪到`lib/simChartDraw.ts`的`drawWaterfall`。多方案对比的小卡片里不画（`showSteps={false}`）。下面加一行说明`attribution.interactNote`：三项会互相影响，拖一个滑块其他几项也会跟着变（平均法的正常现象，xue试演示页时问过）。右边万次推演卡片的"经历了什么"只留大白话和一句话总结，不再画阶梯图，末尾一行"阶梯图在左边盈亏归因下面"（`future.jSeeLeft`）。演示页（三个滑块+横条vs两种阶梯图）是一个单独的artifact，不在仓库里。翻译1153/1153。
+
+**上一轮（2026-10-03第五轮）：推演未来的"万次推演"卡片也从滑块讲起**（xue："我说的是分析模式里滑块的滑动"）——滑块动过（股价/时间定了情景点，或拖了波动率）时，结论卡片前面加三块：①**你的滑块现在的位置（相比开仓时）**：股价 开仓→情景、涨跌多少/%；第N天/共M天、已过%、还剩；隐含波动率 开仓→调整后、升降几个点（基准=`sliderBaseIv`，新prop`ivBase`）；②**如果走到这个情景，期权的价值会经历什么**：开仓→情景点的平均法拆分（`attributeSegment`，终点=左边持仓建议用的同一组`fork`腿位和盈亏），股价/时间/隐含波动率各一句大白话+瀑布图+一句话总结；③**放到1万次推演里看这个情景**：走到这里的概率（原有）、**按你的规则走到第N天之前1万次里已有多少止盈/止损/提前平仓下车、还拿着的占多少**（worker的done新增`exitDays`）、已碰止盈止损/过了平仓日（原有）、从情景点往后1500次的止盈/止损/赚钱概率+平均+最坏5%，并跟从开仓看的数字对比、波动率滑块说明；然后是原来的结论卡片，加标题"从开仓看这笔交易本身（1万次推演）"。滑块没动时跟以前一样，最下面一行提示拖滑块。①②的组件抽成`components/ValueJourney.tsx`（`NowCells`/`JourneyBlock`），今昔对比的回看卡片也改用它。原来卡片底部的"情景点"一行去掉（内容挪进③）。翻译1151/1151。
+
+**上一轮（2026-10-03第四轮）：今昔对比"万次推演"卡片重写成"从滑块讲起的经历"+立体图标坐标**（xue看了真实持仓：立体图只看得出纵轴是盈亏；描述要从滑块说起——股价/时间/波动率各变了多少；排名、标准差这些说法看完还是一头雾水，不知道为什么会到现在、接下来该干什么；**这个功能的价值是讲清楚期权的价值一路经历了什么**）——
+- **卡片新顺序**（`RetroSim.tsx`，数字和选哪种说法在新文件`lib/retroStory.ts`）：①**现在跟开仓时比**（三格：股价 开仓→现在、涨跌多少/%；第N天/共M天、已过%、还剩几天；隐含波动率 开仓→现在、升降几个点——跟左边冻结的滑块同一组数，`ivOpen`=`sliderBaseIv`）→②**这N天你的组合经历了什么**：开仓收/付了多少，然后股价、时间、隐含波动率、调整各让你赚亏多少（`trackedTimeline.totals`，跟地形图逐段拆解同一份），每项一句大白话"为什么"（股价那句按这笔组合靠什么赚钱：`priceStance`看到期盈亏形状——涨赚/跌赚/区间/大波动，**不用Delta**：远离现价的价差Delta很小会被误判成中性），加起来=现在的总盈亏，再一句话"亏损主要来自X，Y帮你挽回了$Z但没能抵消"，右边瀑布图→③**一路是怎么走过来的**：每两个快照之间一行（日子、股价、总盈亏、这段主要因为哪一项），超过8段时把最早的合并（`journeyRows`）→④**这是运气不好，还是交易本身有问题**：开仓时市场预期这N天股价在±X%（价格区间）内波动、实际涨跌在不在里面；实际波动比市场预期平稳还是猛、对卖方/买方意味着什么；"开仓那天做100次，到今天大约A次比你好、B次比你差"+直方图；结论（新增"期权价格其实对你有利，亏钱是方向不走运"这种）→⑤规则复盘→⑥**现在的处境**：按今天的组合和总账，到期时股价在哪边不亏、最好/最坏合计多少（`keyLevels`），然后指向左边持仓建议。删掉了排名徽章、"几个标准差"、"波动费"等说法和34个翻译key。
+- **跟万次推演挂钩**（xue第二次反馈："大白话挺好，但这跟万次推演有什么关系"）：卡片顺序改成 ①现在跟开仓时比 → **②万次推演：站在开仓那天看，你走的这条路常见吗**（先说图怎么看——按开仓隐含波动率预计这N天股价在±X%（价格区间）内、随机走5000次、白亮=走得多、金线=真实的路及各点总盈亏、右侧=今天各停在什么价位；立体/平面各一版说明`future.simHow3d`/`simHow`；然后**股价**：今天的价格在5000次里有百分之几走得更远+在不在市场预期内+实际波动比预期平稳还是猛；**盈亏**：推演到今天中间一半/中位数/赚钱的比例，**推演里隐含波动率不变、也没有调整，所以先拿掉这两项再比**（"拿掉后你是X，比A%的走法好"），再加回来"比B%好"，直方图上虚线=拿掉后、金线=现在；**排名**：做100次大约几次比你好；结论）→ ③经历了什么（瀑布图）→ ④一路走过来（表格新增一列"在5000次推演里：股价高于p%·盈亏好于v%"，同样先拿掉到那天为止累计的隐含波动率变化和调整）→ 规则复盘 → 现在的处境。worker的retro请求新增`checkDays`（快照那几天），回传那几天5000条的股价/盈亏（`RetroDay`，排好序）和今天的股价分布`prices`；`runCloud`加`extraStep`回调。瀑布图柱子下用短标签（`future.wf_*`）。
+- **平面图**：金色真实路径上每个快照点标出当时的总盈亏（太挤时跳过）。
+- **立体图**（两种模式）：地板前沿=时间、左沿=股价，都画成带箭头的轴并标轴名；左上角三行说明"高度=盈亏（绿赚红亏，白线不赚不亏）/横向=时间（开仓→今天或到期）/纵深=股价（区间）"（`labels.time`/`labels.legend`）。
+- `App.tsx`：`trackedTimeline`（开仓点→快照→今天的状态和逐段拆解）从`trackedMap`里拆出来，地形图和回看共用。新测试`retroStory.test.ts`（4个）。翻译1137/1137。用模拟的TSLA卖260/买290看涨价差（100%→44%，9天涨13.6%）实测过平面/立体。
+
+**上一轮（2026-10-03第三轮）：右侧"三维"改造第2–4期做完**（原backlog 29，四期全部完成，已从backlog删除；方向：右侧按维度递进——盈亏图=某天股价→盈亏，地形图=时间×股价→盈亏，万次推演=可能性；左边持仓建议负责解释和"往后怎么办"，右边只给画面+短结论；不做Greeks动态对冲场）——
+- **第2期：地形图补完整**（`StockOptionMap.tsx`）：推演未来时三个滑块都对地形图生效（切到这个标签不再把滑块归零；`IvShiftSlider`只在今昔对比的地形图标签下出现）；滑块定的情景点画蓝色菱形，情景变了清掉图上钉住的点。**"盈亏颜色/风险分区"切换**（`optionpilot.mapColor`）：风险分区=图上每一格按持仓建议的规则会给哪种建议（`positionAdvisor.ts`新增`prepareQuickAdvice`/`quickAdvice`：不跑模拟的快速版，阈值跟`adviseCombo`同一套，只是不看"继续拿的止损/回本概率"那几条；有测试锁住在不需要模拟的那些格子上跟完整版一致），颜色跟持仓建议的五种动作对应（`ZONE_ORDER`/`ZONE_RGB`）。选中的走势线上标出建议变化的节点（每条最多3个，"第14天 → 持有或止损"）。图下"发现"：到期盈亏平衡点、前半段vs后半段时间价值、隐含波动率±10个点的影响。规则共用`simSettings`（`App.tsx`的`mapZoneCtx`）。
+- **第3期：今昔对比的"万次推演"换成回看**（新`components/RetroSim.tsx`，删除`WinRateSim.tsx`和`lib/winRateSim.worker.ts`）：站在开仓那天，按开仓时的隐含波动率、组合不动、固定种子随机走5000条到今天（`futureSim.worker`新请求`kind:"retro"`）；立体/平面跟推演未来同一套画法，横轴只到今天：平面=开仓→今天的地形图底色+可能走过的地方发亮+金色真实走过的路（开仓点→快照→今天）+右侧今天的落点分布（三角标出今天的股价）；立体=`SimSurface3D`新增`actual`/`todayDay`（光束画到今天、金色粗线、按规则下车点画成圈）。卡片：排名徽章（比多数情况差/正常区间/比多数情况好）+"你现在X，比Y%的可能情况好"→位置（中间一半范围、中位数）→运气（几个标准差）→优势（开仓以来实际波动vs开仓隐含波动率）→隐含波动率变化（`trackedVolShift`，≥1个点才说：对卖方/买方有利还是不利，并说明上面的可能情况没算这一项）→**规则复盘**→结论（新增"主要是隐含波动率变化"两种）→"往后怎么办看左边的持仓建议"。**右边不再有"往后看"**。
+- **规则复盘**（`lib/futureSim.ts`的`replayRules`，`App.tsx`的`trackedHistory`/`ruleExit`）：沿真实走过的路（存过的快照+今天，盈亏是开仓至今总账含已实现），按现在的止盈/止损/提前平仓规则找第一次该下车的点，地形图左半边（圈+"按你的规则第N天就该止损/止盈/平仓"，新增`time`一种）和回看卡片说同一天；卡片还说"没下车，现在比那时多/少$X"。只能检查存过快照的日子（卡片上写明）。`trackedHistory`是地形图和回看共用的真实路径（原来在`trackedMap`里算）。
+- **第4期：智能**（`FutureSim.tsx`）：①**换个规则**：主推演完后，worker用固定种子`ALT_SEED`、同一组走势试6种常见规则（卖方/买方各一套，`futureSim.ts`的`suggestRules`，去掉跟现在相同的那种），逐条走势配对相减算误差；**只有明显更好才建议**（平均多赚>2倍误差且≥基准2%、最坏5%不差超过10%；或最坏5%少亏两成以上且平均不变差），卡片显示前后数字（起点用1万次的数字，加上同组走势里两种规则的差，才对得上）和"套用"按钮（`setSideRules`，持仓建议跟着变）；没有就说"你现在的规则可以"。固定种子是为了点"换一组随机走势"时建议不会忽有忽无。②**隐含波动率远高于最近20天实际波动**（≥1.4倍，`IV_HV_WARN`）时卡片顶部加"注意"：常见于财报前，市场在为跳空定价、随机走势不含跳空，卖方优势可能被高估/对买方可能偏悲观。
+- **顺带修的**：`SimSurface3D`的开场旋转动画调的是第一次渲染时的`draw`（旧数据），数据在旋转的1.4秒内到达时转完画出来是空的——改成`drawRef.current`；最大盈利/亏损离0太近时不单独标"0"（数字叠在一起）。到期/平仓日落点不再把图外的价格堆进最上/最下一格（假长条）。卡片里写死的中文"，""。"改成`future.comma`/`future.period`。
+- 删除`winRateSim.ts`里没人用了的`retroDistribution`/`RetroInput`/`cushion`（安全垫，判断早已不用它）。翻译删71个旧"胜率模拟"key（往后看、批次条、安全垫、持仓判断等），新增`future.retro*`/`future.replay*`/`future.alt*`/`future.ivhv*`等；使用说明对比模式加一节"万次推演（回看）"（`help.moduleCompareWinRate*`），帮助和提示里剩下的"胜率模拟"字样改成"万次推演"。1060/1060。新测试：`replayRules`、`suggestRules`（futureSim.test.ts共8个）；winRateSim.test的回看测试改成直接用`runBatch`。typecheck/build/test 64通过，eslint剩1个错误12个警告，全是改动前就有的（scenarioEngine等没碰过的文件）；沙盒Chromium+临时测试页看过回看（LULU卖Put，立体/平面，中英文）和推演未来的"换个规则"/"注意"。**整个App的今昔对比界面（地形图上的"该下车"圈、回看卡片）没有在真实持仓上点过**，接手后用LULU那笔走一遍。
+
+**上一轮（2026-10-03第二轮）：右侧"三维"改造第1期——分析模式的"万次推演"**（xue确认：改名、分期、对比模式去掉右边"往后看"）——
+- **标签改名**"胜率模拟"→"万次推演"（`chart.tabWinRate`、帮助、持仓建议页脚）。**推演未来**用新组件`FutureSim.tsx`；**今昔对比暂时仍用`WinRateSim.tsx`**（第3期再换），两者共用`components/simCharts.tsx`（`CanvasBox`）和`lib/simChartDraw.ts`（高级分析三张小图）。
+- **立体/平面两种看法**（`optionpilot.simView`，默认立体）：平面=地形图（`buildMapModel`同款配色）上叠密度云（每天按当天最大值归一，白=还拿着、淡灰=已下车）、止盈绿点/止损红点、右侧到期（或平仓日）落点、情景点、蓝色分叉云；立体=`SimSurface3D.tsx`，canvas 2D自绘（画家算法+光照，不引三维库），高度=盈亏，曲面按走势密度发亮，40条走势像光束贴着曲面走（下车后变淡），白线=盈亏平衡线，行权价虚线，情景点立针；拖动旋转、双击复位、第一次出现转一下；每次按当前角度把曲面实际占的盒子缩放居中。
+- **三个滑块都生效**：股价/时间=情景点，从那里再推演一团（`kind:"fork"`，跟持仓建议卡片**同一组输入、同一种子`FORK_SEED`、同样1500条**，有测试保证概率逐位相同）；波动率=开仓后隐含波动率的变化（`SimSetup.dV`，第1天起加到定价上），整张图、走势、结论都重算。
+- **计算层改动**（`winRateSim.ts`）：`runPath`每条走势都走到最早到期日（出场后不再定价，只为画完整的路和算`holdPnl`）——**每条消耗的随机数个数固定**，换规则不改变走势本身（"跟一直拿到期比"、分叉云=持仓建议都依赖这一点；所有调用方的随机序列因此跟以前不同，数字会有正常的随机差异）；`PathOutcome`加`price`/`holdPnl`，`SamplePath`加`exitDay`（`WinRateSim`画到`exitDay`为止）；`holdOutcomes`；`SimStats.sd`；`runBatch`可传逐步回调。新`lib/futureSim.ts`（密度网格/下车点/落点`runCloud`）+`lib/futureSim.worker.ts`（main逐批回传累计密度做动画；done含`hold`对比和胜率赔率；curve；fork）。`positionAdvisor.expiryScan`导出（判断止盈止损线碰不碰得到）。
+- **结论卡片**：判断（有优势/有一点优势/没有明显优势/长期吃亏）**直接看1万次平均是否明显离开0**（>2倍标准误且≥基准3%），**不再用盈亏平衡波动率下结论**——测试时同一笔CRWD价差两次跑出45.3%/67.6%，带止盈止损时平均盈亏随波动变化很平，平衡点主要是噪音（那条曲线留在高级分析）。"为什么"=开仓时市场定价的隐含波动率 vs 实际波动（最近20天/你假设的/取不到时"暂按市场定价"，说法跟真实来源一致），差10%内算差不多；**波动率滑块单独说**（"IV crush让卖方一开仓先赚一笔"），不能拿调整后的IV去比（测试时出过把IV crush说成"卖方吃亏"的错）；买方方向型仍看盈亏平衡年化涨跌。然后胜率和赔率（赚时平均/亏时平均，"亏一次要赚N次才补回"）、最坏情况+能开几组、你的规则（只说打开了的；跟同一组走势一直拿到期比赚钱次数/平均/最坏5%）、止损线比最大亏损还大时直说"永远碰不到"（下拉选项也标"（碰不到）"）、情景点（多常见+分叉云的概率，或"已碰到止损/过了平仓日"）。批次稳定性只剩动画下面一行。
+- 新增测试`futureSim.test.ts`（走势走完整且不随规则变、holdPnl、密度合计、IV下降卖方更赚、分叉云=持仓建议）。翻译1064/1064。**这一轮用沙盒自带的Chromium（`/opt/pw-browsers/chromium_headless_shell-1194`）+临时测试页实际看过**CRWD熊市Call价差、LULU卖Put的立体/平面、情景点、IV crush几种情况（上一轮说"装不了浏览器"是没找到这个预装的）。
+
+**上一轮（2026-10-03第一轮）：今昔对比的股价/权利金配对 + 盈亏归因改平均法 + 持仓组合锁合约字段 + 保存快照前检查**——
+- **对比模式开仓组合天数口径bug**（xue截图：开仓9/3、到期10/16、今天10/2，时间滑块显示"29d 剩0d"）：对比模式下`legs`/`activeLegs`的dte是从今天算的剩余天数，好几处却当成开仓那天的用了：滑块上界（`sliderMaxDte`，现在两种模式都用`openingSimBasis.originalMaxDte`）、统计格"开仓X天"和开仓隐含波动率（`TrackedComboSection`的`activeLegs`改传`openingDayLegs`）、`trackedVolShift`/盈亏归因/地形图逐段拆解的开仓点（`useComboAnalytics`新参数`openingLegs`→`openingDayLegs`；`App.tsx`的`trackedMap`第0天）。LULU卖90Put这一笔，开仓隐含波动率从错的91.7%变成52.9%。
+- **不再用"反推股价"**：对比模式参与计算的股价原来是从今日权利金反推的（假设隐含波动率没变），所以IV归因永远是0，财报后IV crush全被算成"价格"；反推时又用了上面那个错的开仓IV，LULU被算成109.87（实际94.46）。现在**股价是已知量、隐含波动率按股价+权利金反推**：`effectiveTrackedSpot = trackedSpot ?? spot`，`impliedSpotFromPremiums`、`correctedSpot`/"修正"按钮、盈亏图里的"隐含股价说明"全部删除；统计格股价旁的"i"（`ImpliedSpotInfoPanel`）改成"股价说明"。核心规则见"四、3.0"。
+- **盈亏归因改平均法、去掉交叉项**（xue："交叉项太抽象也没什么指导意义"）：`pricing.ts`新增`shapley3`（三项按6种顺序依次叠加取平均，和严格等于总变化、跟顺序无关）；`attributePnl`（分析模式）、`stockOptionMap.attributeSegment`（对比模式逐段/一步到位共用）都改用它。对比模式左栏归因=`attributeSegment(开仓那一刻, 今日组合)`，换过合约/新开/平掉的腿算"调整"（`residual`），面板只在有调整时显示一行"调整"（`attribution.adjust*`），原"交叉项"行和4个翻译key删除。LULU：价格−12.83/时间+5.77/IV+2.95（有测试）。`matchLegs`：id相同但行权价/类型/方向/到期日（±2天）变了不算同一条腿。
+- **持仓组合锁合约字段**（`LegRow`新prop`contractLocked`，`TrackedComboSection`传`!(derivedFrom && !derivedFrom.locked)`）：方向/类型/张数/行权价/到期日不能直接改（悬停提示`leg.contractLocked`：换合约用展期、不要了用平仓、开仓输错改开仓组合），权利金照常改；展期/保护/对冲刚开、还没存进快照的新腿仍可改。锁住的腿刷新权利金时不再"贴"到别的合约（行权价不同或到期日差>2天就不写入，提示`leg.contractNoQuote`）。直接改张数原来会把被平掉那部分的盈亏丢掉，所以一起锁了；部分平仓见backlog 27。
+- **保存追踪快照**：①点按钮先查权利金（`pricing.premiumSanityIssues`+`ConfirmPremiumCheckDialog`）：低于内在价值、反推IV<5%或>300%、或跟同一合约开仓时的IV比变成3倍以上/1/3以下（"1.17打成11.7"靠最后这条拦住）→"返回修改/仍然保存"，之后才是原来的展期锁定确认。②`saveTrackedSnapshotTo`里如果权利金不是今天的（`trackedAsOf`在今天之前），先按原合约刷新（`optionChain.refreshContractPremiums`，全部拿到才写入）并配实时股价再存；拉不到就不存，提示`tracked.saveRefreshFailed`。
+- **波动率滑块补实际值**（xue："为什么IV只有变化率，没有实际值"）：`ShiftSliders`新prop`baseIv`，ΔV下面的小字写"开仓时 → 现在/拖动后"（如52.9% → 42.1%），跟股价那栏写实际股价一致；基准=`App.tsx`的`sliderBaseIv`（对比模式`weightedAvgIV(openingDayLegs)`，分析模式`weightedAvgIV(mapLegs)`），跟`trackedVolShift`同一种平均法，所以跟统计格的开仓/当前隐含波动率对得上。
+- 新增`src/lib/__tests__/attribution.test.ts`（平均法和=总变化、LULU数字、改行权价算调整、权利金检查）。补了改动前就缺的`leg.disabledInCompare`。翻译986/986。typecheck/build/eslint（5/12，逐条跟改动前一致）/test 56通过。**这一轮沙盒装不了浏览器，界面流程没有实测**（进入跟踪自动刷新、切历史快照、提示条、锁住的输入框），接手后先在浏览器里走一遍。
+
+**上一轮（2026-10-01）**：通用持仓建议（引擎+卡片，推演未来/今昔对比都有）+ 去掉每股/每张切换——
 - **`src/lib/positionAdvisor.ts`**：不按策略形状写表，从任何组合都能算的读数给五种建议之一（止盈平仓/止损平仓/持有/持有或止盈/持有或止损）。读数：盈亏占基准（卖方=开仓权利金、买方=成本）、到期最大可赚/可亏（宽范围扫描0.02~5倍现价，端点还在走就算不封顶）、已赚到最大可赚的比例、"剩下还能赚÷可能再亏"跟开仓时比（`rrRel`，铁鹰开仓时就只有0.2左右，不能用绝对值）、盈亏平衡点和离它几个σ（按剩余天数）、按胜率模拟同一套规则往后模拟的止盈/止损/最后赚钱概率、指派/贴着行权价提示。阈值集中在`ADVICE_THRESHOLDS`。判断顺序：规则线（到止盈/止损/到期前平仓）→ 盈利中（已赚75%以上→止盈；rrRel<35%→止盈；<60%→持有或止盈；卖方离盈亏平衡点<0.5σ→持有或止盈；继续拿止损概率≥25%→持有或止盈；买方时间过75%→持有或止盈）→ 亏损或持平（卖方：亏损区外≥1σ且过半→止损；回本概率<20%→止损、<40%→持有或止损；在亏损区→持有或止损；买方：亏到止损线60%→持有或止损）。规则和假设波动直接用胜率模拟的设置，两处不会说两套话。
 - **抽查表生成器**`src/lib/__tests__/adviceReview.gen.test.ts`（平时跳过；`GEN_REVIEW=输出路径 npx vitest run adviceReview`）：37个预设（含正股的5个不支持）按30%隐含波动率重定价，±1.5σ×过20/45/70%时间；熊市Call/牛市Put价差另跑9×9密格跟原540格表对比（138/162一致；分歧：贴着卖出腿小赚时原表说止盈、引擎说持有或止盈——xue同意引擎；卖出腿刚进实值亏20-30%时原表说止损、引擎说持有或止损——xue同意保持引擎）。
 - **持仓建议卡片已接进界面**（`src/components/PositionAdviceCard.tsx`，左栏盈亏归因下面，两种模式都有，手机不显示）：格式按xue定的——先描述组合（策略名、代码、各腿、开仓日期和股价、到期日和总天数、收/付权利金、开仓隐含波动率和今天/情景的）→ 建议标签+一句主要理由 → 股价/时间/盈利/往后四行（`ADVICE_DRIVER`决定哪一行加▶）→ "往后"直接列出胜率模拟里的原始设定再给继续拿的概率（碰到规则线时改成"按你的设定，现在就该平仓"）；四种出场（止盈/止损/到剩N天平仓/拿到到期）都列出来，加起来=100%（xue看到"0%止盈、0%止损、最后赚钱49%"以为矛盾——其实全部在平仓时间出场）；止盈/止损线在这个组合上根本碰不到时（比如止损1倍、组合到期最多只亏0.46倍）加一行"注意：碰不到"；**凡是概率都写出"概率"两个字**（"止盈概率 55%""最后赚钱的概率 57%"），跟盈亏%、波动率%区分开（xue的要求），胜率模拟的批次条标签和"规则检查"同样改了；**胜率模拟结论卡片全部改成大白话**（xue逐条指出看不懂）：稳定性一句说清"掷了10批、每批1000次"并写"止盈概率/止损概率/平均每次盈亏"；"平均每次"明确是所有出场方式摊平（不只是到时间平仓），赚钱概率和平均方向相反时补一句原因（`winRate.mixWinButLose`/`mixLoseButWin`）；"最坏的5%"改成"1万次里最差的500次（大约每20次碰到1次）"；安全垫拆成两句——先说盈亏平衡线是什么（卖方最多扛得住多大波动/买方要超过多大波动），再按正/偏小/负三种说你的假设离这条线差几个百分点（`cushion{Short|Long}{Pos|Small|Neg}`）→ ⚠指派/贴着行权价提示 → "去修改"跳到胜率模拟（滑块归零）。推演未来：跟着`analyticsShifts`走（滑块或地形图上指的点），`scenarioLegs()`把开仓腿位挪到情景点、权利金换成那一刻的理论价，盈亏=`result.change`；今昔对比：今日组合、`effectiveTrackedSpot`、盈亏=`trackedResult.change + realizedTrackedPnl`，中途调整过时加一行说明。计算防抖250ms、固定种子（推演1500条/今昔3000条路径）。容器带`data-lock-exempt`，滑块锁住左栏时也能看、能点。
@@ -204,7 +240,9 @@ isCompareMode = trackedLegs !== null
 - `ShiftSliders.tsx`——情景滑块（现价/时间/波动率三个维度）
 - `PnlHeadline.tsx`——图表区盈亏头部（日期/盈亏/净值+百分比），电脑版分析模式放在图表标签那一行
 - `PositionAdviceCard.tsx`——持仓建议卡片（左栏盈亏归因下面，两种模式），见"四、11"
-- `WinRateSim.tsx`——"胜率模拟"标签（规则控件、10批动画、结论卡片、高级分析），计算在`lib/winRateSim.ts`+`lib/winRateSim.worker.ts`，见开头版本说明
+- `FutureSim.tsx`——"万次推演"标签（推演未来）：立体/平面、规则控件、结论卡片（含"换个规则""注意"）、高级分析；计算在`lib/futureSim.ts`+`lib/futureSim.worker.ts`（走势/定价/规则沿用`winRateSim.ts`）。`SimSurface3D.tsx`是立体视图（两种模式共用）。见开头版本说明
+- `ValueJourney.tsx`——万次推演卡片开头两块（滑块位置三格`NowCells`、期权价值经历了什么`JourneyBlock`+瀑布图），推演未来和今昔对比共用
+- `RetroSim.tsx`——"万次推演"标签（今昔对比）：只回看——开仓那天看到今天的可能+真实走过的路+排名/运气/优势/隐含波动率变化/规则复盘；跟`FutureSim`共用`simCharts.tsx`（`CanvasBox`）、`SimSurface3D.tsx`和同一个worker
 - `StockOptionMap.tsx`——"股价 vs 期权价"标签的地形图（分析模式/跟踪对比模式`tracked`两种）+走势子标签+鼠标读数；同文件导出`IvShiftSlider`（该标签下唯一的滑块）。计算在`lib/stockOptionMap.ts`（`buildMapModel`/`summarizePath`/`PATH_GROUPS`）
 - `StrategyBadge.tsx`——策略名称徽章（含`dirKeyMap`，别处也在用）
 - `DecisionCompareDialog.tsx`——决策对比弹窗（不动/平仓/展期三选一对比）
@@ -229,7 +267,7 @@ isCompareMode = trackedLegs !== null
 
 ## `src/components/dialogs/`（小型弹窗集合，`index.ts`统一导出）
 
-`HelpPanel.tsx`、`ImpliedSpotInfoPanel.tsx`、`MarginErrorDialog.tsx`、`ConfirmClearDialog.tsx`、`ConfirmBulkDeleteDialog.tsx`、`ConfirmSaveTrackedDialog.tsx`、`ConfirmSnapshotDialog.tsx`（预设切换和模式切换两处复用同一个组件）、`ConfirmReplacePresetDialog.tsx`、`ConfirmLeaveDialog.tsx`、`ConfirmResetAccountDialog.tsx`——全是纯展示型的小确认框，逻辑都在调用方。
+`HelpPanel.tsx`、`ImpliedSpotInfoPanel.tsx`（今昔对比统计格股价旁"i"：说明股价是实时价还是快照当天的价，2026-10-03前是"隐含股价说明"）、`ConfirmPremiumCheckDialog.tsx`（保存快照前权利金看起来不对）、`MarginErrorDialog.tsx`、`ConfirmClearDialog.tsx`、`ConfirmBulkDeleteDialog.tsx`、`ConfirmSaveTrackedDialog.tsx`、`ConfirmSnapshotDialog.tsx`（预设切换和模式切换两处复用同一个组件）、`ConfirmReplacePresetDialog.tsx`、`ConfirmLeaveDialog.tsx`、`ConfirmResetAccountDialog.tsx`——全是纯展示型的小确认框，逻辑都在调用方。
 
 （原`AlertCard.tsx`图表提示条已不在代码里，见"四、11"。）
 
@@ -248,7 +286,7 @@ isCompareMode = trackedLegs !== null
 **定价与组合计算**：
 - `types.ts`——`Leg`/`Shifts`/`GreekBreakdown`等核心类型定义。`Leg`新增可选字段`openLegId?: string`（2026-09-06），只在`trackedLegs`的腿上有意义，见"四、3.6"
 - `bs.ts`——Black-Scholes定价模型+希腊字母
-- `pricing.ts`（~567行，核心算法文件）——`priceCombo`（组合定价+归因，返回的`ComboResult.breakdown`含完整的组合级delta/gamma/theta/vega——**这份计算本身2026-09-07下半之后仍然保留**，只是App.tsx里显示这四个数字的面板被移除了，见"四、1.4"）、`payoffCurvePoints`、`probabilityOfProfit`、`findBreakevens`、`maxProfitLoss`（**注意：内部按固定±50%现价窗口扫描，这个窗口大小对很多策略会失真——2026-09-10"持仓处置建议"止损/止盈信号bug就是这个教训的来源，该功能本身已移除，但这条关于`maxProfitLoss()`本身的教训仍然有效，见"五、16"**）、`pnlAtExpiry`（**内部对"多到期日组合"有特殊处理**——不同到期日的腿，用最早的到期日作horizon，horizon之外还没到期的腿用Black-Scholes按剩余天数估值而不是直接按内在价值算，这是为了让真正的日历/对角价差算出正确的到期盈亏，见"四、1.5"里`RollComparisonChart`踩过的坑）、`impliedVol`/`impliedSpotFromPremiums`、`attributePnl`（P/L归因）、`classifySpotOnCurve`（判断某现价在payoff曲线上是"接近峰值/盈利区间/已越过盈亏平衡点"，供模拟账户"复盘"面板用）等。**`RATE`（0.05）和`POP_DRIFT_RATE`（0）是两个刻意分开的常量，不要合并**（2026-09-06）：`RATE`是喂给Black-Scholes定价本身的无风险利率，这个必须是真实的无风险利率，改了会导致所有腿位定价错误；`POP_DRIFT_RATE`只用在`probabilityOfProfit`的对数正态分布漂移项，回答的是"到期盈利的真实世界概率"这个完全不同的问题，按xue的决定统一用零漂移（详细理由见本节末尾历史记录，未变动）
+- `pricing.ts`（~567行，核心算法文件）——`priceCombo`（组合定价+归因，返回的`ComboResult.breakdown`含完整的组合级delta/gamma/theta/vega——**这份计算本身2026-09-07下半之后仍然保留**，只是App.tsx里显示这四个数字的面板被移除了，见"四、1.4"）、`payoffCurvePoints`、`probabilityOfProfit`、`findBreakevens`、`maxProfitLoss`（**注意：内部按固定±50%现价窗口扫描，这个窗口大小对很多策略会失真——2026-09-10"持仓处置建议"止损/止盈信号bug就是这个教训的来源，该功能本身已移除，但这条关于`maxProfitLoss()`本身的教训仍然有效，见"五、16"**）、`pnlAtExpiry`（**内部对"多到期日组合"有特殊处理**——不同到期日的腿，用最早的到期日作horizon，horizon之外还没到期的腿用Black-Scholes按剩余天数估值而不是直接按内在价值算，这是为了让真正的日历/对角价差算出正确的到期盈亏，见"四、1.5"里`RollComparisonChart`踩过的坑）、`impliedVol`、`attributePnl`（P/L归因，三项用`shapley3`平均法，见开头版本说明）、`premiumSanityIssues`（保存快照前的权利金检查）、`classifySpotOnCurve`（判断某现价在payoff曲线上是"接近峰值/盈利区间/已越过盈亏平衡点"，供模拟账户"复盘"面板用）等。**`RATE`（0.05）和`POP_DRIFT_RATE`（0）是两个刻意分开的常量，不要合并**（2026-09-06）：`RATE`是喂给Black-Scholes定价本身的无风险利率，这个必须是真实的无风险利率，改了会导致所有腿位定价错误；`POP_DRIFT_RATE`只用在`probabilityOfProfit`的对数正态分布漂移项，回答的是"到期盈利的真实世界概率"这个完全不同的问题，按xue的决定统一用零漂移（详细理由见本节末尾历史记录，未变动）
 - `legRoles.ts`——腿位角色解释（这条腿在组合里扮演什么角色，供逐条腿展示用）
 - `legFactory.ts`——`uid`/`blankLeg`/`PRESET_DTE_SET`几个创建腿位用的小helper，`asOpeningLeg(leg, newId)`——把一条腿克隆成一条新的开仓组合腿，同时去掉`openLegId`字段，见"四、3.6"
 - `matchStrategy.ts`（~139行）——从一组腿位反推策略名字（含"窄体铁鹰"/"玉蜥蜴"两种四腿/三腿结构的区分识别，见"四、2.3"）。**⚠️返回的是`item.name.zh`（中文显示名），不是`item.name.en`，不管当前UI语言是什么**——这是这个文件一直以来的行为，以后任何新代码要用这个函数的返回值去匹配别处按英文命名的数据，都要先做一次中英文映射，不能想当然假设一致（2026-09-10"持仓处置建议"功能就在这上面踩过坑，该功能虽已移除，但`matchStrategy()`本身还在被策略徽章等其它地方使用，这条教训对未来任何类似用途仍然有效）
@@ -268,7 +306,9 @@ isCompareMode = trackedLegs !== null
 - `useStockQuote.ts`——实时现价hook+`fetchSpotPrice`
 - `positionAdvisor.ts`——通用持仓建议引擎（`adviseCombo`/`scenarioLegs`/`ADVICE_THRESHOLDS`/`ADVICE_DRIVER`），见"四、11"
 - `simSettings.ts`——胜率模拟和持仓建议共用的规则/假设波动/年化涨跌（小store+`useHv20`）
-- `winRateSim.ts` / `winRateSim.worker.ts`——胜率模拟计算层（走势生成、规则出场、统计、批次稳定性、盈亏平衡波动率/安全垫）和后台线程
+- `winRateSim.ts`——万次推演和持仓建议的计算层（走势生成、规则出场、统计、盈亏平衡波动率/年化涨跌、回看排名`percentileOf`/`moveInSigma`）
+- `retroStory.ts`——今昔对比回看卡片的叙事数据（组合靠什么赚钱`priceStance`、一句话总结`summarize`、逐段历程`journeyRows`、到期关键价位`keyLevels`）
+- `futureSim.ts` / `futureSim.worker.ts`——万次推演的画图统计（密度云`runCloud`、下车点、落点）、规则复盘`replayRules`、换规则对比`suggestRules`；后台线程四种请求main/fork/retro（+main之后的alt、curve）
 - `historicalVolatility.ts`——历史波动率计算（`computeHV`）、`fetchHistoricalSeries`（带10分钟内存缓存）/`realizedVolSince`+ IV/HV比值判断（`computeIvHvNote`：`sellRich`/`buyCheap`/`stillRich`三分类）
 - `recentSymbols.ts`——最近查询过的标的记录（localStorage）
 
@@ -400,6 +440,16 @@ isCompareMode = trackedLegs !== null
 
 ## 3. 跟踪对比模式（"今日组合"）
 
+### 3.0 股价和权利金必须是同一时刻的（`trackedAsOf`，2026-10-03）
+
+隐含波动率是用股价+剩余天数+权利金反推的，三样必须来自同一时刻，否则算出的IV、盈亏归因都是错的。`App.tsx`的`trackedAsOf`记录今日组合的权利金是哪个时刻的：
+- `null`=实时：权利金是现在的（改过权利金、或刷新成功），股价跟随实时报价（报价effect只在这时更新`trackedSpot`）。
+- 时间戳=那一刻：加载快照/开仓副本时设成快照的`savedAt`/开仓时间，股价锁定为快照里存的`spot`，不被实时报价覆盖。
+- **最新快照（或没有快照时的开仓副本）不是今天的**：进入跟踪/选中它时自动按原合约拉今天的权利金（`refreshContractPremiums`，全部拿到才写入）、配实时股价、`trackedAsOf=null`；算作未保存的改动（离开会问要不要存——xue同意，好处是促使每天存一条真实快照）；手机上只读，刷新后直接当成已保存。拉不到就提示`tracked.autoRefreshFailed`，保持当天那一对。
+- **更早的历史快照**不刷新，按当天看：股价是当天的；腿位dte加载时已换算到今天（界面到期日依赖这一点），所以凡是反推IV的地方（`trackedVolShift`、左栏归因、统计格当前IV、保存前检查）都把`trackedAsOfDays`加回dte；地形图逐段拆解不再补"今天"那一点。顶部提示`tracked.viewingAsOf`。
+- 改任意一条腿的权利金=填的是现在的市场价→`trackedAsOf=null`。
+- 估算快照（回填）的权利金是按前一个真实状态的IV理论算的，看不出IV变化，只能拆股价和时间。
+
 （核心机制未变动，详见文件地图与前述章节引用：三条进入路径、模式互相切换、保存快照/保存策略组合、快照自动回填、开仓组合↔今日组合腿位对应关系`openLegId`。"解释当前情况"内容2026-09-19起跟分析模式共用同一套逻辑，见"四、11"。完整细节保留在本文档历史版本描述中。）
 
 ### 3.1 "有没有未保存改动"的判断——`trackedDirty`（2026-09-25改成派生计算）
@@ -519,6 +569,8 @@ const trackedDirty = trackedLegs !== null && serializeTrackedLegs(trackedLegs) !
 
 22. **代码注释只写"为什么"和"坑"，不写修改历史**（2026-09-26，xue的要求）——修改日期、谁反馈的、原来是什么样、这一轮改了什么，这些写进这份CLAUDE.md（或commit信息），不写进代码注释。注释控制在一两行：这段代码为什么要这样写、改它时会踩什么坑（TDZ顺序、不能这样做的原因、xue定下的硬性约束）。改代码时顺手把跟改动相关的过期注释删掉或更新，不要在旧注释后面继续追加一段新的。大规模清理注释时，用"TypeScript printer去掉注释后前后输出完全一致"来校验没碰到代码
 
+23. **股价和权利金必须是同一时刻的**（2026-10-03）——隐含波动率、盈亏归因都靠这一对反推。不要拿旧权利金配实时股价，也不要假设隐含波动率不变去反推股价（那样IV变化永远是0）。见"四、3.0"。
+
 ---
 
 # 六、当前已知问题 / backlog
@@ -552,6 +604,8 @@ const trackedDirty = trackedLegs !== null && serializeTrackedLegs(trackedLegs) !
 24. **借方价差/卖出跨式仍是旧版共用阈值逻辑，没有540格级别的细化**（2026-09-19新增，见"四、11.2"）——熊市Call/牛市Put价差这两种信用价差已经有xue逐条审查过的540格表，其它形状（借方价差、卖出跨式、裸卖出单腿）还是原来那套更粗粒度的判断。是否要为这些形状也做同等粒度的细化，xue还没提出明确诉求，暂不列入进行中工作
 25. **牛市Put价差540格表没有经过人工逐条复核**（2026-09-19新增，见"四、11.3"）——是从熊市Call价差程序化镜像过去的，理论上应该对称正确，但没有像熊市Call价差那样一条条人工审查过。以后如果发现该形状的建议文案有问题，用审查熊市Call价差同样的方法（分组交叉核对）去查
 26. **胜率模拟的局限和第二版**（2026-09-30）：不知道财报日期（历史波动率在财报前会低估未来波动，本应提示"安全垫不可靠"，需要先有财报日期数据）；含正股的组合不支持；隐含波动率持有期间不变、无跳空；高级分析第二版待做：规则对比热力图（止损倍数×止盈比例）、出场时间分布、点选单条走势看每天盈亏
+27. **部分平仓**（2026-10-03）：持仓组合的张数锁住了（直接改张数会丢掉被平那部分的已实现盈亏），目前只能整条平仓。要做的话：拆成"已平仓部分（disabled+closedPnl）"和"剩余部分"两条腿，配对规则（`openLegId`/`matchLegs`）要跟着处理。
+28. **不打开浏览器也每天存真实快照**（2026-10-03讨论）：现在数据全在localStorage，回填只在进入跟踪时补估算快照（约2个月窗口），真实快照只能手动存。要做需要Supabase定时任务+服务器端持仓表，量级大，暂不做。
 
 ---
 

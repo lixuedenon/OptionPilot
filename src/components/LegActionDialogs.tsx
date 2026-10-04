@@ -64,10 +64,8 @@ interface Props {
   showImpliedInfo: boolean;
   isCompareMode: boolean;
   effectiveTrackedSpot: number;
-  correctedSpot: number | null;
-  correcting: boolean;
+  trackedAsOf: number | null;
   onCloseImplied: () => void;
-  onCorrectSpot: () => void;
 
   spot: number;
   symbol: string;
@@ -82,7 +80,7 @@ export default function LegActionDialogs({
   protectTarget, protectTargetSource, onCloseProtect, onConfirmProtect,
   hedgeOpen, hedgeTargetSource, legs, trackedLegsForDialogs, trackedSpotForDialogs, onCloseHedge, onConfirmHedge,
   compareTargetId, shifts, onCloseCompare,
-  showImpliedInfo, isCompareMode, effectiveTrackedSpot, correctedSpot, correcting, onCloseImplied, onCorrectSpot,
+  showImpliedInfo, isCompareMode, effectiveTrackedSpot, trackedAsOf, onCloseImplied,
   spot, symbol,
 }: Props) {
   return (
@@ -157,14 +155,7 @@ export default function LegActionDialogs({
       )}
 
       {showImpliedInfo && isCompareMode && (
-        <ImpliedSpotInfoPanel
-          trackedSpot={effectiveTrackedSpot}
-          correctedSpot={correctedSpot}
-          correcting={correcting}
-          canCorrect={!!symbol.trim()}
-          onClose={onCloseImplied}
-          onCorrect={onCorrectSpot}
-        />
+        <ImpliedSpotInfoPanel symbol={symbol} trackedSpot={effectiveTrackedSpot} asOf={trackedAsOf} onClose={onCloseImplied} />
       )}
     </>
   );

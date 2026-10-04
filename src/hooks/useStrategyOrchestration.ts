@@ -17,7 +17,7 @@ import {
 } from "@/lib/savedStrategies";
 import { uid, blankLeg, asOpeningLeg } from "@/lib/legFactory";
 import { calendarDaysSince, nearestFridayDte } from "@/lib/dateUtils";
-import { peekResolvedChain, nearestStrikeToSpot, resolveFromCache } from "@/lib/optionChain";
+import { peekResolvedChain, nearestStrikeToSpot, resolveFromCache, refreshContractPremiums } from "@/lib/optionChain";
 import type { StockQuote } from "@/lib/useStockQuote";
 
 // App.tsx的"策略管理"逻辑：组合修改（addLeg/applyPreset/clearAllLegs…）+策略保存/模式切换，按原顺序放在一个hook里，
@@ -48,8 +48,11 @@ export function useStrategyOrchestration(params: {
   setExpiredConfirmed: React.Dispatch<React.SetStateAction<boolean>>;
   // 跟踪一条已过期策略时的提示：对比模式没有"保留"，只有"确定"（删除该策略）。null=不弹。
   setExpiredTrackPrompt: React.Dispatch<React.SetStateAction<SavedStrategy | null>>;
-  setCorrectedSpot: React.Dispatch<React.SetStateAction<number | null>>;
-  setCorrecting: React.Dispatch<React.SetStateAction<boolean>>;
+  // 今日组合的权利金和股价是哪个时刻的（快照保存时间/开仓时间）；null=实时（股价跟随实时报价）。
+  setTrackedAsOf: React.Dispatch<React.SetStateAction<number | null>>;
+  trackedAsOf: number | null;
+  // 今日组合权利金拉不到今天报价时的提示（显示在今日组合区域）；null=没有问题。
+  setTrackedPriceError: React.Dispatch<React.SetStateAction<string | null>>;
   // Tracked combo
   isCompareMode: boolean;
   trackedLegs: Leg[] | null;
@@ -98,7 +101,7 @@ export function useStrategyOrchestration(params: {
   const {
     symbol, legs, activeLegs, spot, shifts, openingAt,
     setSymbol, setLegs, setSpot, setShifts, setOpeningAt, setOpeningAtSimOverride,
-    setExpiredStrategyPrompt, setExpiredConfirmed, setExpiredTrackPrompt, setCorrectedSpot, setCorrecting,
+    setExpiredStrategyPrompt, setExpiredConfirmed, setExpiredTrackPrompt, setTrackedAsOf, trackedAsOf, setTrackedPriceError,
     isCompareMode, trackedLegs, trackedSpot, trackedDirty, effectiveTrackedSpot,
     setTrackedLegs, setTrackedSpot, setTrackedDaysElapsed, setTrackedBaseline, setActiveSnapshotId, setConfirmSaveTrackedOpen,
     savedStrategies, trackingStrategyId, trackedStrategy,
@@ -228,7 +231,7 @@ export function useStrategyOrchestration(params: {
     // App.tsx里expiredConfirmed state的注释。
     setExpiredConfirmed(false);
     setStrategyBaseline(null);
-    setCorrectedSpot(null);
+    setTrackedAsOf(null);
     clearLegSelection();
   };
 
@@ -239,7 +242,7 @@ export function useStrategyOrchestration(params: {
     setTrackingStrategyId(null);
     setTrackedSpot(null);
     setActiveSnapshotId(null);
-    setCorrectedSpot(null);
+    setTrackedAsOf(null);
     setTrackedBaseline(null);
     setOpeningAt(Date.now());
     setExpiredStrategyPrompt(null);
@@ -252,34 +255,10 @@ export function useStrategyOrchestration(params: {
 
   const updateTrackedLeg = (id: string, patch: Partial<Leg>) => {
     setTrackedLegs((prev) => prev?.map((l) => (l.id === id ? { ...l, ...patch } : l)) ?? null);
-    if (patch.premium !== undefined) setCorrectedSpot(null);
+    // 改了权利金=填的是现在的市场价，股价随之改用实时报价，两者配成同一时刻。
+    if (patch.premium !== undefined) setTrackedAsOf(null);
   }
 
-  const handleCorrectSpot = useCallback(async () => {
-    setCorrecting(true);
-    try {
-      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stock-quote?symbol=${encodeURIComponent(symbol.trim())}`;
-      const resp = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-          "Content-Type": "application/json",
-        },
-      });
-      if (!resp.ok) {
-        const body = await resp.json().catch(() => ({}));
-        throw new Error(body.error || `Request failed (${resp.status})`);
-      }
-      const data = await resp.json();
-      if (typeof data.price !== "number" || isNaN(data.price) || data.price <= 0) {
-        throw new Error("Invalid price data");
-      }
-      setCorrectedSpot(data.price);
-    } catch (e) {
-      console.error("Failed to fetch quote for correction:", e);
-    } finally {
-      setCorrecting(false);
-    }
-  }, [symbol, setCorrectedSpot, setCorrecting]);
 
   const comboDirection: "buy" | "sell" = activeLegs.length > 0 && activeLegs.every((l) => l.action === "buy") ? "buy" : "sell";
 
@@ -293,10 +272,27 @@ export function useStrategyOrchestration(params: {
     // it was never meant to persist. See setOpeningAtSimOverride's doc
     // comment above.
     setOpeningAtSimOverride(null);
-    const lockedLegs = trackedLegs.map((l) =>
+    // 快照=这一刻的权利金+这一刻的股价。今日组合的权利金如果还是前几天的（没刷新、没改过），先按原合约拉今天的报价，
+    // 配实时股价再存；拉不到就不存，否则会把旧价格当成今天的记录存下来。
+    let legsNow = trackedLegs;
+    let spotNow = trackedSpot ?? spot;
+    if (trackedAsOf !== null && calendarDaysSince(trackedAsOf) > 0) {
+      const fresh = await refreshContractPremiums(symbol, trackedLegs);
+      const live = quote?.price ?? 0;
+      if (!fresh || !(live > 0)) {
+        setTrackedPriceError(t("tracked.saveRefreshFailed"));
+        return;
+      }
+      legsNow = fresh;
+      spotNow = live;
+      setTrackedSpot(live);
+      setTrackedAsOf(null);
+      setTrackedPriceError(null);
+    }
+    const lockedLegs = legsNow.map((l) =>
       l.derivedFrom && !l.derivedFrom.locked ? { ...l, derivedFrom: { ...l.derivedFrom, locked: true } } : l,
     );
-    const updated = await addTrackedSnapshot(strategyId, lockedLegs, trackedSpot ?? spot, Date.now());
+    const updated = await addTrackedSnapshot(strategyId, lockedLegs, spotNow, Date.now());
     setSavedStrategies(updated);
     const updatedStrategy = updated.find((s) => s.id === strategyId);
     const newSnaps = updatedStrategy?.trackedSnapshots ?? [];
@@ -304,7 +300,7 @@ export function useStrategyOrchestration(params: {
     setTrackedLegs(lockedLegs);
     // 保存成功：这份lockedLegs就是新的已保存基准。
     setTrackedBaseline(serializeTrackedLegs(lockedLegs));
-  }, [trackedLegs, trackedSpot, spot, setActiveSnapshotId, setSavedStrategies, setTrackedBaseline, setTrackedLegs, setOpeningAtSimOverride]);
+  }, [trackedLegs, trackedSpot, spot, trackedAsOf, symbol, quote, t, setActiveSnapshotId, setSavedStrategies, setTrackedBaseline, setTrackedLegs, setTrackedSpot, setTrackedAsOf, setTrackedPriceError, setOpeningAtSimOverride]);
 
   const handleSaveStrategy = useCallback(async (filename: string) => {
     setOpeningAtSimOverride(null);
@@ -423,6 +419,7 @@ export function useStrategyOrchestration(params: {
       }));
       setTrackedLegs(newTrackedLegsForBaseline);
       setTrackedSpot(latestSnap.spot);
+      setTrackedAsOf(latestSnap.savedAt);
       setActiveSnapshotId(latestSnap.id);
     } else {
       // "已过X天" still uses openDaysElapsed (real opening date) — see the
@@ -442,9 +439,9 @@ export function useStrategyOrchestration(params: {
       }));
       setTrackedLegs(newTrackedLegsForBaseline);
       setTrackedSpot(s.spot);
+      setTrackedAsOf(s.openingAt ?? s.createdAt);
       setActiveSnapshotId(null);
     }
-    setCorrectedSpot(null);
     setTrackingStrategyId(s.id);
     setTrackedBaseline(serializeTrackedLegs(newTrackedLegsForBaseline));
     setManageStrategyOpen(false);
@@ -457,7 +454,7 @@ export function useStrategyOrchestration(params: {
     // 真实、干净的仓位不该被误判成"已过期"）。
     setExpiredStrategyPrompt(null);
     setExpiredConfirmed(false);
-  }, [clearLegSelection, legBaseSpot, legBaseSymbol, setActiveSnapshotId, setCorrectedSpot, setExpiredConfirmed, setExpiredStrategyPrompt, setExpiredTrackPrompt, setLegs, setManageStrategyOpen, setOpeningAt, setOpeningAtSimOverride, setSavedStrategies, setShifts, setSpot, setStrategyBaseline, setSymbol, setTrackedDaysElapsed, setTrackedBaseline, setTrackedLegs, setTrackedSpot, setTrackingStrategyId, spotManuallySet]);
+  }, [clearLegSelection, legBaseSpot, legBaseSymbol, setActiveSnapshotId, setTrackedAsOf, setExpiredConfirmed, setExpiredStrategyPrompt, setExpiredTrackPrompt, setLegs, setManageStrategyOpen, setOpeningAt, setOpeningAtSimOverride, setSavedStrategies, setShifts, setSpot, setStrategyBaseline, setSymbol, setTrackedDaysElapsed, setTrackedBaseline, setTrackedLegs, setTrackedSpot, setTrackingStrategyId, spotManuallySet]);
 
   const handleSaveTracked = useCallback(async () => {
     if (!trackedLegs) return;
@@ -502,10 +499,10 @@ export function useStrategyOrchestration(params: {
     }));
     setTrackedLegs(newTrackedLegs);
     setTrackedSpot(snap.spot);
-    setCorrectedSpot(null);
+    setTrackedAsOf(snap.savedAt);
     setActiveSnapshotId(snap.id);
     setTrackedBaseline(serializeTrackedLegs(newTrackedLegs));
-  }, [openingAt, setActiveSnapshotId, setCorrectedSpot, setTrackedDaysElapsed, setTrackedBaseline, setTrackedLegs, setTrackedSpot]);
+  }, [openingAt, setActiveSnapshotId, setTrackedAsOf, setTrackedDaysElapsed, setTrackedBaseline, setTrackedLegs, setTrackedSpot]);
 
   const handleDeleteSnapshot = useCallback(async (snapshotId: string) => {
     if (!trackingStrategyId) return;
@@ -566,7 +563,7 @@ export function useStrategyOrchestration(params: {
     setTrackedSpot(null);
     setActiveSnapshotId(null);
     setTrackedDaysElapsed(0);
-    setCorrectedSpot(null);
+    setTrackedAsOf(null);
     setManageStrategyOpen(false);
     setStrategyBaseline(serializeStrategyState(s.symbol, s.legs, s.shifts, s.openingAt ?? s.createdAt));
     clearLegSelection();
@@ -581,7 +578,7 @@ export function useStrategyOrchestration(params: {
     const expired = basis.daysSinceOpen > basis.originalMaxDte;
     setExpiredStrategyPrompt(expired ? s : null);
     setExpiredConfirmed(expired);
-  }, [quote, clearLegSelection, legBaseSpot, legBaseSymbol, setActiveSnapshotId, setCorrectedSpot, setExpiredConfirmed, setExpiredStrategyPrompt, setLegs, setManageStrategyOpen, setOpeningAt, setOpeningAtSimOverride, setShifts, setSpot, setStrategyBaseline, setSymbol, setTrackedDaysElapsed, setTrackedLegs, setTrackedSpot, setTrackingStrategyId, spotManuallySet]);
+  }, [quote, clearLegSelection, legBaseSpot, legBaseSymbol, setActiveSnapshotId, setTrackedAsOf, setExpiredConfirmed, setExpiredStrategyPrompt, setLegs, setManageStrategyOpen, setOpeningAt, setOpeningAtSimOverride, setShifts, setSpot, setStrategyBaseline, setSymbol, setTrackedDaysElapsed, setTrackedLegs, setTrackedSpot, setTrackingStrategyId, spotManuallySet]);
 
   // Direct switch from plain analysis mode into compare mode, carrying the
   // legs/spot/openingAt currently being edited — the "live" equivalent of
@@ -619,6 +616,7 @@ export function useStrategyOrchestration(params: {
       }));
       setTrackedLegs(newTrackedLegsForBaseline);
       setTrackedSpot(latestSnap.spot);
+      setTrackedAsOf(latestSnap.savedAt);
       setActiveSnapshotId(latestSnap.id);
     } else {
       // 还没有快照：trackedLegs直接复制legs，dte不要再减——legs的dte已经是相对今天的，再减会重复衰减。
@@ -636,13 +634,13 @@ export function useStrategyOrchestration(params: {
       }));
       setTrackedLegs(newTrackedLegsForBaseline);
       setTrackedSpot(spot);
+      setTrackedAsOf(openingAt);
       setActiveSnapshotId(null);
     }
-    setCorrectedSpot(null);
     setTrackingStrategyId(existing ? existing.id : null);
     setTrackedBaseline(serializeTrackedLegs(newTrackedLegsForBaseline));
     clearLegSelection();
-  }, [isCompareMode, legs, spot, symbol, shifts, savedStrategies, openingAt, clearLegSelection, setActiveSnapshotId, setCorrectedSpot, setOpeningAtSimOverride, setSavedStrategies, setTrackedDaysElapsed, setTrackedBaseline, setTrackedLegs, setTrackedSpot, setTrackingStrategyId]);
+  }, [isCompareMode, legs, spot, symbol, shifts, savedStrategies, openingAt, clearLegSelection, setActiveSnapshotId, setTrackedAsOf, setOpeningAtSimOverride, setSavedStrategies, setTrackedDaysElapsed, setTrackedBaseline, setTrackedLegs, setTrackedSpot, setTrackingStrategyId]);
 
   // 从对比模式切回分析模式，新的基准取决于source：
   // - "baseline"：开仓组合原样；
@@ -690,11 +688,11 @@ export function useStrategyOrchestration(params: {
     setTrackedSpot(null);
     setActiveSnapshotId(null);
     setTrackedDaysElapsed(0);
-    setCorrectedSpot(null);
+    setTrackedAsOf(null);
     setStrategyBaseline(serializeStrategyState(symbol, newLegs, { dS: 0, dT: 0, dV: 0 }, newOpeningAt));
     setExpiredStrategyPrompt(null);
     clearLegSelection();
-  }, [isCompareMode, legs, spot, openingAt, trackedLegs, effectiveTrackedSpot, trackedStrategy, symbol, clearLegSelection, legBaseSpot, legBaseSymbol, setActiveSnapshotId, setCorrectedSpot, setExpiredConfirmed, setLegs, setOpeningAt, setOpeningAtSimOverride, setExpiredStrategyPrompt, setShifts, setSpot, setStrategyBaseline, setTrackedDaysElapsed, setTrackedLegs, setTrackedSpot, setTrackingStrategyId, spotManuallySet]);
+  }, [isCompareMode, legs, spot, openingAt, trackedLegs, effectiveTrackedSpot, trackedStrategy, symbol, clearLegSelection, legBaseSpot, legBaseSymbol, setActiveSnapshotId, setTrackedAsOf, setExpiredConfirmed, setLegs, setOpeningAt, setOpeningAtSimOverride, setExpiredStrategyPrompt, setShifts, setSpot, setStrategyBaseline, setTrackedDaysElapsed, setTrackedLegs, setTrackedSpot, setTrackingStrategyId, spotManuallySet]);
 
   // Public entry point used by the UI. Switching to "current" carries the
   // dirty edits themselves into analysis mode, so it never loses anything
@@ -720,7 +718,6 @@ export function useStrategyOrchestration(params: {
     applyPreset,
     doClearAll,
     updateTrackedLeg,
-    handleCorrectSpot,
     comboDirection,
     handleSaveStrategy,
     handleOverwriteStrategy,

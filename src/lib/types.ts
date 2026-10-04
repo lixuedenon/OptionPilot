@@ -19,7 +19,7 @@ export interface Leg {
   // always gets a fresh uid() for its own `id`, so this is the only
   // surviving link back to "which opening leg does this correspond to").
   // Used instead of array-index pairing (App.tsx's trackedResult,
-  // pricing.ts's impliedSpotFromPremiums, PayoffChart.tsx's
+  // PayoffChart.tsx's
   // calcTrackedPnL/calcTrackedPnLAtTime) because legs/trackedLegs can
   // reorder or grow independently (moveTrackedLeg, a roll/hedge/protect
   // added directly to trackedLegs) — position alone stops meaning "the same

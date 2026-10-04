@@ -1,23 +1,17 @@
-import { RefreshCw } from "lucide-react";
+// src/components/dialogs/ImpliedSpotInfoPanel.tsx
 import { useI18n } from "@/i18n/I18nContext";
+import { formatDateInput } from "@/lib/dateUtils";
 
 interface Props {
+  symbol: string;
   trackedSpot: number;
-  correctedSpot: number | null;
-  correcting: boolean;
-  canCorrect: boolean;
+  // 今日组合权利金和股价是哪个时刻的；null=实时。
+  asOf: number | null;
   onClose: () => void;
-  onCorrect: () => void;
 }
 
-export default function ImpliedSpotInfoPanel({
-  trackedSpot,
-  correctedSpot,
-  correcting,
-  canCorrect,
-  onClose,
-  onCorrect,
-}: Props) {
+// 今昔对比统计格里股价旁的"i"：说明这个股价从哪来、隐含波动率怎么算。股价跟权利金必须是同一时刻的。
+export default function ImpliedSpotInfoPanel({ symbol, trackedSpot, asOf, onClose }: Props) {
   const { t } = useI18n();
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
@@ -29,35 +23,10 @@ export default function ImpliedSpotInfoPanel({
           </button>
         </div>
         <p className="text-[12px] leading-relaxed text-slate-300">
-          {t("implied.desc", { spot: trackedSpot.toFixed(2) })}
+          {asOf === null
+            ? t("implied.descLive", { symbol: symbol.trim().toUpperCase(), spot: trackedSpot.toFixed(2) })
+            : t("implied.descAsOf", { date: formatDateInput(asOf), spot: trackedSpot.toFixed(2) })}
         </p>
-        <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
-          {t("implied.example")}
-        </p>
-        <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-900/20 px-2.5 py-2">
-          <p className="text-[11px] leading-relaxed text-amber-200">
-            {t("implied.warning")}
-          </p>
-        </div>
-        {correctedSpot !== null && (
-          <p className="mt-2 text-[11px] leading-relaxed text-emerald-300">
-            {t("implied.corrected", { spot: correctedSpot.toFixed(2) })}
-          </p>
-        )}
-        <div className="mt-3 flex justify-end gap-2">
-          <button
-            onClick={onCorrect}
-            disabled={correcting || !canCorrect}
-            className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {correcting ? (
-              <RefreshCw size={12} className="animate-spin" />
-            ) : (
-              <RefreshCw size={12} />
-            )}
-            {correcting ? t("implied.fetching") : t("implied.correct")}
-          </button>
-        </div>
       </div>
     </div>
   );

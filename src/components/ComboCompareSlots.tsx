@@ -272,6 +272,7 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
               <PnlAttributionPanel
                 attribution={slotAttributions[i]!}
                 maxAbs={Math.max(Math.abs(stats?.maxProfit ?? 0), Math.abs(stats?.maxLoss ?? 0), 0.01)}
+                showSteps={false}
               />
             )}
           </div>

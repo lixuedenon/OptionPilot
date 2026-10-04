@@ -1,5 +1,5 @@
 // src/lib/optionChain.ts
-import type { OptionType } from "./types";
+import type { Leg, OptionType } from "./types";
 import { dateFromDte, dteFromDate } from "./dateUtils";
 
 export interface OptionQuote {
@@ -190,4 +190,23 @@ export async function fetchLegPremium(
     strikeSnapped: Math.abs(q.strike - strike) > 0.001,
     expirySnapped: chain.usedExpiryDate !== requestedDateISO,
   };
+}
+// 按原合约（同一行权价、到期日差不超过2天）重新拉今日组合每条未平仓期权腿的权利金。全部拿到才返回新的腿位，
+// 有一条拿不到就返回null——不能一部分是今天的价格、一部分还是旧价格，否则跟同一个股价配不上。
+export async function refreshContractPremiums(symbol: string, legs: Leg[]): Promise<Leg[] | null> {
+  const sym = symbol.trim();
+  if (!sym) return null;
+  try {
+    const results = await Promise.all(
+      legs.map(async (l) => {
+        if (l.disabled || l.kind === "stock" || l.dte <= 0) return l;
+        const r = await fetchLegPremium(sym, l.type, l.strike, l.dte, true);
+        if (r.strikeSnapped || Math.abs(r.actualDte - l.dte) > 2) throw new Error("contract not found");
+        return { ...l, premium: r.premium };
+      }),
+    );
+    return results;
+  } catch {
+    return null;
+  }
 }

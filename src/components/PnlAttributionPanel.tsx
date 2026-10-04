@@ -1,8 +1,10 @@
 // src/components/PnlAttributionPanel.tsx
-import { TrendingUp, Clock, Activity, HelpCircle, GitMerge } from "lucide-react";
+import { TrendingUp, Clock, Activity, HelpCircle, Repeat } from "lucide-react";
 import type { PnlAttribution } from "@/lib/pricing";
 import { useI18n } from "@/i18n/I18nContext";
 import Term from "@/components/Term";
+import CanvasBox from "@/components/simCharts";
+import { drawWaterfall } from "@/lib/simChartDraw";
 
 interface Props {
   attribution: PnlAttribution;
@@ -15,6 +17,8 @@ interface Props {
   // slider (see pricing.ts's own notes on why), so they make a ruler that
   // actually holds still.
   maxAbs: number;
+  endLabel?: string; // 阶梯图最后一根的名字：推演未来="情景"，今昔对比="现在"（不传=情景）
+  showSteps?: boolean; // 画不画阶梯图（多方案对比的小卡片里不画，卡片保持紧凑）；默认画
 }
 
 function Bar({ value, maxAbs }: { value: number; maxAbs: number }) {
@@ -40,18 +44,11 @@ function Bar({ value, maxAbs }: { value: number; maxAbs: number }) {
   );
 }
 
-// Format with an explicit sign, matching the "+"/"-" + 2-decimal convention
-// already used for every value rendered in this panel — so the numbers
-// quoted inside the residual explanation below read exactly like the ones
-// on screen.
-function fmtSigned(n: number): string {
-  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}`;
-}
-
-export default function PnlAttributionPanel({ attribution, maxAbs }: Props) {
+export default function PnlAttributionPanel({ attribution, maxAbs, endLabel: endLabelProp, showSteps = true }: Props) {
   const { t } = useI18n();
   const { priceEffect, timeEffect, ivEffect, residual, totalChange } = attribution;
   const scale = Math.max(maxAbs, 0.01);
+  const endLabel = endLabelProp ?? t("future.wfScen");
 
   const rows = [
     { icon: TrendingUp, label: t("attribution.price"), value: priceEffect, color: "text-sky-400" },
@@ -59,21 +56,8 @@ export default function PnlAttributionPanel({ attribution, maxAbs }: Props) {
     { icon: Activity, label: t("attribution.iv"), value: ivEffect, color: "text-violet-400" },
   ];
 
-  // The residual/"cross term" explanation used to be a static, abstract
-  // paragraph (still kept below as attribution.residualHint, now unused —
-  // Xue reviews dead i18n keys manually). That abstraction was the
-  // complaint: plugging in this combo's actual numbers turns "the three
-  // effects don't simply add up" into a worked example the person can
-  // check against the numbers already on their screen.
-  const sum = priceEffect + timeEffect + ivEffect;
-  const residualVars = {
-    price: fmtSigned(priceEffect),
-    time: fmtSigned(timeEffect),
-    iv: fmtSigned(ivEffect),
-    sum: fmtSigned(sum),
-    total: fmtSigned(totalChange),
-    residual: fmtSigned(residual),
-  };
+  // 三项用平均法拆，分析模式下加起来就等于合计；只有对比模式里展期/平仓/保护/对冲/换合约才会剩下"调整"。
+  const showAdjust = Math.abs(residual) >= 0.005;
 
   return (
     // data-lock-exempt：只读说明，情景滑块锁定左栏时这里的"?"仍可点开（见LockedOverlay）。
@@ -98,28 +82,23 @@ export default function PnlAttributionPanel({ attribution, maxAbs }: Props) {
             </span>
           </div>
         ))}
-        <div className="flex items-center gap-2 text-[10px] opacity-70">
-          {/* 交叉项图标（几个因素相互作用的部分）；说明"?"放在文字右边，跟标题"盈亏归因"一致 */}
-          <GitMerge size={11} className="shrink-0 text-pink-400" />
-          <span className="flex w-14 shrink-0 items-center gap-1 text-slate-500">
-            {t("attribution.residual")}
-            <Term
-              titleKey="attribution.residualTitle"
-              descKey="attribution.residualExplain"
-              descVars={residualVars}
-              iconTrigger
-              className="text-slate-500 hover:text-slate-300"
-            >
-              <HelpCircle size={11} />
-            </Term>
-          </span>
-          <div className="flex-1">
-            <Bar value={residual} maxAbs={scale} />
+        {showAdjust && (
+          <div className="flex items-center gap-2 text-[10px]">
+            <Repeat size={11} className="shrink-0 text-amber-300" />
+            <span className="flex w-14 shrink-0 items-center gap-1 text-slate-400">
+              {t("attribution.adjust")}
+              <Term titleKey="attribution.adjustTitle" descKey="attribution.adjustExplain" iconTrigger className="text-slate-500 hover:text-slate-300">
+                <HelpCircle size={11} />
+              </Term>
+            </span>
+            <div className="flex-1">
+              <Bar value={residual} maxAbs={scale} />
+            </div>
+            <span className={`w-16 shrink-0 text-right font-semibold tabular-nums ${residual >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+              {residual >= 0 ? "+" : ""}{residual.toFixed(2)}
+            </span>
           </div>
-          <span className={`w-16 shrink-0 text-right font-semibold tabular-nums ${residual >= 0 ? "text-emerald-400/70" : "text-rose-400/70"}`}>
-            {residual >= 0 ? "+" : ""}{residual.toFixed(2)}
-          </span>
-        </div>
+        )}
       </div>
 
       <div className="mt-2 flex items-center justify-between border-t border-slate-800 pt-1.5 text-[10px]">
@@ -128,6 +107,27 @@ export default function PnlAttributionPanel({ attribution, maxAbs }: Props) {
           {totalChange >= 0 ? "+" : ""}{totalChange.toFixed(2)}
         </span>
       </div>
+      {/* 同一组数画成阶梯：从开仓的0出发，一项接一项累加到合计。高度固定120px；纵向按柱子缩放，至少是到期最大赚/亏的10%（几分钱不会被放大） */}
+      {showSteps && (
+        <CanvasBox
+        className="mt-2 h-[120px]"
+        draw={(g, W, H) =>
+          drawWaterfall(
+            g, W, H,
+            [
+              { label: t("attribution.price"), v: priceEffect },
+              { label: t("attribution.time"), v: timeEffect },
+              { label: t("attribution.iv"), v: ivEffect },
+              ...(showAdjust ? [{ label: t("attribution.adjust"), v: residual }] : []),
+            ],
+            totalChange, t("future.axOpen"), endLabel, scale * 0.1,
+          )
+        }
+        deps={[priceEffect, timeEffect, ivEffect, residual, totalChange, scale, endLabel, t]}
+        label={t("attribution.title")}
+        />
+      )}
+      <div className="mt-1 text-[10px] leading-snug text-slate-500">{t("attribution.interactNote")}</div>
     </div>
   );
 }

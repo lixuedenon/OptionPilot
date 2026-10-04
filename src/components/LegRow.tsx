@@ -83,6 +83,8 @@ interface Props {
   // 情景滑块离开原点时（App.tsx的isExploring）为true：暂停自动拉取市场权利金。
   // 界面上的锁定由App.tsx左侧整体的LockedOverlay负责，这里不再处理。
   locked?: boolean;
+  // 今昔对比的持仓组合：方向/类型/张数/行权价/到期日锁住（换合约要走展期、平仓要走平仓，否则已实现盈亏会丢），权利金照常可改。
+  contractLocked?: boolean;
 }
 
 const inp =
@@ -201,6 +203,7 @@ function NumField({
   width,
   onChange,
   disabled,
+  title,
   rule,
 }: {
   label: string;
@@ -209,6 +212,7 @@ function NumField({
   width: string;
   onChange: (v: number) => void;
   disabled?: boolean;
+  title?: string;
   // 数值输入统一走useClampedNumberField（numberInput.ts），按传入的规则clamp。
   rule: NumberInputRule;
 }) {
@@ -221,7 +225,7 @@ function NumField({
   const fontSize = shrinkFontSize(field.text, widthPx, 12);
 
   return (
-    <label className="relative flex shrink-0 flex-col gap-0" style={{ width, minWidth: width }}>
+    <label className="relative flex shrink-0 flex-col gap-0" style={{ width, minWidth: width }} title={title}>
       <span className="whitespace-nowrap text-[8px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
       <input
         className={disabled ? inpDisabled : inp}
@@ -416,6 +420,7 @@ function LegMenu({
 export default function LegRow({
   leg,
   index,
+  contractLocked,
   scenarioPrice,
   legPnl,
   symbol,
@@ -449,6 +454,8 @@ export default function LegRow({
   // （靠一个basis-full的空元素换行）。到期日框在手机上用84px，否则日期会被挤成两行。
   const isMobile = useIsMobile();
   const disabled = leg.disabled === true;
+  const fieldLocked = disabled || contractLocked === true;
+  const lockTitle = contractLocked && !disabled ? t("leg.contractLocked") : undefined;
   const [priceFetching, setPriceFetching] = useState(false);
   const [priceError, setPriceError] = useState<string | null>(null);
   const [priceNote, setPriceNote] = useState<string | null>(null);
@@ -553,6 +560,12 @@ export default function LegRow({
 
   // 自动拉价和手动刷新共用：把拉到的权利金（以及贴到最近真实合约时的行权价/dte）写回这条腿，发生贴靠时显示提示。
   const applyFetchedPremium = (result: LegPremiumResult) => {
+    // 合约锁住时不允许贴到别的合约：行权价不同或到期日差2天以上就不写入（差1~2天只是日期取整，仍是同一张）。
+    if (contractLocked && (result.strikeSnapped || Math.abs(result.actualDte - leg.dte) > 2)) {
+      setPriceNote(null);
+      setPriceError(t("leg.contractNoQuote"));
+      return;
+    }
     const patch: Partial<Leg> = { premium: result.premium };
     if (result.strikeSnapped) patch.strike = result.actualStrike;
     if (result.expirySnapped) patch.dte = result.actualDte;
@@ -769,12 +782,12 @@ export default function LegRow({
             next={leg.action === "buy" ? "sell" : "buy"}
             color={leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"}
             onClick={() => onChange({ action: leg.action === "buy" ? "sell" : "buy" })}
-            disabled={disabled}
+            disabled={fieldLocked}
             compact={narrow}
           />
         </div>
-        <NumField label={t("leg.buyPrice")} value={leg.strike} step={0.5} width={isMobile ? "80px" : narrow ? "60px" : "72px"} onChange={(v) => onChange({ strike: v })} disabled={disabled} rule={NUMBER_RULES.price} />
-        <NumField label={t("leg.sharesLabel")} value={leg.shares ?? 100} step={1} width={isMobile ? "64px" : narrow ? "46px" : "56px"} onChange={(v) => onChange({ shares: v })} disabled={disabled} rule={NUMBER_RULES.shares} />
+        <NumField label={t("leg.buyPrice")} value={leg.strike} step={0.5} width={isMobile ? "80px" : narrow ? "60px" : "72px"} onChange={(v) => onChange({ strike: v })} disabled={fieldLocked} title={lockTitle} rule={NUMBER_RULES.price} />
+        <NumField label={t("leg.sharesLabel")} value={leg.shares ?? 100} step={1} width={isMobile ? "64px" : narrow ? "46px" : "56px"} onChange={(v) => onChange({ shares: v })} disabled={fieldLocked} title={lockTitle} rule={NUMBER_RULES.shares} />
         <div className="flex flex-col gap-0.5">
           <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">Delta</span>
           <span className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-semibold text-emerald-400">
@@ -805,19 +818,19 @@ export default function LegRow({
         <span className="w-4 shrink-0 text-center text-[10px] font-semibold text-slate-500">{index + 1}</span>
       </div>
 
-      <div className={`flex shrink-0 flex-col gap-0.5 ${disabled ? "opacity-40" : ""}`}>
+      <div className={`flex shrink-0 flex-col gap-0.5 ${disabled ? "opacity-40" : ""}`} title={lockTitle}>
         <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{t("leg.action")}</span>
         <ToggleBtn
           value={leg.action}
           next={leg.action === "buy" ? "sell" : "buy"}
           color={leg.action === "buy" ? "bg-emerald-600" : "bg-rose-600"}
           onClick={() => onChange({ action: leg.action === "buy" ? "sell" : "buy" })}
-          disabled={disabled}
+          disabled={fieldLocked}
           compact={narrow}
         />
       </div>
 
-      <div className={`flex shrink-0 flex-col gap-0.5 ${disabled ? "opacity-40" : ""}`}>
+      <div className={`flex shrink-0 flex-col gap-0.5 ${disabled ? "opacity-40" : ""}`} title={lockTitle}>
         <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">{t("leg.type")}</span>
         <ToggleBtn
           value={leg.type}
@@ -827,7 +840,7 @@ export default function LegRow({
             const next = leg.type === "call" ? "put" : "call";
             onChange({ type: next });
           }}
-          disabled={disabled}
+          disabled={fieldLocked}
           compact={narrow}
         />
       </div>
@@ -839,15 +852,16 @@ export default function LegRow({
         step={1}
         width={isMobile ? "48px" : narrow ? "30px" : "38px"}
         onChange={(v) => onChange({ qty: v })}
-        disabled={disabled}
+        disabled={fieldLocked}
+        title={lockTitle}
         rule={NUMBER_RULES.qty}
       />
 
       {isMobile && <div className="ml-auto">{menu}</div>}
       {isMobile && <div className="h-0 basis-full" aria-hidden />}
       <div ref={strikeMenuRef} className="relative flex shrink-0 items-end gap-0.5">
-        <NumField label={t("leg.strike")} value={leg.strike} step={0.5} width={isMobile ? "72px" : narrow ? "44px" : "52px"} onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ strike: v }); }} disabled={disabled} rule={NUMBER_RULES.price} />
-        {!disabled && (
+        <NumField label={t("leg.strike")} value={leg.strike} step={0.5} width={isMobile ? "72px" : narrow ? "44px" : "52px"} onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ strike: v }); }} disabled={fieldLocked} title={lockTitle} rule={NUMBER_RULES.price} />
+        {!fieldLocked && (
           <button
             onClick={() => setStrikeMenuOpen((v) => !v)}
             disabled={strikeOptions.length === 0}
@@ -882,14 +896,15 @@ export default function LegRow({
           </span>
           <button
             type="button"
-            onClick={() => !disabled && setExpiryMenuOpen((v) => !v)}
-            disabled={disabled}
-            className={`${disabled ? inpDisabled : inp} text-left`}
+            onClick={() => !fieldLocked && setExpiryMenuOpen((v) => !v)}
+            disabled={fieldLocked}
+            title={lockTitle}
+            className={`${fieldLocked ? inpDisabled : inp} text-left`}
           >
             {dateFromDte(leg.dte)}
           </button>
         </div>
-        {!disabled && !isMobile && (
+        {!fieldLocked && !isMobile && (
           <button
             onClick={() => setExpiryMenuOpen((v) => !v)}
             disabled={expiryOptions.length === 0}

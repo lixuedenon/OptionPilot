@@ -13,6 +13,8 @@ import {
 } from "@/lib/winRateSim";
 import type { SimRequest, SimResponse } from "@/lib/winRateSim.worker";
 import { comboBaseIv } from "@/lib/stockOptionMap";
+import CanvasBox from "@/components/simCharts";
+import { drawVolCurve, drawDriftCurve, drawPnlHist } from "@/lib/simChartDraw";
 import { useSimSettings, setSideRules, setVolOverride as setVolOverrideFor, setDriftPct as setDriftPctFor, fracLabel, type Side } from "@/lib/simSettings";
 import { computeHV, fetchHistoricalSeries, realizedVolSince } from "@/lib/historicalVolatility";
 
@@ -48,38 +50,6 @@ function loadLimit(): number {
   } catch {
     return 1000;
   }
-}
-
-// 画布：跟容器同宽高，尺寸或数据变了就重画。
-function CanvasBox({ className, draw, deps, label }: { className: string; draw: (g: CanvasRenderingContext2D, w: number, h: number) => void; deps: unknown[]; label: string }) {
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const cvRef = useRef<HTMLCanvasElement>(null);
-  const [size, setSize] = useState({ w: 0, h: 0 });
-  useEffect(() => {
-    const el = wrapRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  useEffect(() => {
-    const cv = cvRef.current;
-    if (!cv || size.w < 40 || size.h < 40) return;
-    const dpr = window.devicePixelRatio || 1;
-    cv.width = Math.round(size.w * dpr);
-    cv.height = Math.round(size.h * dpr);
-    const g = cv.getContext("2d");
-    if (!g) return;
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    g.clearRect(0, 0, size.w, size.h);
-    draw(g, size.w, size.h);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [size, ...deps]);
-  return (
-    <div ref={wrapRef} className={`relative ${className}`}>
-      <canvas ref={cvRef} role="img" aria-label={label} className="absolute inset-0 h-full w-full" />
-    </div>
-  );
 }
 
 interface RunView {
@@ -458,10 +428,10 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
       g.globalAlpha = 0.45;
       g.lineWidth = 1;
       g.beginPath();
-      sp.prices.forEach((s, d) => (d ? g.lineTo(X(d), Y(s)) : g.moveTo(X(d), Y(s))));
+      sp.prices.slice(0, sp.exitDay + 1).forEach((s, d) => (d ? g.lineTo(X(d), Y(s)) : g.moveTo(X(d), Y(s))));
       g.stroke();
       g.globalAlpha = 1;
-      const d = sp.prices.length - 1;
+      const d = sp.exitDay;
       g.fillStyle = REASON_COLOR[sp.reason];
       g.beginPath();
       g.arc(X(d), Y(sp.prices[d]), 2.2, 0, Math.PI * 2);
@@ -724,131 +694,11 @@ export default function WinRateSim({ symbol, mode, simLegs, spot, openingLegs, p
   }
 
   // ── 高级分析：盈亏平衡波动率曲线 + 分布 ──
-  const drawCurve = (g: CanvasRenderingContext2D, W: number, H: number) => {
-    const c = run.curve;
-    if (!c) return;
-    const L = 46, R = 10, T = 16, B = 20;
-    const vols = c.map((x) => x.vol);
-    const vLo = Math.min(...vols), vHi = Math.max(...vols);
-    const ys = c.map((x) => x.avg);
-    let yLo = Math.min(0, ...ys), yHi = Math.max(0, ...ys);
-    const pad = (yHi - yLo) * 0.1 || 1;
-    yLo -= pad;
-    yHi += pad;
-    const X = (v: number) => L + ((v - vLo) / (vHi - vLo || 1)) * (W - L - R);
-    const Y = (y: number) => T + ((yHi - y) / (yHi - yLo)) * (H - T - B);
-    g.font = "10px sans-serif";
-    g.strokeStyle = "#475569";
-    g.beginPath();
-    g.moveTo(L, Y(0));
-    g.lineTo(W - R, Y(0));
-    g.stroke();
-    g.fillStyle = "#64748b";
-    g.textAlign = "right";
-    g.fillText(money(yHi), L - 3, T + 4);
-    g.fillText(money(yLo), L - 3, H - B);
-    g.textAlign = "center";
-    for (let i = 0; i < c.length; i += 3) g.fillText(`${(c[i].vol * 100).toFixed(0)}%`, X(c[i].vol), H - 5);
-    const mark = (v: number, label: string, color: string, row: number) => {
-      if (v < vLo || v > vHi) return;
-      g.strokeStyle = color;
-      g.setLineDash([3, 3]);
-      g.beginPath();
-      g.moveTo(X(v), T);
-      g.lineTo(X(v), H - B);
-      g.stroke();
-      g.setLineDash([]);
-      g.fillStyle = color;
-      g.textAlign = X(v) > W - 80 ? "right" : "left";
-      g.fillText(label, X(v) + (X(v) > W - 80 ? -3 : 3), T + 2 + row * 11);
-    };
-    mark(ivCenter, t("winRate.markIv", { v: (ivCenter * 100).toFixed(0) }), "#a78bfa", 0);
-    mark(vol, t("winRate.markRv", { v: (vol * 100).toFixed(0) }), "#fbbf24", 1);
-    if (be?.vol != null) mark(be.vol, t("winRate.markBev", { v: (be.vol * 100).toFixed(1) }), "#f8fafc", 2);
-    g.strokeStyle = "#60a5fa";
-    g.lineWidth = 2;
-    g.beginPath();
-    c.forEach((x, i) => (i ? g.lineTo(X(x.vol), Y(x.avg)) : g.moveTo(X(x.vol), Y(x.avg))));
-    g.stroke();
-    g.lineWidth = 1;
-  };
-  const drawDrift = (g: CanvasRenderingContext2D, W: number, H: number) => {
-    const c = run.driftCurve;
-    if (!c) return;
-    const L = 46, R = 10, T = 16, B = 20;
-    const xs = c.map((x) => x.drift);
-    const xLo = Math.min(...xs), xHi = Math.max(...xs);
-    const ys = c.map((x) => x.avg);
-    let yLo = Math.min(0, ...ys), yHi = Math.max(0, ...ys);
-    const pad = (yHi - yLo) * 0.1 || 1;
-    yLo -= pad;
-    yHi += pad;
-    const X = (v: number) => L + ((v - xLo) / (xHi - xLo || 1)) * (W - L - R);
-    const Y = (y: number) => T + ((yHi - y) / (yHi - yLo)) * (H - T - B);
-    g.font = "10px sans-serif";
-    g.strokeStyle = "#475569";
-    g.beginPath();
-    g.moveTo(L, Y(0));
-    g.lineTo(W - R, Y(0));
-    g.stroke();
-    g.fillStyle = "#64748b";
-    g.textAlign = "right";
-    g.fillText(money(yHi), L - 3, T + 4);
-    g.fillText(money(yLo), L - 3, H - B);
-    g.textAlign = "center";
-    for (let i = 0; i < c.length; i += 2) g.fillText(`${c[i].drift >= 0 ? "+" : ""}${Math.round(c[i].drift * 100)}%`, X(c[i].drift), H - 5);
-    const mark = (v: number, label: string, color: string, row: number) => {
-      if (v < xLo || v > xHi) return;
-      g.strokeStyle = color;
-      g.setLineDash([3, 3]);
-      g.beginPath();
-      g.moveTo(X(v), T);
-      g.lineTo(X(v), H - B);
-      g.stroke();
-      g.setLineDash([]);
-      g.fillStyle = color;
-      g.textAlign = X(v) > W - 90 ? "right" : "left";
-      g.fillText(label, X(v) + (X(v) > W - 90 ? -3 : 3), T + 2 + row * 11);
-    };
-    mark(driftPct / 100, t("winRate.markDrift", { v: driftPct }), "#fbbf24", 0);
-    if (run.driftBreakeven != null) mark(run.driftBreakeven, t("winRate.markDriftBe", { v: (run.driftBreakeven * 100).toFixed(1) }), "#f8fafc", 1);
-    g.strokeStyle = "#60a5fa";
-    g.lineWidth = 2;
-    g.beginPath();
-    c.forEach((x, i) => (i ? g.lineTo(X(x.drift), Y(x.avg)) : g.moveTo(X(x.drift), Y(x.avg))));
-    g.stroke();
-    g.lineWidth = 1;
-  };
-  const drawHist = (g: CanvasRenderingContext2D, W: number, H: number) => {
-    const h = run.hist;
-    if (!h) return;
-    const L = 6, R = 6, T = 6, B = 18;
-    const m = Math.max(...h.counts) || 1;
-    const bw = (W - L - R) / h.counts.length;
-    const w = (h.hi - h.lo) / h.counts.length;
-    h.counts.forEach((n, i) => {
-      const mid = h.lo + (i + 0.5) * w;
-      const bh = (n / m) * (H - T - B);
-      g.fillStyle = mid >= 0 ? "#34d399" : "#fb7185";
-      g.fillRect(L + i * bw + 1, H - B - bh, Math.max(1, bw - 2), bh);
-    });
-    g.font = "10px sans-serif";
-    g.fillStyle = "#64748b";
-    g.textAlign = "left";
-    g.fillText(money(h.lo), L, H - 4);
-    g.textAlign = "right";
-    g.fillText(money(h.hi), W - R, H - 4);
-    if (h.lo < 0 && h.hi > 0) {
-      const zx = L + ((0 - h.lo) / (h.hi - h.lo)) * (W - L - R);
-      g.strokeStyle = "#94a3b8";
-      g.beginPath();
-      g.moveTo(zx, T);
-      g.lineTo(zx, H - B);
-      g.stroke();
-      g.textAlign = "center";
-      g.fillText("0", zx, H - 4);
-    }
-  };
+  const drawCurve = (g: CanvasRenderingContext2D, W: number, H: number) =>
+    run.curve && drawVolCurve(g, W, H, { curve: run.curve, ivCenter, vol, breakevenVol: be?.vol ?? null, money, t });
+  const drawDrift = (g: CanvasRenderingContext2D, W: number, H: number) =>
+    run.driftCurve && drawDriftCurve(g, W, H, { curve: run.driftCurve, driftPct, breakeven: run.driftBreakeven, money, t });
+  const drawHist = (g: CanvasRenderingContext2D, W: number, H: number) => run.hist && drawPnlHist(g, W, H, run.hist, money);
 
   // ── 回看：今天为什么是这样（运气 vs 优势）──
   let retroSection: ReactNode = null;

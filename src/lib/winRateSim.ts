@@ -1,5 +1,5 @@
 // src/lib/winRateSim.ts
-// "胜率模拟"标签的计算层：按假设的未来实际波动随机生成股价走势，逐日用现有定价函数重算组合，
+// "万次推演"标签（和持仓建议）的计算层：按假设的未来实际波动随机生成股价走势，逐日用现有定价函数重算组合，
 // 按止盈/止损/到期前平仓规则决定每条走势在哪天、因为什么出场，再汇总成统计和盈亏平衡波动率。
 // 盈亏口径跟priceCombo/地形图一致（legShiftedPrice之和 − 起点净权利金，每股计），另加pnlOffset（对比模式的开仓至今总盈亏）。
 import { ncdf } from "@/lib/bs";
@@ -23,6 +23,7 @@ export interface SimSetup {
   rules: SimRules;
   totalTerm?: number; // 开仓时（最早到期的）总期限天数；不传=起点剩余天数（分析模式从开仓日出发时两者相同）
   drift?: number; // 假设的年化涨跌（小数），默认0=不预测方向；买方方向性组合用
+  dV?: number; // 持有期间隐含波动率加减的百分点（波动率滑块）：只影响期权定价，不影响股价怎么走
 }
 
 export interface Prepared {
@@ -39,6 +40,7 @@ export interface Prepared {
   tpLine: number;
   slLine: number;
   optionLegCount: number;
+  dV: number;
 }
 
 export type StartStatus = "normal" | "atTakeProfit" | "atStop" | "inCloseWindow";
@@ -68,6 +70,7 @@ export function prepareSim(setup: SimSetup): Prepared | null {
     tpLine: takeProfitPct != null ? takeProfitPct * setup.basis : Infinity,
     slLine: stopMult != null ? -stopMult * setup.basis : -Infinity,
     optionLegCount: options.length,
+    dV: setup.dV ?? 0,
   };
 }
 
@@ -80,7 +83,7 @@ export function startStatus(p: Prepared): StartStatus {
 
 // 第day天（从起点算）、股价price时的总盈亏（每股）。
 export function simPnlAt(p: Prepared, day: number, price: number): number {
-  const s = { dS: price - p.spot, dT: day, dV: 0 };
+  const s = { dS: price - p.spot, dT: day, dV: day > 0 ? p.dV ?? 0 : 0 };
   let v = 0;
   for (let i = 0; i < p.legs.length; i++) v += legShiftedPrice(p.legs[i], s, p.spot, p.ivs[i]);
   return v - p.netNow + p.pnlOffset;
@@ -119,44 +122,63 @@ export interface PathOutcome {
   reason: ExitReason;
   day: number;
   pnl: number;
+  price: number; // 出场那天的股价
+  holdPnl: number; // 同一条走势不管规则、一直拿到最早到期日的盈亏——"规则在换什么"跟它比
 }
 
 export interface SamplePath {
-  prices: number[]; // 第0天到出场那天
+  prices: number[]; // 第0天到最早到期日（出场之后也接着走，画成淡色）
   reason: ExitReason;
+  exitDay: number;
 }
+
+// 每一步回调：第day天、股价price、这条走势此刻是否还按规则拿着（出场后为false）。用来累计密度云。
+export type StepFn = (day: number, price: number, holding: boolean) => void;
 
 // 走势按日（日历日，跟定价的dte/365一致）生成。默认零漂移：不预测涨跌方向（跟probabilityOfProfit的POP_DRIFT_RATE=0同一约定）；
 // 买方方向性组合可以传入假设的年化涨跌（p.drift）。
-function runPath(p: Prepared, vol: number, z: () => number, keep: boolean): { out: PathOutcome; prices?: number[] } {
-  if (p.endDay === 0) return { out: { reason: "time", day: 0, pnl: p.pnlOffset }, prices: keep ? [p.spot] : undefined };
+// ⚠️ 每条走势都走到最早到期日（出场后不再定价，只为画完整的路和算"一直拿着"的结果）：每条走势消耗的随机数个数固定，
+// 换规则不会改变后面各条走势，规则对比和持仓建议卡片才是同一组走势。
+function runPath(p: Prepared, vol: number, z: () => number, keep: boolean, onStep?: StepFn): { out: PathOutcome; prices?: number[] } {
   const dt = 1 / 365;
   const drift = (p.drift - 0.5 * vol * vol) * dt;
   const diff = vol * Math.sqrt(dt);
   let S = p.spot;
   const prices = keep ? [S] : undefined;
-  let pnl = p.pnlOffset;
-  for (let d = 1; d <= p.endDay; d++) {
+  onStep?.(0, S, p.endDay > 0);
+  let out: PathOutcome | null = p.endDay === 0 ? { reason: "time", day: 0, pnl: p.pnlOffset, price: S, holdPnl: 0 } : null;
+  for (let d = 1; d <= p.horizon; d++) {
     S *= Math.exp(drift + diff * z());
     prices?.push(S);
-    pnl = simPnlAt(p, d, S);
-    if (pnl >= p.tpLine) return { out: { reason: "tp", day: d, pnl }, prices };
-    if (pnl <= p.slLine) return { out: { reason: "sl", day: d, pnl }, prices };
+    if (!out && d <= p.endDay) {
+      const pnl = simPnlAt(p, d, S);
+      if (pnl >= p.tpLine) out = { reason: "tp", day: d, pnl, price: S, holdPnl: 0 };
+      else if (pnl <= p.slLine) out = { reason: "sl", day: d, pnl, price: S, holdPnl: 0 };
+      else if (d === p.endDay) out = { reason: p.endDay < p.horizon ? "time" : "expiry", day: d, pnl, price: S, holdPnl: 0 };
+    }
+    onStep?.(d, S, !out || out.day >= d);
   }
-  return { out: { reason: p.endDay < p.horizon ? "time" : "expiry", day: p.endDay, pnl }, prices };
+  const final = out!;
+  final.holdPnl = final.reason === "expiry" ? final.pnl : simPnlAt(p, p.horizon, S);
+  return { out: final, prices };
 }
 
-export function runBatch(p: Prepared, vol: number, n: number, seed: number, sampleCount = 0): { outcomes: PathOutcome[]; samples: SamplePath[] } {
+export function runBatch(p: Prepared, vol: number, n: number, seed: number, sampleCount = 0, onStep?: StepFn): { outcomes: PathOutcome[]; samples: SamplePath[] } {
   const z = gaussian(mulberry32(seed));
   const outcomes: PathOutcome[] = [];
   const samples: SamplePath[] = [];
   for (let i = 0; i < n; i++) {
     const keep = i < sampleCount;
-    const { out, prices } = runPath(p, vol, z, keep);
+    const { out, prices } = runPath(p, vol, z, keep, onStep);
     outcomes.push(out);
-    if (keep && prices) samples.push({ prices, reason: out.reason });
+    if (keep && prices) samples.push({ prices, reason: out.reason, exitDay: out.day });
   }
   return { outcomes, samples };
+}
+
+// "一直拿到期"的结果（同一组走势、不管规则），用来跟按规则的结果对比。
+export function holdOutcomes(outcomes: PathOutcome[], horizon: number): PathOutcome[] {
+  return outcomes.map((o) => ({ reason: "expiry", day: horizon, pnl: o.holdPnl, price: o.price, holdPnl: o.holdPnl }));
 }
 
 export interface ReasonStat {
@@ -169,6 +191,7 @@ export interface SimStats {
   n: number;
   byReason: Record<ExitReason, ReasonStat>;
   avg: number;
+  sd: number; // 单次盈亏的标准差——平均值的随机误差约为 sd/√n
   winPct: number;
   worst5: number; // 最差5%的平均
   min: number;
@@ -192,10 +215,12 @@ export function computeStats(outcomes: PathOutcome[]): SimStats {
   const sorted = outcomes.map((o) => o.pnl).sort((a, b) => a - b);
   const q = (f: number) => (n ? sorted[Math.min(n - 1, Math.max(0, Math.floor(f * (n - 1))))] : 0);
   const k = Math.max(1, Math.floor(n / 20));
+  const avg = n ? sorted.reduce((a, b) => a + b, 0) / n : 0;
   return {
     n,
     byReason,
-    avg: n ? sorted.reduce((a, b) => a + b, 0) / n : 0,
+    avg,
+    sd: n > 1 ? Math.sqrt(sorted.reduce((a, b) => a + (b - avg) ** 2, 0) / (n - 1)) : 0,
     winPct: n ? (outcomes.filter((o) => o.pnl > 0).length / n) * 100 : 0,
     worst5: n ? sorted.slice(0, k).reduce((a, b) => a + b, 0) / k : 0,
     min: n ? sorted[0] : 0,
@@ -306,14 +331,6 @@ export function findBreakeven(p: Prepared, curve: CurvePoint[], n: number, seed:
 
 export type CushionTier = "ample" | "thin" | "none";
 
-// 安全垫：卖方 = 1 − 假设波动/平衡波动；买方 = 假设波动/平衡波动 − 1。分档是经验值，以后可以按实际效果调。
-export function cushion(be: Breakeven, assumedVol: number): { value: number; tier: CushionTier } | null {
-  if (be.vol == null || !(be.vol > 0)) return null;
-  const value = be.side === "short" ? 1 - assumedVol / be.vol : assumedVol / be.vol - 1;
-  const tier: CushionTier = value >= 0.2 ? "ample" : value >= 0.05 ? "thin" : "none";
-  return { value, tier };
-}
-
 // 开仓组合的净权利金绝对值（每股）——止盈止损的基准。含正股腿的组合没有合适的基准，返回null。
 export function openingBasis(openingLegs: Leg[]): number | null {
   const active = openingLegs.filter((l) => !l.disabled);
@@ -330,23 +347,7 @@ export function isCreditCombo(openingLegs: Leg[]): boolean {
   return net < 0;
 }
 
-// ── 回看（今昔对比）：站在开仓那天，按当时的隐含波动率（市场的预期），组合一直不动，到"今天"这一天会是什么样 ──
-
-export interface RetroInput {
-  legs: Leg[]; // 开仓组合
-  spot: number; // 开仓价
-  day: number; // 开仓后第几天（今天）
-  vol: number; // 开仓时的隐含波动率（市场定价时的预期）
-}
-
-// 返回按大小排好的盈亏样本（每股），用来看今天的真实结果排在所有可能里的什么位置。
-export function retroDistribution(input: RetroInput, n: number, seed: number): number[] {
-  const p = prepareSim({ legs: input.legs, spot: input.spot, basis: 1, pnlOffset: 0, rules: { takeProfitPct: null, stopMult: null, closeFrac: 0 } });
-  if (!p) return [];
-  const endDay = Math.max(1, Math.min(p.horizon, Math.round(input.day)));
-  const { outcomes } = runBatch({ ...p, endDay }, input.vol, n, seed);
-  return outcomes.map((o) => o.pnl).sort((a, b) => a - b);
-}
+// ── 回看（今昔对比）：今天的真实结果排在"开仓那天看到的所有可能"里的哪儿（那团可能由futureSim.worker的retro请求算）──
 
 // 真实结果比多少比例的可能情况好（0..100）。
 export function percentileOf(sorted: number[], v: number): number {

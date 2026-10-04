@@ -112,7 +112,8 @@ export interface Advice {
   signals: AdviceSignals;
 }
 
-function expiryScan(p: Prepared, spot: number) {
+// 到期（最早到期日）时的盈亏范围：0.02~5倍现价宽范围扫描，端点还在走就算不封顶（maxProfit/maxLoss为null）。
+export function expiryScan(p: Prepared, spot: number) {
   const h = p.horizon;
   const prices: number[] = [];
   for (let i = 0; i <= 480; i++) prices.push(spot * Math.exp(Math.log(0.02) + (Math.log(5 / 0.02) * i) / 480));
@@ -224,4 +225,81 @@ export function adviseCombo(input: AdviceInput): Advice | null {
   if (!flat && -signals.pnlPct >= th.debitLossWatch * slFrac) return out("holdOrStopLoss", "debitLoss");
   if (outsideFar && elapsed >= th.elapsedStop) return out("holdOrStopLoss", "outsideWatch");
   return out("hold", "ok");
+}
+
+// ── 不用模拟的快速版：地形图"风险分区"逐格上色、走势上的节点用 ──
+// 跟adviseCombo同一套阈值和判断顺序，只是去掉了要靠随机模拟的几条（pStop、recover、recoverWatch），
+// 所以图上的颜色=左边持仓建议在这一点"不看往后概率"时会给的建议。盈亏都从开仓算（分析模式）。
+export interface QuickAdviceCtx {
+  p: Prepared;
+  credit: boolean;
+  basis: number;
+  totalTerm: number;
+  iv: number;
+  maxProfit: number | null;
+  maxLoss: number | null;
+  rr0: number | null;
+  breakevens: number[];
+  th: AdviceThresholds;
+}
+
+export function prepareQuickAdvice(input: { legs: Leg[]; spot: number; basis: number; credit: boolean; rules: SimRules; totalTerm: number; thresholds?: AdviceThresholds }): QuickAdviceCtx | null {
+  const legs = input.legs.filter((l) => !l.disabled);
+  const p = prepareSim({ legs, spot: input.spot, basis: input.basis, pnlOffset: 0, rules: input.rules, totalTerm: input.totalTerm });
+  if (!p) return null;
+  const scan = expiryScan(p, input.spot);
+  const breakevens: number[] = [];
+  for (let i = 0; i < scan.vals.length - 1; i++) {
+    const a = scan.vals[i];
+    const b = scan.vals[i + 1];
+    if ((a > 0) !== (b > 0)) breakevens.push(scan.prices[i] + ((scan.prices[i + 1] - scan.prices[i]) * a) / (a - b));
+  }
+  return {
+    p, credit: input.credit, basis: input.basis, totalTerm: input.totalTerm, iv: comboBaseIv(legs, input.spot) ?? 0.3,
+    maxProfit: scan.maxProfit, maxLoss: scan.maxLoss,
+    rr0: scan.maxProfit != null && scan.maxLoss != null && scan.maxLoss < -1e-9 ? scan.maxProfit / -scan.maxLoss : null,
+    breakevens, th: input.thresholds ?? ADVICE_THRESHOLDS,
+  };
+}
+
+// 第day天（从开仓算）、股价price、开仓以来盈亏pnl时的建议。expiryPnl可传入（同一价格反复用时省一次计算）。
+export function quickAdvice(ctx: QuickAdviceCtx, day: number, price: number, pnl: number, expiryPnl?: number): AdviceAction {
+  const { p, th } = ctx;
+  const remaining = p.horizon - day;
+  if (pnl >= p.tpLine) return "takeProfit";
+  if (pnl <= p.slLine) return "stopLoss";
+  if (remaining <= 0 || (p.closeAtRemaining > 0 && remaining <= p.closeAtRemaining)) return pnl >= 0 ? "takeProfit" : "stopLoss";
+  const elapsed = ctx.totalTerm > 0 ? Math.min(1, Math.max(0, day / ctx.totalTerm)) : 0;
+  const sig = Math.max(1e-6, ctx.iv * Math.sqrt(Math.max(1, remaining) / 365));
+  const inProfitZone = (expiryPnl ?? simPnlAt(p, p.horizon, price)) > 0;
+  let best = Infinity;
+  for (const be of ctx.breakevens) {
+    const d = Math.abs(Math.log(be / price)) / sig;
+    if (d < 5 && d < best) best = d;
+  }
+  const sigmaToEdge = best === Infinity ? null : inProfitZone ? best : -best;
+  const flat = Math.abs(pnl / ctx.basis) < th.flatPct;
+  if (pnl > 0 && !flat) {
+    const capture = ctx.maxProfit != null && ctx.maxProfit > 1e-9 ? pnl / ctx.maxProfit : null;
+    const gain = ctx.maxProfit == null ? null : Math.max(0, ctx.maxProfit - pnl);
+    const risk = ctx.maxLoss == null ? null : Math.max(0, pnl - ctx.maxLoss);
+    const rr = gain == null || risk == null || risk < 1e-9 ? null : gain / risk;
+    const rrRel = rr != null && ctx.rr0 != null && ctx.rr0 > 1e-9 ? rr / ctx.rr0 : null;
+    if (capture != null && capture >= th.captureTakeProfit) return "takeProfit";
+    if (rrRel != null && rrRel < th.rrRelTakeProfit) return "takeProfit";
+    if (rrRel != null && rrRel < th.rrRelWatch) return "holdOrTakeProfit";
+    if (ctx.credit && inProfitZone && sigmaToEdge != null && sigmaToEdge < th.nearEdgeSigma) return "holdOrTakeProfit";
+    if (!ctx.credit && elapsed >= th.debitLateElapsed) return "holdOrTakeProfit";
+    return "hold";
+  }
+  const outsideFar = !inProfitZone && sigmaToEdge != null && -sigmaToEdge >= th.sigmaOutStop;
+  if (ctx.credit) {
+    if (outsideFar && elapsed >= th.elapsedStop && !flat) return "stopLoss";
+    if (!inProfitZone && !flat) return "holdOrStopLoss";
+    return "hold";
+  }
+  const slFrac = p.slLine === -Infinity ? 1 : -p.slLine / ctx.basis;
+  if (!flat && -pnl / ctx.basis >= th.debitLossWatch * slFrac) return "holdOrStopLoss";
+  if (outsideFar && elapsed >= th.elapsedStop) return "holdOrStopLoss";
+  return "hold";
 }

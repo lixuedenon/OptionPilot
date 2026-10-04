@@ -23,12 +23,12 @@ import { useComboAnalytics } from "@/hooks/useComboAnalytics";
 import { useCompareSlots, COMPARE_SLOT_COLORS, MAX_COMPARE_SLOT_LEGS, MAX_COMPARE_SLOTS, isSlotDirty } from "@/hooks/useCompareSlots";
 import ComboCompareSlots from "@/components/ComboCompareSlots";
 import PositionAdviceCard from "@/components/PositionAdviceCard";
-import { scenarioLegs } from "@/lib/positionAdvisor";
+import { scenarioLegs, prepareQuickAdvice } from "@/lib/positionAdvisor";
 import { useStrategyOrchestration } from "@/hooks/useStrategyOrchestration";
-import { nearestFridayDte, formatDateInput, parseDateInput, addCalendarDays, calendarDaysBetween } from "@/lib/dateUtils";
+import { nearestFridayDte, formatDateInput, parseDateInput, addCalendarDays, calendarDaysBetween, calendarDaysSince } from "@/lib/dateUtils";
 import { uid, PRESET_DTE_SET } from "@/lib/legFactory";
-import { getOptionChain, resolveFromCache } from "@/lib/optionChain";
-import { estimateRescaledPremium } from "@/lib/pricing";
+import { getOptionChain, resolveFromCache, refreshContractPremiums } from "@/lib/optionChain";
+import { estimateRescaledPremium, premiumSanityIssues, type PremiumIssue, weightedAvgIV } from "@/lib/pricing";
 import { NUMBER_RULES, clampToRule, blockInvalidNumberKey } from "@/lib/numberInput";
 import { useI18n } from "@/i18n/I18nContext";
 import AppHeader from "@/components/AppHeader";
@@ -36,14 +36,18 @@ import LockedOverlay, { type LockReason } from "@/components/LockedOverlay";
 import StepBadge from "@/components/StepBadge";
 import PnlHeadline from "@/components/PnlHeadline";
 import StockOptionMap, { IvShiftSlider } from "@/components/StockOptionMap";
-import WinRateSim from "@/components/WinRateSim";
+import RetroSim from "@/components/RetroSim";
+import FutureSim from "@/components/FutureSim";
+import { useSimSettings } from "@/lib/simSettings";
+import { openingBasis, isCreditCombo, prepareSim } from "@/lib/winRateSim";
+import { replayRules } from "@/lib/futureSim";
 import { comboBaseIv, buildTrackedHistory, buildAttributionTimeline, trackedTotalPnl, type TrackedState } from "@/lib/stockOptionMap";
 import { STEP_GUIDE_ENABLED } from "@/lib/featureFlags";
 import LegPanelTitleRow from "@/components/LegPanelTitleRow";
 import TrackedComboSection from "@/components/TrackedComboSection";
 import LegActionDialogs from "@/components/LegActionDialogs";
 import StrategyPersistenceDialogs from "@/components/StrategyPersistenceDialogs";
-import { ConfirmLockRollDialog, HelpPanel, isGuideDismissed, ExpiredStrategyDialog, ExpiredTrackPromptDialog } from "@/components/dialogs";
+import { ConfirmLockRollDialog, ConfirmPremiumCheckDialog, HelpPanel, isGuideDismissed, ExpiredStrategyDialog, ExpiredTrackPromptDialog } from "@/components/dialogs";
 import ErrorBoundary from "@/components/ErrorBoundary";
 
 interface AppProps {
@@ -86,8 +90,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const [symbolDropdownOpen, setSymbolDropdownOpen] = useState(false);
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const [showImpliedInfo, setShowImpliedInfo] = useState(false);
-  const [correctedSpot, setCorrectedSpot] = useState<number | null>(null);
-  const [correcting, setCorrecting] = useState(false);
+  // 今日组合的权利金和股价是哪个时刻的（快照保存时间/开仓时间）；null=实时，股价跟随实时报价。
+  // ⚠️ 两者必须是同一时刻的，反推出来的隐含波动率才对：权利金是旧的，股价就用当时存的股价。
+  const [trackedAsOf, setTrackedAsOf] = useState<number | null>(null);
+  const trackedAsOfRef = useRef<number | null>(null);
+  trackedAsOfRef.current = trackedAsOf;
+  const [trackedPriceError, setTrackedPriceError] = useState<string | null>(null);
+  const trackedAsOfDays = trackedAsOf === null ? 0 : calendarDaysSince(trackedAsOf);
   const {
     savedStrategies,
     setSavedStrategies,
@@ -169,6 +178,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // 保存追踪快照会永久锁定未完成的展期/保护/对冲（之后无法撤销），所以只在这个按钮上先确认一次；
   // 其它内部调用handleSaveTracked的流程已经有各自的确认框，不能再套一层。
   const [confirmLockRollOpen, setConfirmLockRollOpen] = useState(false);
+  // 保存追踪快照前的权利金合理性检查（见premiumSanityIssues）；非null时弹确认框。
+  const [premiumIssues, setPremiumIssues] = useState<PremiumIssue[] | null>(null);
   const [openingAt, setOpeningAt] = useState<number>(() => Date.now());
   // 对比模式开仓日期的临时预览值，只影响该字段显示，不写回openingAt；null=用真实开仓日期。
   const [openingAtSimOverride, setOpeningAtSimOverride] = useState<number | null>(null);
@@ -406,7 +417,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
     if (trackedLegsRef.current !== null) {
       if (!symbolChanged) {
-        setTrackedSpot(quote.price);
+        // 只有权利金是"现在的"时，股价才跟随实时报价；看的是某天的快照时，股价保持当天存的那个。
+        if (trackedAsOfRef.current === null) setTrackedSpot(quote.price);
         return;
       }
       if (trackedDirtyRef.current) {
@@ -462,7 +474,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const changePct = priceChange !== null && quote!.previousClose > 0
     ? (priceChange / quote!.previousClose) * 100 : null;
 
-  // 实时市价只用于对比模式的显示。不参与盈亏/IV/归因计算——那些用反推的现价，才能跟用户填的权利金保持一致。
+  // 实时市价：盈亏图里可选的"实时价参考线"。参与计算的是trackedSpot（跟权利金同一时刻的股价，见trackedAsOf）。
   const liveTrackedSpot = quote && quote.price > 0 ? quote.price : null;
 
   // ⚠️ trackedGreeks必须从这里取：trackedResult.perLeg的Greek字段是占位的0，只有total是真的。
@@ -478,21 +490,19 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // 那些驱动腿位编辑区、保存按钮、策略名称等实时状态。
   const analyticsLegs = !isCompareModeNow && openingSimBasis ? openingSimBasis.legs : legs;
   const analyticsSpot = !isCompareModeNow && openingSimBasis ? openingSimBasis.spot : spot;
-  // 右侧图表标签："盈亏图"（原有，配三个情景滑块）/"股价 vs 期权价"（地形图，只配IV滑块）。
-  // 地形图标签下，鼠标指向（或钉住）的点换算成一组临时偏移，只喂给图表头部盈亏/归因/情景估值这些显示；
-  // 真实的shifts保持0——左栏不锁、自动拉价不停、保存策略时存的也是真实shifts，绝不能用mapPoint。
+  // 右侧图表标签：盈亏图 / 股价 vs 期权价（地形图）/ 万次推演，推演未来时三个标签共用三个情景滑块。
+  // 地形图上鼠标指向（或钉住）的点临时代替股价/时间滑块，只喂给图表头部盈亏/归因/持仓建议这些显示（波动率仍按滑块）；
+  // 不写进shifts——保存策略时存的是真实shifts，绝不能用mapPoint。滑块一动，地形图会清掉这个点（见StockOptionMap的scenario）。
   const [chartView, setChartView] = useState<"payoff" | "stockVsOption" | "winRate">("payoff");
   const [somDV, setSomDV] = useState(0);
   const [mapPoint, setMapPoint] = useState<{ day: number; price: number } | null>(null);
   const mapActive = chartView === "stockVsOption" && !isCompareModeNow && !isMobile;
   const analyticsShifts: Shifts = useMemo(
-    () => (mapActive ? { dS: mapPoint ? mapPoint.price - analyticsSpot : 0, dT: mapPoint ? mapPoint.day : 0, dV: somDV } : shifts),
-    [mapActive, mapPoint, analyticsSpot, somDV, shifts],
+    () => (mapActive && mapPoint ? { dS: mapPoint.price - analyticsSpot, dT: mapPoint.day, dV: shifts.dV } : shifts),
+    [mapActive, mapPoint, analyticsSpot, shifts],
   );
-  // 滑块上界：非对比模式下用openingSimBasis的完整周期（开仓到到期），跟
-  // 上面的dte修正基准保持一致；没有basis（legs为空）或对比模式下退回旧
-  // 的"当前剩余天数"算法。
-  const sliderMaxDte = !isCompareModeNow && openingSimBasis
+  // 滑块上界=开仓到到期的完整周期（两种模式都是）。⚠️ 对比模式下legs的dte是从今天算的剩余天数，不能用来当上界。
+  const sliderMaxDte = openingSimBasis
     ? openingSimBasis.originalMaxDte
     : legs.length > 0
       ? Math.max(...legs.filter((l) => l.kind !== "stock").map((l) => l.dte))
@@ -521,7 +531,49 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     trackedStrategy,
     trackedVolShift,
     pnlAttribution,
-  } = useComboAnalytics({ legs, analyticsLegs, analyticsSpot, analyticsShifts, trackedLegs, trackedSpot, correctedSpot, trackedDaysElapsed, spot, shifts, trackingStrategyId, savedStrategies, t });
+  } = useComboAnalytics({ legs, analyticsLegs, analyticsSpot, analyticsShifts, trackedLegs, trackedSpot, trackedAsOfDays, trackedDaysElapsed, spot, shifts, trackingStrategyId, savedStrategies, openingLegs: openingSimBasis?.legs, t });
+
+  // 权利金变成"现在的"（改了权利金/刷新成功）时，股价立刻换成实时报价。
+  useEffect(() => {
+    if (trackedAsOf === null && trackedLegsRef.current !== null && quote && quote.price > 0) setTrackedSpot(quote.price);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackedAsOf]);
+
+  // 进入跟踪/选中最新快照时，如果它不是今天的，按原合约自动拉今天的权利金、配实时股价（算作未保存的改动）。
+  // 更早的历史快照不刷新，按当天的样子看。拉不到就提示，权利金和股价保持当天那一对。
+  const quoteRef = useRef(quote);
+  quoteRef.current = quote;
+  const autoRefreshKey = useRef<string | null>(null);
+  useEffect(() => {
+    setTrackedPriceError(null);
+    if (!isCompareMode || trackedAsOf === null || calendarDaysSince(trackedAsOf) <= 0) return;
+    const snaps = trackedStrategy?.trackedSnapshots ?? [];
+    const latestId = snaps.length > 0 ? snaps[snaps.length - 1].id : null;
+    if (activeSnapshotId !== latestId) return;
+    const key = `${trackingStrategyId}|${activeSnapshotId}|${trackedAsOf}`;
+    const legsNow = trackedLegsRef.current;
+    if (!legsNow || autoRefreshKey.current === key) return;
+    autoRefreshKey.current = key;
+    let cancelled = false;
+    void refreshContractPremiums(symbol, legsNow).then((fresh) => {
+      if (cancelled) return;
+      const live = quoteRef.current?.price ?? 0;
+      if (fresh && live > 0) {
+        setTrackedLegs(fresh);
+        // 手机上今昔对比只能看、不能存快照，刷新后不算未保存改动，免得每次离开都问。
+        if (isMobile) setTrackedBaseline(serializeTrackedLegs(fresh));
+        setTrackedSpot(live);
+        setTrackedAsOf(null);
+      } else {
+        setTrackedPriceError(t("tracked.autoRefreshFailed", { date: formatDateInput(trackedAsOf) }));
+      }
+    });
+    return () => {
+      cancelled = true;
+      autoRefreshKey.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCompareMode, trackedAsOf, activeSnapshotId, trackingStrategyId, trackedStrategy]);
 
   // 图表用的B/C曲线（需要t，所以放在这里）。
   const compareCurves = useMemo(
@@ -584,7 +636,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     applyPreset,
     doClearAll,
     updateTrackedLeg,
-    handleCorrectSpot,
     comboDirection,
     handleSaveStrategy,
     handleOverwriteStrategy,
@@ -600,7 +651,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   } = useStrategyOrchestration({
     symbol, legs, activeLegs, spot, shifts, openingAt,
     setSymbol, setLegs, setSpot, setShifts, setOpeningAt, setOpeningAtSimOverride,
-    setExpiredStrategyPrompt, setExpiredConfirmed, setExpiredTrackPrompt, setCorrectedSpot, setCorrecting,
+    setExpiredStrategyPrompt, setExpiredConfirmed, setExpiredTrackPrompt, setTrackedAsOf, trackedAsOf, setTrackedPriceError,
     isCompareMode, trackedLegs, trackedSpot, trackedDirty, effectiveTrackedSpot,
     setTrackedLegs, setTrackedSpot, setTrackedDaysElapsed, setTrackedBaseline, setActiveSnapshotId, setConfirmSaveTrackedOpen,
     savedStrategies, trackingStrategyId, trackedStrategy,
@@ -688,12 +739,22 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
   // 只包装"保存追踪快照"按钮本身，原因见confirmLockRollOpen的注释。
   const hasUnlockedRollForSave = trackedLegs?.some((l) => l.derivedFrom && !l.derivedFrom.locked) ?? false;
-  const handleSaveTrackedClick = () => {
+  const proceedSaveTracked = () => {
     if (hasUnlockedRollForSave) {
       setConfirmLockRollOpen(true);
       return;
     }
     void handleSaveTracked();
+  };
+  // 检查用的股价跟快照里存的是同一个（saveTrackedSnapshotTo存trackedSpot ?? spot）。
+  const handleSaveTrackedClick = () => {
+    const checkLegs = trackedLegs && trackedAsOfDays > 0 ? trackedLegs.map((l) => (l.kind === "stock" ? l : { ...l, dte: l.dte + trackedAsOfDays })) : trackedLegs;
+    const issues = checkLegs ? premiumSanityIssues(checkLegs, trackedSpot ?? spot, { legs: openingDayLegs, spot }) : [];
+    if (issues.length > 0) {
+      setPremiumIssues(issues);
+      return;
+    }
+    proceedSaveTracked();
   };
 
 
@@ -763,6 +824,18 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const showWinRate = showChartTabs && chartView === "winRate";
   // 地形图用开仓基准的腿位（第0天=开仓日），跟图表头部盈亏/归因用的是同一份数据。
   const mapLegs = useMemo(() => analyticsLegs.filter((l) => !l.disabled), [analyticsLegs]);
+  // 地形图"风险分区"/走势节点用的快速版持仓建议（规则跟万次推演、持仓建议共用simSettings）。
+  const { rules: simRulesBySide } = useSimSettings(symbol);
+  const mapZoneCtx = useMemo(() => {
+    const opts = mapLegs.filter((l) => l.kind !== "stock");
+    const basis = openingBasis(mapLegs);
+    if (basis == null || opts.length === 0 || opts.length !== mapLegs.length || !(analyticsSpot > 0)) return null;
+    const credit = isCreditCombo(mapLegs);
+    return prepareQuickAdvice({
+      legs: mapLegs, spot: analyticsSpot, basis, credit, rules: simRulesBySide[credit ? "credit" : "debit"],
+      totalTerm: Math.max(1, Math.round(Math.min(...opts.map((l) => l.dte)))),
+    });
+  }, [mapLegs, analyticsSpot, simRulesBySide]);
   // 开仓那天的开仓组合（dte按开仓日算）。对比模式下legs/activeLegs的dte是按今天算的剩余天数，
   // 胜率模拟和持仓建议的"总期限"、回看都要用开仓那天的版本。
   const openingDayLegs = useMemo(
@@ -774,34 +847,61 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     () => (isCompareMode ? null : scenarioLegs(mapLegs, analyticsShifts, analyticsSpot)),
     [isCompareMode, mapLegs, analyticsShifts, analyticsSpot],
   );
+  // 波动率滑块小字的基准：开仓时的平均隐含波动率（对比模式按开仓那天的腿位；跟trackedVolShift同一种平均法，加上变化量就是统计格的"当前"）。
+  const sliderBaseIv = useMemo(
+    () => (isCompareMode ? weightedAvgIV(openingDayLegs, spot) : weightedAvgIV(mapLegs, analyticsSpot)),
+    [isCompareMode, openingDayLegs, spot, mapLegs, analyticsSpot],
+  );
   const somBaseIv = useMemo(
     () => (!showStockOptionMap ? null : isCompareMode ? comboBaseIv(activeTrackedLegs ?? [], effectiveTrackedSpot) : comboBaseIv(mapLegs, analyticsSpot)),
     [showStockOptionMap, isCompareMode, activeTrackedLegs, effectiveTrackedSpot, mapLegs, analyticsSpot],
   );
-  // 跟踪对比模式的地形图：左边真实走过的路（开仓点+快照），右边从今天推演、全部按开仓至今的总账显示。
-  const trackedMap = useMemo(() => {
-    if (!isCompareMode || !showStockOptionMap || !trackedResult) return undefined;
-    const snaps = trackedStrategy?.trackedSnapshots ?? [];
-    const { points, markers } = buildTrackedHistory(snaps, legs, spot, openingAt);
+  // 今昔对比：真实走过的路（开仓点→各快照→今天），地形图和万次推演回看共用。
+  const trackedHistory = useMemo(() => {
+    if (!isCompareMode || !trackedResult) return null;
+    const { points, markers } = buildTrackedHistory(trackedStrategy?.trackedSnapshots ?? [], legs, spot, openingAt);
     const todayDay = Math.max(0, effectiveDaysElapsed);
-    const pnlOffset = trackedResult.change + realizedTrackedPnl;
-    // 今昔对比：开仓点 → 每条快照 → 今天（今日组合+现价），逐段把盈亏变化拆成股价/时间/波动率/调整。
-    const byDay = new Map<number, TrackedState>([[0, { legs, spot, day: 0, pnl: 0 }]]);
-    for (const sn of [...snaps].sort((x, y) => x.savedAt - y.savedAt)) {
+    const pnlNow = trackedResult.change + realizedTrackedPnl;
+    const past = points.filter((p) => p.day <= todayDay);
+    // 只有权利金是今天的才补"今天"这一点；看某天的快照时那一天已经在快照里，旧权利金不能当成今天的。
+    const withToday = todayDay > 0 && trackedAsOfDays === 0 ? [...past.filter((p) => p.day < todayDay), { day: todayDay, price: effectiveTrackedSpot, pnl: pnlNow }] : past;
+    return { todayDay, pnlNow, points: past, withToday, markers: markers.filter((m) => m.day <= todayDay) };
+  }, [isCompareMode, trackedResult, trackedStrategy, legs, spot, openingAt, effectiveDaysElapsed, realizedTrackedPnl, trackedAsOfDays, effectiveTrackedSpot]);
+  // 规则复盘：按你现在的止盈止损/平仓规则（跟万次推演、持仓建议同一份），沿真实的路第一次该下车的那一点。
+  const ruleExit = useMemo(() => {
+    if (!trackedHistory) return null;
+    const basis = openingBasis(openingDayLegs);
+    const opts = openingDayLegs.filter((l) => l.kind !== "stock");
+    if (basis == null || opts.length === 0 || opts.length !== openingDayLegs.length || !(spot > 0)) return null;
+    const credit = isCreditCombo(openingDayLegs);
+    const p = prepareSim({
+      legs: openingDayLegs, spot, basis, pnlOffset: 0, rules: simRulesBySide[credit ? "credit" : "debit"],
+      totalTerm: Math.max(1, Math.round(Math.min(...opts.map((l) => l.dte)))),
+    });
+    return p ? replayRules(trackedHistory.withToday, p) : null;
+  }, [trackedHistory, openingDayLegs, spot, simRulesBySide]);
+  // 今昔对比：开仓点 → 每条快照 → 今天（今日组合+现价），逐段把盈亏变化拆成股价/时间/波动率/调整。
+  // 地形图左半边的逐段柱和万次推演回看的"经历了什么"共用这一份。
+  // 开仓点用开仓那天的腿位（dte按开仓日）；legs的dte是今天剩余天数，用它反推开仓隐含波动率会错。
+  const trackedTimeline = useMemo(() => {
+    if (!trackedHistory) return null;
+    const { todayDay, pnlNow } = trackedHistory;
+    const byDay = new Map<number, TrackedState>([[0, { legs: openingDayLegs, spot, day: 0, pnl: 0 }]]);
+    for (const sn of [...(trackedStrategy?.trackedSnapshots ?? [])].sort((x, y) => x.savedAt - y.savedAt)) {
       const day = Math.max(0, calendarDaysBetween(openingAt, sn.savedAt));
       if (sn.spot > 0 && day > 0 && day < todayDay) byDay.set(day, { legs: sn.legs, spot: sn.spot, day, pnl: trackedTotalPnl(legs, sn.legs, sn.spot, spot), estimated: sn.estimated });
     }
-    if (trackedLegs && todayDay > 0) byDay.set(todayDay, { legs: trackedLegs, spot: effectiveTrackedSpot, day: todayDay, pnl: pnlOffset });
-    const { segments, totals } = buildAttributionTimeline([...byDay.values()]);
-    return {
-      todayDay,
-      pnlOffset,
-      history: points.filter((p) => p.day <= todayDay),
-      markers: markers.filter((m) => m.day <= todayDay),
-      segments,
-      totals,
-    };
-  }, [isCompareMode, showStockOptionMap, trackedResult, trackedStrategy, legs, spot, openingAt, effectiveDaysElapsed, realizedTrackedPnl, trackedLegs, effectiveTrackedSpot]);
+    // 只有权利金是今天的才补"今天"这一点（同trackedHistory）。
+    if (trackedLegs && todayDay > 0 && trackedAsOfDays === 0) byDay.set(todayDay, { legs: trackedLegs, spot: effectiveTrackedSpot, day: todayDay, pnl: pnlNow });
+    const states = [...byDay.values()].sort((x, y) => x.day - y.day);
+    return { states, ...buildAttributionTimeline(states) };
+  }, [trackedHistory, trackedStrategy, legs, openingDayLegs, spot, openingAt, trackedLegs, effectiveTrackedSpot, trackedAsOfDays]);
+  // 跟踪对比模式的地形图：左边真实走过的路（开仓点+快照），右边从今天推演、全部按开仓至今的总账显示。
+  const trackedMap = useMemo(() => {
+    if (!showStockOptionMap || !trackedHistory || !trackedTimeline) return undefined;
+    const { segments, totals } = trackedTimeline;
+    return { todayDay: trackedHistory.todayDay, pnlOffset: trackedHistory.pnlNow, history: trackedHistory.points, markers: trackedHistory.markers, segments, totals, ruleExit };
+  }, [showStockOptionMap, trackedHistory, trackedTimeline, ruleExit]);
 
   const legToolbar = (
     <>
@@ -1067,9 +1167,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               trackedResult={trackedResult}
               realizedPnl={realizedTrackedPnl}
               spot={spot}
-              activeLegs={activeLegs}
+              activeLegs={openingDayLegs}
               effectiveTrackedSpot={effectiveTrackedSpot}
-              liveSpot={liveTrackedSpot}
+              trackedAsOf={trackedAsOf}
+              priceError={trackedPriceError}
               activeTrackedLegs={activeTrackedLegs}
               effectiveDaysElapsed={effectiveDaysElapsed}
               onToggleImpliedInfo={() => setShowImpliedInfo((v) => !v)}
@@ -1091,13 +1192,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           {/* 手机精简版不显示：盈亏归因、多方案对比（B/C）。 */}
           {isCompareMode && pnlAttribution && !isMobile && (
             <div className="shrink-0 border-t border-slate-800 px-3 py-2">
-              <PnlAttributionPanel attribution={pnlAttribution} maxAbs={attributionMaxAbs} />
+              <PnlAttributionPanel attribution={pnlAttribution} maxAbs={attributionMaxAbs} endLabel={t("future.wfNow")} />
             </div>
           )}
 
           {!isCompareMode && analysisAttribution && !isMobile && (
             <div className="shrink-0 border-t border-slate-800 px-3 py-2">
-              <PnlAttributionPanel attribution={analysisAttribution} maxAbs={attributionMaxAbs} />
+              <PnlAttributionPanel attribution={analysisAttribution} maxAbs={attributionMaxAbs} endLabel={t("future.wfScen")} />
             </div>
           )}
 
@@ -1171,8 +1272,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                     key={v}
                     disabled={needSymbol}
                     onClick={() => {
-                      // 进入地形图时把三个情景滑块归零、释放左栏锁定（地形图不用这三个滑块）；胜率模拟保留滑块，用来在走势图上标出情景点。
-                      if (v === "stockVsOption") setShifts({ dS: 0, dT: 0, dV: 0 });
+                      // 三个标签共用同一组情景滑块，切换时不归零。
                       setChartView(v);
                     }}
                     className={`relative -mb-px rounded-t-md border px-3 py-1 text-[12px] font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
@@ -1200,25 +1300,37 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               </div>
             )}
             <ErrorBoundary>
-              {showWinRate ? (
+              {showWinRate && !isCompareMode ? (
               <div className="h-[calc(100%-30px)]">
-                <WinRateSim
+                <FutureSim
                   symbol={symbol}
-                  mode={isCompareMode ? "tracked" : "analysis"}
-                  simLegs={isCompareMode ? activeTrackedLegs ?? [] : mapLegs}
-                  spot={isCompareMode ? effectiveTrackedSpot : analyticsSpot}
-                  openingLegs={isCompareMode ? openingDayLegs : mapLegs}
-                  pnlOffset={isCompareMode && trackedResult ? trackedResult.change + realizedTrackedPnl : 0}
-                  openingAt={openingAt}
-                  scenario={!isCompareMode && (shifts.dS !== 0 || shifts.dT !== 0 || shifts.dV !== 0)
-                    ? { day: shifts.dT, price: analyticsSpot + shifts.dS, dV: shifts.dV } : null}
+                  legs={mapLegs}
+                  spot={analyticsSpot}
+                  dV={shifts.dV}
+                  scenario={shifts.dS !== 0 || shifts.dT !== 0 ? { day: shifts.dT, price: analyticsSpot + shifts.dS } : null}
+                  fork={adviceScenarioLegs ? { legs: adviceScenarioLegs, spot: analyticsSpot + analyticsShifts.dS, day: analyticsShifts.dT, pnl: result.change } : null}
+                  ivBase={sliderBaseIv}
                   emptyText={needSymbol ? t("chart.noSpot") : activeLegs.length === 0 ? t("chart.addLegs") : null}
-                  retro={isCompareMode ? {
-                    openingLegs: openingDayLegs,
-                    openingSpot: spot,
-                    todayDay: Math.max(0, effectiveDaysElapsed),
-                    adjusted: (trackedLegs ?? []).some((l) => l.derivedFrom || l.closedPnl != null),
-                  } : undefined}
+                />
+              </div>
+              ) : showWinRate ? (
+              <div className="h-[calc(100%-30px)]">
+                <RetroSim
+                  symbol={symbol}
+                  legs={openingDayLegs}
+                  spot={spot}
+                  openingAt={openingAt}
+                  todayDay={Math.max(0, effectiveDaysElapsed)}
+                  nowSpot={effectiveTrackedSpot}
+                  pnlNow={trackedHistory?.pnlNow ?? 0}
+                  history={trackedHistory?.withToday ?? []}
+                  ruleExit={ruleExit}
+                  ivChange={trackedVolShift}
+                  ivOpen={sliderBaseIv}
+                  journey={trackedTimeline}
+                  todayLegs={activeTrackedLegs ?? []}
+                  adjusted={(trackedLegs ?? []).some((l) => l.derivedFrom || l.closedPnl != null)}
+                  emptyText={needSymbol ? t("chart.noSpot") : activeLegs.length === 0 ? t("chart.addLegs") : null}
                 />
               </div>
               ) : showStockOptionMap ? (
@@ -1230,7 +1342,9 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   onPointChange={setMapPoint}
                   tracked={trackedMap}
                   spot={isCompareMode ? effectiveTrackedSpot : analyticsSpot}
-                  dV={somDV}
+                  dV={isCompareMode ? somDV : shifts.dV}
+                  scenario={!isCompareMode && (shifts.dS !== 0 || shifts.dT !== 0) ? { day: shifts.dT, price: analyticsSpot + shifts.dS } : null}
+                  zoneCtx={isCompareMode ? null : mapZoneCtx}
                   openingAt={openingAt}
                   daysSinceOpen={openingSimBasis && !isExpiredOpening ? openingSimBasis.daysSinceOpen : undefined}
                   emptyText={needSymbol ? t("chart.noSpot") : t("chart.addLegs")}
@@ -1255,10 +1369,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 netChange={isCompareMode && trackedResult ? trackedResult.change : result.change}
                 trackedSpot={isCompareMode ? effectiveTrackedSpot : undefined}
                 liveSpot={isCompareMode && liveTrackedSpot !== null ? liveTrackedSpot : undefined}
-                correctedSpot={correctedSpot}
-                correcting={correcting}
-                onCorrectSpot={handleCorrectSpot}
-                symbolForCorrect={symbol}
                 expired={isExpiredOpening}
                 openingAt={openingAt}
                 compareCurves={!isCompareMode ? compareCurves : undefined}
@@ -1273,7 +1383,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           {/* 胜率模拟：推演未来时保留滑块（拖动只移动走势图上的情景点，不重新模拟）；今昔对比的滑块是冻结的，这个标签下不显示 */}
           {!(isMobile && isCompareMode) && !(showWinRate && isCompareMode) && (
           <div className="shrink-0 border-t border-slate-800 px-3 py-1.5">
-            {showStockOptionMap ? (
+            {showStockOptionMap && isCompareMode ? (
               <IvShiftSlider value={somDV} onChange={setSomDV} baseIv={somBaseIv} baseIsToday={isCompareMode} />
             ) : (
             <ShiftSliders
@@ -1288,6 +1398,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               trackedSpot={isCompareMode ? effectiveTrackedSpot : undefined}
               trackedDays={isCompareMode ? effectiveDaysElapsed : undefined}
               trackedVolShift={trackedVolShift}
+              baseIv={sliderBaseIv > 0 ? sliderBaseIv : undefined}
               // 分析模式下没有腿位时滑块也锁住；frozen只看isCompareMode，避免标题误显示成"情景偏移对比"。
               disabled={isCompareMode || activeLegs.length === 0 || needSymbol}
               frozen={isCompareMode}
@@ -1306,6 +1417,18 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
       {helpOpen && (
         <HelpPanel moduleId={isCompareMode ? "compare" : "analysis"} variant="info" onClose={() => setHelpOpen(false)} />
+      )}
+
+      {premiumIssues && (
+        <ConfirmPremiumCheckDialog
+          issues={premiumIssues}
+          spot={trackedSpot ?? spot}
+          onCancel={() => setPremiumIssues(null)}
+          onConfirm={() => {
+            setPremiumIssues(null);
+            proceedSaveTracked();
+          }}
+        />
       )}
 
       {confirmLockRollOpen && (
@@ -1400,10 +1523,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         showImpliedInfo={showImpliedInfo}
         isCompareMode={isCompareMode}
         effectiveTrackedSpot={effectiveTrackedSpot}
-        correctedSpot={correctedSpot}
-        correcting={correcting}
+        trackedAsOf={trackedAsOf}
         onCloseImplied={() => setShowImpliedInfo(false)}
-        onCorrectSpot={() => { handleCorrectSpot(); setShowImpliedInfo(false); }}
         spot={spot}
         symbol={symbol}
       />

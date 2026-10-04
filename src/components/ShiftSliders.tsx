@@ -26,6 +26,8 @@ interface Props {
   trackedSpot?: number;
   trackedDays?: number;
   trackedVolShift?: number;
+  // 开仓时的平均隐含波动率（小数）。波动率那栏的小字写"开仓时 → 现在/拖动后"，跟股价那栏写实际股价一样。
+  baseIv?: number;
   // `disabled`：滑块本身不可交互（发灰+锁住），两种情况都会传true——对比
   // 模式（这时trackedSpot/trackedDays/trackedVolShift会有值，显示会自动切
   // 到跟踪快照那一套）、以及2026-09-17新增的"分析模式下一条腿位都没有"（这
@@ -136,7 +138,7 @@ function Slider({
   );
 }
 
-export default function ShiftSliders({ shifts, onChange, spot, maxDte, todayDte, onJumpToday, onReset, trackedSpot, trackedDays, trackedVolShift, disabled, frozen, guideBadge, hideTitle }: Props) {
+export default function ShiftSliders({ shifts, onChange, spot, maxDte, todayDte, onJumpToday, onReset, trackedSpot, trackedDays, trackedVolShift, baseIv, disabled, frozen, guideBadge, hideTitle }: Props) {
   const { t } = useI18n();
   return (
     <div className={disabled ? "pointer-events-none" : ""}>
@@ -227,6 +229,9 @@ export default function ShiftSliders({ shifts, onChange, spot, maxDte, todayDte,
           display={disabled && trackedVolShift !== undefined
             ? `${trackedVolShift >= 0 ? "+" : ""}${trackedVolShift.toFixed(2)}%`
             : `${shifts.dV >= 0 ? "+" : ""}${shifts.dV.toFixed(0)}%`}
+          subdisplay={baseIv !== undefined && baseIv > 0
+            ? `${(baseIv * 100).toFixed(1)}% → ${(Math.max(0, baseIv * 100 + (disabled && trackedVolShift !== undefined ? trackedVolShift : shifts.dV))).toFixed(1)}%`
+            : undefined}
           onChange={(v) => onChange({ dV: v })}
           accent="#38bdf8"
           markerValue={trackedVolShift !== undefined ? trackedVolShift : undefined}

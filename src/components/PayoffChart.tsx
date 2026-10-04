@@ -5,7 +5,7 @@ import { blackScholes } from "@/lib/bs";
 import { resolveOpeningLeg, impliedVol, pnlAtExpiry } from "@/lib/pricing";
 import { addCalendarDays, formatDateInput } from "@/lib/dateUtils";
 import { useI18n } from "@/i18n/I18nContext";
-import { RefreshCw, AlertTriangle } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 
 interface PerLegValue {
   leg: Leg;
@@ -30,16 +30,7 @@ interface Props {
   perLegValues?: PerLegValue[];
   netValue?: number;
   netChange?: number;
-  correctedSpot?: number | null;
-  correcting?: boolean;
-  onCorrectSpot?: () => void;
-  symbolForCorrect?: string;
-  // Live market quote for the underlying, decoupled from `trackedSpot` (which
-  // stays whatever back-solved/manually-set value feeds the curve and P&L
-  // math). Purely a reference — an OPTIONAL dashed line the person can toggle
-  // on to see where the real market price sits relative to the curve, never
-  // used in any pricing calculation itself. Undefined outside compare mode
-  // or when no live quote is available.
+  // 实时报价，只用于可选的"实时价参考线"，不参与计算（计算用trackedSpot：跟权利金同一时刻的股价，看某天快照时就是当天的股价）。
   liveSpot?: number;
   // 分析模式打开的策略真实到期日已过：只做视觉标记（提示条+图形变灰），不影响计算，滑块仍可在完整周期内拖动。
   expired?: boolean;
@@ -155,7 +146,7 @@ function calcTrackedPnLAtTime(trackedLegs: Leg[], openingLegs: Leg[], spot: numb
 
 const FAN_COLORS = ["#fbbf24", "#f59e0b", "#a3a3a3", "#475569"];
 
-export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, correctedSpot, correcting, onCorrectSpot, symbolForCorrect, liveSpot, expired, openingAt, compareCurves, compact, hideHeadline }: Props) {
+export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, liveSpot, expired, openingAt, compareCurves, compact, hideHeadline }: Props) {
   const { t } = useI18n();
   // 固定用mm/dd/yyyy（xue指定），不用toLocaleDateString（中文环境会变成yyyy/mm/dd）。
   const scenarioDateTs = !compareMode && openingAt !== undefined
@@ -174,7 +165,6 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
   // curve" confusion when the live price and the back-solved/manually-set
   // tracked spot diverge. Opt-in avoids that.
   const [showLiveSpot, setShowLiveSpot] = useState(false);
-  const [showImpliedInfo, setShowImpliedInfo] = useState(false);
   const [xZoom, setXZoom] = useState(1);
   const [xPanFrac, setXPanFrac] = useState(0); // fraction of baseRange to shift center
   const [dims, setDims] = useState({ w: 560, h: 360 });
@@ -876,26 +866,6 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
               );
             })()}
 
-            {/* Implied-spot info badge — only in compare mode, placed next to the yellow price label */}
-            {compareMode && hasTracked && currentX >= pad.l && currentX <= pad.l + CW && (() => {
-              const labelW = 52;
-              const labelX = Math.max(pad.l, Math.min(pad.l + CW - labelW, currentX - labelW / 2));
-              const badgeR = 6;
-              const badgeY = pad.t + CH + 9;
-              const rightX = labelX + labelW + 6 + badgeR;
-              const leftX = labelX - 6 - badgeR;
-              const badgeX = rightX + badgeR <= pad.l + CW ? rightX : leftX;
-              return (
-                <g
-                  style={{ cursor: "pointer" }}
-                  onClick={() => setShowImpliedInfo((v) => !v)}
-                >
-                  <circle cx={badgeX} cy={badgeY} r={badgeR} fill="#0ea5e9" stroke="#0c4a6e" strokeWidth="1" />
-                  <text x={badgeX} y={badgeY + 3} textAnchor="middle" fontSize="8" fill="white" fontWeight="bold">i</text>
-                </g>
-              );
-            })()}
-
             {/* Y axis labels */}
             {yTicks.map((v) => (
               <text key={v} x={pad.l - 4} y={toY(v) + 3.5} textAnchor="end" fontSize="9" fill="rgb(100 116 139)">
@@ -953,46 +923,6 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
             <line x1={pad.l} x2={pad.l + CW} y1={pad.t + CH} y2={pad.t + CH} stroke="rgb(71 85 105)" strokeWidth="1" />
           </svg>
         </div>
-
-        {/* Implied-spot info tooltip */}
-        {showImpliedInfo && compareMode && hasTracked && (
-          <div className="absolute left-1/2 top-1/2 z-20 w-72 -translate-x-1/2 -translate-y-1/2 rounded-xl border border-sky-500/40 bg-slate-900/95 p-4 shadow-2xl backdrop-blur-sm">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm font-bold text-sky-300">{t("chart.impliedTitle")}</span>
-              <button onClick={() => setShowImpliedInfo(false)} className="text-slate-500 transition hover:text-slate-300">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
-              </button>
-            </div>
-            <p className="text-[12px] leading-relaxed text-slate-300">
-              {t("chart.impliedDesc", { spot: currentSpot.toFixed(2) })}
-            </p>
-            <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
-              {t("chart.impliedExample")}
-            </p>
-            <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-900/20 px-2.5 py-2">
-              <p className="text-[11px] leading-relaxed text-amber-200">
-                {t("chart.impliedWarning")}
-              </p>
-            </div>
-            {correctedSpot !== null && correctedSpot !== undefined && (
-              <p className="mt-2 text-[11px] leading-relaxed text-emerald-300">
-                {t("chart.impliedCorrected", { spot: correctedSpot.toFixed(2) })}
-              </p>
-            )}
-            {onCorrectSpot && (
-              <div className="mt-3 flex justify-end gap-2">
-                <button
-                  onClick={() => { onCorrectSpot(); setShowImpliedInfo(false); }}
-                  disabled={correcting || !symbolForCorrect?.trim()}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <RefreshCw size={12} className={correcting ? "animate-spin" : ""} />
-                  {correcting ? t("chart.impliedFetching") : t("chart.impliedCorrect")}
-                </button>
-              </div>
-            )}
-          </div>
-        )}
 
         {/* K / BEP legend */}
         <div className={`absolute bottom-0 left-0 z-10 flex items-center gap-2 text-[9px] text-slate-500 ${compact ? "hidden" : ""}`}>

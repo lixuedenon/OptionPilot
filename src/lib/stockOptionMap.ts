@@ -3,7 +3,7 @@
 // 盈亏口径跟priceCombo完全一致（legShiftedPrice之和 − 开仓净权利金，每股计），
 // 保证跟"盈亏图"标签同一个时间/股价/波动率下的数字相同。
 import type { Leg } from "@/lib/types";
-import { impliedVol, legShiftedPrice, resolveOpeningLeg } from "@/lib/pricing";
+import { impliedVol, legShiftedPrice, resolveOpeningLeg, shapley3 } from "@/lib/pricing";
 import { bsPrice } from "@/lib/bs";
 import { calendarDaysBetween } from "@/lib/dateUtils";
 
@@ -288,6 +288,7 @@ function legPriceAt(l: Leg, S: number, dte: number, iv: number): number {
 }
 
 // 两个时刻之间"同一条腿"的配对：先按id/openLegId，再按(买卖、类型、行权价、到期那天、张数)。
+// id相同但合约变了（直接改了行权价/到期日/类型/方向）不算同一条腿——两张不同合约的价差不是价格/时间/波动率造成的，算"调整"。
 function matchLegs(a: TrackedState, b: TrackedState): [Leg, Leg][] {
   const aLegs = a.legs.filter((l) => !l.disabled);
   const bLegs = b.legs.filter((l) => !l.disabled);
@@ -295,8 +296,11 @@ function matchLegs(a: TrackedState, b: TrackedState): [Leg, Leg][] {
   const pairs: [Leg, Leg][] = [];
   const key = (l: Leg) => `${l.kind ?? "opt"}|${l.action}|${l.type}|${l.strike}|${l.qty ?? 1}`;
   const expiry = (l: Leg, day: number) => day + l.dte;
+  const sameContract = (la: Leg, lb: Leg) =>
+    la.kind === "stock" ? lb.kind === "stock" && lb.action === la.action
+      : lb.kind !== "stock" && lb.action === la.action && lb.type === la.type && lb.strike === la.strike && Math.abs(expiry(lb, b.day) - expiry(la, a.day)) <= 2;
   for (const la of aLegs) {
-    let hit = bLegs.find((lb) => !used.has(lb) && (lb.id === la.id || lb.openLegId === la.id || (la.openLegId && lb.openLegId === la.openLegId)));
+    let hit = bLegs.find((lb) => !used.has(lb) && (lb.id === la.id || lb.openLegId === la.id || (la.openLegId && lb.openLegId === la.openLegId)) && sameContract(la, lb));
     if (!hit) {
       hit = bLegs.find(
         (lb) => !used.has(lb) && key(lb) === key(la) && (la.kind === "stock" || Math.abs(expiry(lb, b.day) - expiry(la, a.day)) <= 2),
@@ -310,8 +314,8 @@ function matchLegs(a: TrackedState, b: TrackedState): [Leg, Leg][] {
   return pairs;
 }
 
-// 逐段、按顺序拆：先只动股价（沿用前一时刻的剩余天数和隐含波动率），再加上时间，剩下的就是隐含波动率——三部分加起来正好等于这条腿的价值变化。
-// 两个时刻都有的腿按这个办法拆；其余（新开/平掉/展期）的变化都算"调整"，所以四部分之和=总盈亏变化。
+// 逐段拆：两个时刻都有的腿，股价/剩余天数/隐含波动率各自从a的值变到b的值，用平均法（shapley3）拆成三项，
+// 三项之和正好等于这条腿的价值变化。其余（新开/平掉/展期/换了合约）的变化都算"调整"，所以四部分之和=总盈亏变化。
 export function attributeSegment(a: TrackedState, b: TrackedState): PnlParts {
   let price = 0;
   let time = 0;
@@ -324,11 +328,15 @@ export function attributeSegment(a: TrackedState, b: TrackedState): PnlParts {
     }
     const q = sign * (la.qty ?? 1);
     const ivA = impliedVol(a.spot, la.strike, la.dte, la.premium, la.type);
-    const p1 = legPriceAt(la, b.spot, la.dte, ivA);
-    const p2 = legPriceAt(la, b.spot, lb.dte, ivA);
-    price += q * (p1 - la.premium);
-    time += q * (p2 - p1);
-    iv += q * (lb.premium - p2);
+    const ivB = impliedVol(b.spot, lb.strike, lb.dte, lb.premium, lb.type);
+    const [dp, dt, dv] = shapley3((m) =>
+      m === 0 ? la.premium
+        : m === 7 ? lb.premium
+          : legPriceAt(la, m & 1 ? b.spot : a.spot, m & 2 ? lb.dte : la.dte, m & 4 ? ivB : ivA),
+    );
+    price += q * dp;
+    time += q * dt;
+    iv += q * dv;
   }
   const total = b.pnl - a.pnl;
   return { price, time, iv, adjust: total - price - time - iv };

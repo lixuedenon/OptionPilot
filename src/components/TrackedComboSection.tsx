@@ -6,6 +6,7 @@ import type { ComboResult } from "@/lib/pricing";
 import { weightedAvgIV } from "@/lib/pricing";
 import type { SavedStrategy, TrackedSnapshot } from "@/lib/savedStrategies";
 import { computeLegLinks } from "@/lib/legLinks";
+import { calendarDaysSince, formatDateInput } from "@/lib/dateUtils";
 import LegRow from "@/components/LegRow";
 import { useI18n } from "@/i18n/I18nContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -36,13 +37,14 @@ interface Props {
   // numbers only" over reshaping that curve.
   realizedPnl: number;
   spot: number;
+  // 开仓那天的开仓组合（dte按开仓日算，不是今天剩余），用于"开仓"天数和开仓隐含波动率。
   activeLegs: Leg[];
   effectiveTrackedSpot: number;
-  // Real live market quote, decoupled from effectiveTrackedSpot — shown as
-  // the "当前" spot number here instead of the back-solved value. Null when
-  // no quote is available yet (falls back to effectiveTrackedSpot).
-  liveSpot: number | null;
   activeTrackedLegs: Leg[] | null;
+  // 今日组合的权利金和股价是哪个时刻的；null=实时。看某天的快照时，统计格和提示按那一刻算。
+  trackedAsOf: number | null;
+  // 拉不到今天报价时的提示（App.tsx的trackedPriceError）。
+  priceError: string | null;
   effectiveDaysElapsed: number;
   onToggleImpliedInfo: () => void;
 
@@ -89,8 +91,9 @@ export default function TrackedComboSection({
   spot,
   activeLegs,
   effectiveTrackedSpot,
-  liveSpot,
   activeTrackedLegs,
+  trackedAsOf,
+  priceError,
   effectiveDaysElapsed,
   onToggleImpliedInfo,
   symbol,
@@ -171,14 +174,22 @@ export default function TrackedComboSection({
           </button>
         </div>}
       </div>
+      {priceError ? (
+        <div className="mb-1 rounded border border-amber-500/30 bg-amber-950/20 px-2 py-1 text-[10px] leading-relaxed text-amber-200">{priceError}</div>
+      ) : trackedAsOf !== null && calendarDaysSince(trackedAsOf) > 0 ? (
+        <div className="mb-1 rounded border border-sky-700/40 bg-sky-950/30 px-2 py-1 text-[10px] leading-relaxed text-sky-200">
+          {t("tracked.viewingAsOf", { date: formatDateInput(trackedAsOf), spot: effectiveTrackedSpot.toFixed(2) })}
+        </div>
+      ) : null}
       {trackedResult && (() => {
         const openIV = spot > 0 ? weightedAvgIV(activeLegs, spot) : 0;
         const currSpot = effectiveTrackedSpot;
-        const currIV = currSpot > 0 ? weightedAvgIV(activeTrackedLegs ?? [], currSpot) : 0;
-        // Display-only: shows the real market quote when available, NOT
-        // currSpot — IV above still uses currSpot so it stays consistent
-        // with the tracked legs' actual entered premiums.
-        const displaySpot = liveSpot ?? currSpot;
+        // 当前隐含波动率按权利金那一刻算：看历史快照时，dte加回快照至今的天数。
+        const asOfDays = trackedAsOf === null ? 0 : calendarDaysSince(trackedAsOf);
+        const ivLegs = (activeTrackedLegs ?? []).map((l) => (asOfDays > 0 && l.kind !== "stock" ? { ...l, dte: l.dte + asOfDays } : l));
+        const currIV = currSpot > 0 ? weightedAvgIV(ivLegs, currSpot) : 0;
+        // 显示的就是参与计算的那个股价（跟权利金同一时刻），不再另外显示实时价。
+        const displaySpot = currSpot;
         const spotChg = displaySpot - spot;
         const ivChg = openIV > 0 && currIV > 0 ? (currIV - openIV) * 100 : 0;
         const trackedNetPremium = trackedResult.netPremium;
@@ -245,6 +256,8 @@ export default function TrackedComboSection({
             roleInfo={trackedLegRolesById.get(leg.id)}
             linkInfo={trackedLegLinksById.get(leg.id)}
             deleteVariant="close"
+            // 展期/保护/对冲刚开的新腿在存进快照之前还能改（更正刚输入的内容），其余合约字段锁住。
+            contractLocked={!(leg.derivedFrom && !leg.derivedFrom.locked)}
             expired={contractsExpired}
             onChange={(patch) => onChangeTrackedLeg(leg.id, patch)}
             onToggleDisable={() => onToggleTrackedLeg(leg.id)}

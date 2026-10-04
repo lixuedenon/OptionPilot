@@ -6,7 +6,7 @@ import type { Leg } from "@/lib/types";
 import { priceCombo } from "@/lib/pricing";
 import {
   prepareSim, simPnlAt, runBatch, computeStats, batchStability, breakevenCurve, findBreakeven,
-  cushion, openingBasis, isCreditCombo, startStatus, volGrid, retroDistribution, percentileOf, moveInSigma,
+  openingBasis, isCreditCombo, startStatus, volGrid, percentileOf, moveInSigma,
   deltaPerContract, driftGrid, driftCurve, findDriftBreakeven, driftCushion, probPriceBeyond, mulberry32, type SimRules,
 } from "@/lib/winRateSim";
 import { blackScholes } from "@/lib/bs";
@@ -75,16 +75,13 @@ describe("winRateSim", () => {
     expect(batchStability(computeStats(runs[0]), all, p.basis).similar).toBe(true);
   });
 
-  it("breakeven vol sits near the implied vol, and lower realized vol leaves a cushion", () => {
+  it("breakeven vol sits near the implied vol", () => {
     const p = prepareSim(setup())!;
     const curve = breakevenCurve(p, volGrid(0.3, 0.24), 2000, 9);
     const be = findBreakeven(p, curve, 2000, 9);
     expect(be.side).toBe("short");
     expect(be.vol!).toBeGreaterThan(0.26);
     expect(be.vol!).toBeLessThan(0.34);
-    const c = cushion(be, 0.24)!;
-    expect(c.value).toBeGreaterThan(0.1);
-    expect(cushion(be, 0.4)!.tier).toBe("none");
   });
 
   it("long options are the 'long' side", () => {
@@ -106,7 +103,8 @@ describe("winRateSim", () => {
   });
 
   it("look-back: distribution at today, percentile and sigma move", () => {
-    const sorted = retroDistribution({ legs: condor, spot: 100, day: 10, vol: 0.3 }, 3000, 11);
+    const p0 = prepareSim({ ...setup({ takeProfitPct: null, stopMult: null, closeFrac: 0 }), basis: 1 })!;
+    const sorted = runBatch({ ...p0, endDay: 10 }, 0.3, 3000, 11).outcomes.map((o) => o.pnl).sort((a, b) => a - b);
     expect(sorted.length).toBe(3000);
     for (let i = 1; i < sorted.length; i++) expect(sorted[i]).toBeGreaterThanOrEqual(sorted[i - 1]);
     // 10天后价格不动时，卖方铁鹰的盈亏（时间价值）应该在中位数附近或更好

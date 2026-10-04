@@ -1,7 +1,8 @@
 // src/hooks/useComboAnalytics.ts
 import { useMemo } from "react";
 import type { Leg, Shifts } from "@/lib/types";
-import { priceCombo, probabilityOfProfit, weightedAvgIV, impliedSpotFromPremiums, attributePnl, maxProfitLoss, resolveOpeningLeg } from "@/lib/pricing";
+import { priceCombo, probabilityOfProfit, weightedAvgIV, attributePnl, maxProfitLoss, resolveOpeningLeg, type PnlAttribution } from "@/lib/pricing";
+import { attributeSegment } from "@/lib/stockOptionMap";
 import { explainLegRoles } from "@/lib/legRoles";
 import type { SavedStrategy } from "@/lib/savedStrategies";
 
@@ -15,7 +16,7 @@ type TFunc = (key: string, vars?: Record<string, string | number>) => string;
 // This is a pure relocation, not a rewrite: every useMemo below keeps its
 // exact original body, comments and dependency array. The chain has real
 // internal ordering dependencies (trackedResult depends on
-// effectiveTrackedSpot which depends on impliedSpot, etc. — see CLAUDE.md's
+// effectiveTrackedSpot, etc. — see CLAUDE.md's
 // TDZ-risk note on App.tsx) that a call to this hook preserves automatically
 // as long as it's called once, in one place, in App.tsx's render — it does
 // NOT need to be called in any particular position relative to App.tsx's
@@ -48,13 +49,18 @@ export function useComboAnalytics(params: {
   analyticsSpot: number;
   analyticsShifts: Shifts;
   trackedLegs: Leg[] | null;
+  // 今日组合股价：跟权利金同一时刻的价格（实时报价，或快照当时存的股价），见App.tsx的trackedAsOf。
   trackedSpot: number | null;
-  correctedSpot: number | null;
+  // 今日组合的权利金和股价是几天前的（看历史快照时>0）。腿位的dte已经换算到今天，反推隐含波动率时要把这几天加回去。
+  trackedAsOfDays: number;
   trackedDaysElapsed: number;
   spot: number;
   shifts: Shifts;
   trackingStrategyId: string | null;
   savedStrategies: SavedStrategy[];
+  // 开仓那天的开仓组合（openingSimBasis.legs，dte按开仓日算）。对比模式下legs的dte是从今天算的剩余天数，
+  // 隐含波动率变化和盈亏归因必须用这一份，否则开仓隐含波动率会按剩余天数反推、时间也会推过到期。
+  openingLegs?: Leg[];
   t: TFunc;
 }) {
   // params.shifts（实时ΔS/ΔT/ΔV，驱动腿位编辑区之外的旧"整体替换"用
@@ -66,9 +72,10 @@ export function useComboAnalytics(params: {
   // params.t同理：健康度计算（computeHealth）删除后，这个hook内部已经
   // 不再需要t（i18n翻译函数）——不解构它。仍留在参数类型里，原因跟
   // shifts一样：App.tsx调用处历史上就是整组"当前状态"一起传的。
-  const { legs, analyticsLegs, analyticsSpot, analyticsShifts, trackedLegs, trackedSpot, correctedSpot, trackedDaysElapsed, spot, trackingStrategyId, savedStrategies } = params;
+  const { legs, analyticsLegs, analyticsSpot, analyticsShifts, trackedLegs, trackedSpot, trackedAsOfDays, trackedDaysElapsed, spot, trackingStrategyId, savedStrategies, openingLegs } = params;
 
   const activeLegs = useMemo(() => legs.filter((l) => !l.disabled), [legs]);
+  const openingDayLegs = useMemo(() => (openingLegs ?? legs).filter((l) => !l.disabled), [openingLegs, legs]);
   // 图表定价基准的过滤版——见上面params类型里analyticsLegs的注释。跟
   // activeLegs分开是因为两者在strategy已加载、非对比模式时不是同一份
   // 数据（analyticsLegs此时是openingSimBasis.legs，activeLegs是实时编辑
@@ -85,16 +92,12 @@ export function useComboAnalytics(params: {
     return m;
   }, [result]);
 
-  // In compare mode, back-solve the implied stock price from the premiums the user
-  // enters for each tracked leg. Different premiums imply different stock prices —
-  // e.g. if a short straddle's call premium drops while put premium rises, the stock
-  // has fallen. Falls back to the live quote when back-solve fails (e.g. only stock legs).
-  const impliedSpot = useMemo(() => {
-    if (!isCompareMode || !activeTrackedLegs || !activeLegs || spot <= 0) return null;
-    return impliedSpotFromPremiums(activeLegs, activeTrackedLegs, spot);
-  }, [isCompareMode, activeTrackedLegs, activeLegs, spot]);
-
-  const effectiveTrackedSpot = correctedSpot ?? impliedSpot ?? trackedSpot ?? spot;
+  const effectiveTrackedSpot = trackedSpot ?? spot;
+  // 反推隐含波动率用：dte还原到权利金/股价那一刻（看历史快照时），天数也减回去。
+  const asOfTrackedLegs = useMemo(
+    () => (activeTrackedLegs && trackedAsOfDays > 0 ? activeTrackedLegs.map((l) => (l.kind === "stock" ? l : { ...l, dte: l.dte + trackedAsOfDays })) : activeTrackedLegs),
+    [activeTrackedLegs, trackedAsOfDays],
+  );
 
   const { pop, breakevens } = useMemo(() => probabilityOfProfit(activeLegs, spot), [activeLegs, spot]);
 
@@ -250,23 +253,23 @@ export function useComboAnalytics(params: {
   // real implied vol change. If premium is unchanged, the IV shift reflects time decay's effect.
   const trackedVolShift = useMemo(() => {
     if (!isCompareMode || !activeTrackedLegs || spot <= 0) return undefined;
-    const openIV = weightedAvgIV(activeLegs, spot);
-    const trackedIV = weightedAvgIV(activeTrackedLegs, effectiveTrackedSpot);
+    const openIV = weightedAvgIV(openingDayLegs, spot);
+    const trackedIV = weightedAvgIV(asOfTrackedLegs ?? activeTrackedLegs, effectiveTrackedSpot);
     if (openIV <= 0 || trackedIV <= 0) return undefined;
     return (trackedIV - openIV) * 100;
-  }, [isCompareMode, activeTrackedLegs, activeLegs, spot, effectiveTrackedSpot]);
+  }, [isCompareMode, activeTrackedLegs, asOfTrackedLegs, openingDayLegs, spot, effectiveTrackedSpot]);
 
-  // P/L attribution — decomposes trackedResult.change (the real observed
-  // P&L move) into price/time/IV contributions. See attributePnl's own
-  // comments in pricing.ts for why the three don't sum exactly to the
-  // total and what the residual represents.
-  const pnlAttribution = useMemo(() => {
-    if (!isCompareMode || !trackedResult || activeLegs.length === 0 || spot <= 0) return null;
-    const dSpot = effectiveTrackedSpot - spot;
-    const dDays = effectiveDaysElapsed;
-    const dVolPct = trackedVolShift ?? 0;
-    return attributePnl(activeLegs, spot, dSpot, dDays, dVolPct, trackedResult.change);
-  }, [isCompareMode, trackedResult, activeLegs, spot, effectiveTrackedSpot, effectiveDaysElapsed, trackedVolShift]);
+  // 今昔对比的盈亏归因：开仓那一刻→今天，逐腿配对后用平均法拆成股价/时间/隐含波动率（每条腿的隐含波动率按各自时刻的股价和权利金反推），
+  // 换过合约、新开或平掉的腿算"调整"（residual）。跟地形图逐段拆解是同一个函数，只是一步到位。
+  const pnlAttribution = useMemo<PnlAttribution | null>(() => {
+    if (!isCompareMode || !trackedResult || !asOfTrackedLegs || openingDayLegs.length === 0 || spot <= 0) return null;
+    const total = trackedResult.change;
+    const p = attributeSegment(
+      { legs: openingDayLegs, spot, day: 0, pnl: 0 },
+      { legs: asOfTrackedLegs, spot: effectiveTrackedSpot, day: Math.max(0, effectiveDaysElapsed - trackedAsOfDays), pnl: total },
+    );
+    return { priceEffect: p.price, timeEffect: p.time, ivEffect: p.iv, residual: p.adjust, totalChange: total };
+  }, [isCompareMode, trackedResult, asOfTrackedLegs, openingDayLegs, spot, effectiveTrackedSpot, effectiveDaysElapsed, trackedAsOfDays]);
 
   return {
     activeLegs,
@@ -274,7 +277,6 @@ export function useComboAnalytics(params: {
     isCompareMode,
     result,
     scenarioPriceById,
-    impliedSpot,
     effectiveTrackedSpot,
     pop,
     breakevens,

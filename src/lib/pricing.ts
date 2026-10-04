@@ -9,7 +9,7 @@ export const RATE = 0.05;
 // and conflating them was the actual bug behind item 7 of the 2026-09-06
 // review (see CLAUDE.md's notes on this). RATE is the risk-free rate fed
 // into Black-Scholes ITSELF (impliedVol/legShiftedPrice/legGreekBreakdown/
-// pnlAtExpiry/impliedSpotFromPremiums above and below) — that one has to
+// pnlAtExpiry above and below) — that one has to
 // stay the real risk-free rate, because risk-neutral option PRICING is
 // mathematically defined relative to it; changing it would silently
 // mis-price every leg.
@@ -474,61 +474,6 @@ export function resolveOpeningLeg(
   return openingLegs[index];
 }
 
-// Back-solve the implied spot price from tracked leg premiums.
-// Uses each leg's opening IV (from opening legs) and tracked DTE,
-// then solves for S where BS(S, strike, dte, iv, type) = tracked premium.
-// Returns a premium-weighted average across all option legs. Pairs each
-// tracked leg with its opening counterpart via resolveOpeningLeg (id-based,
-// with fallbacks — see its own comment) instead of raw array-index pairing.
-export function impliedSpotFromPremiums(
-  openingLegs: Leg[],
-  trackedLegs: Leg[],
-  openingSpot: number
-): number | null {
-  if (openingLegs.length === 0 || trackedLegs.length === 0 || openingSpot <= 0) return null;
-
-  const openingById = new Map(openingLegs.map((l) => [l.id, l]));
-
-  let totalWeight = 0;
-  let weightedSpot = 0;
-
-  for (let i = 0; i < trackedLegs.length; i++) {
-    const tracked = trackedLegs[i];
-    const opening = resolveOpeningLeg(tracked, i, openingLegs, openingById);
-    if (!opening || tracked.kind === "stock") continue;
-    if (tracked.premium <= 0 || opening.premium <= 0) continue;
-
-    const openIV = impliedVol(openingSpot, opening.strike, opening.dte, opening.premium, opening.type);
-
-    let impliedS: number;
-    if (tracked.dte <= 0) {
-      impliedS = tracked.type === "call"
-        ? tracked.strike + tracked.premium
-        : tracked.strike - tracked.premium;
-    } else {
-      let lo = 0.01, hi = openingSpot * 3;
-      for (let j = 0; j < 60; j++) {
-        const mid = (lo + hi) / 2;
-        const price = blackScholes({ spot: mid, strike: tracked.strike, dte: tracked.dte, vol: openIV, rate: RATE, type: tracked.type }).price;
-        if (tracked.type === "call") {
-          if (price < tracked.premium) lo = mid; else hi = mid;
-        } else {
-          if (price > tracked.premium) lo = mid; else hi = mid;
-        }
-      }
-      impliedS = (lo + hi) / 2;
-    }
-
-    if (impliedS <= 0 || impliedS > openingSpot * 10) continue;
-
-    const weight = Math.abs(opening.premium) * (opening.qty ?? 1);
-    weightedSpot += impliedS * weight;
-    totalWeight += weight;
-  }
-
-  return totalWeight > 0 ? weightedSpot / totalWeight : null;
-}
-
 // Weighted-average implied vol across option legs (weighted by |premium|).
 export function weightedAvgIV(legs: Leg[], spot: number): number {
   if (legs.length === 0 || spot <= 0) return 0;
@@ -546,27 +491,69 @@ export function weightedAvgIV(legs: Leg[], spot: number): number {
   return totalWeight > 0 ? weightedVol / totalWeight : 0;
 }
 
+// 保存快照前的合理性检查：权利金跟（同一时刻的）股价明显对不上时，多半是输错了（比如1.17打成11.7）。
+// 绝对检查：低于内在价值超过0.05+1%，或反推隐含波动率<5%、>300%。相对检查：跟同一张合约开仓时的隐含波动率比，
+// 变成3倍以上或1/3以下（打错一位数通常落在这里；财报后的IV crush一般在这个范围内）。剩余2天以内只查内在价值。
+export interface PremiumIssue {
+  index: number; // 在传入legs里的位置
+  kind: "belowIntrinsic" | "ivTooLow" | "ivTooHigh" | "ivJump";
+  premium: number;
+  intrinsic: number;
+  iv: number;
+  refIv: number; // ivJump时：开仓时的隐含波动率
+}
+export function premiumSanityIssues(legs: Leg[], spot: number, ref?: { legs: Leg[]; spot: number }): PremiumIssue[] {
+  const out: PremiumIssue[] = [];
+  if (!(spot > 0)) return out;
+  legs.forEach((l, index) => {
+    if (l.disabled || l.kind === "stock" || !(l.premium > 0)) return;
+    const intrinsic = l.type === "call" ? Math.max(0, spot - l.strike) : Math.max(0, l.strike - spot);
+    const base = { index, premium: l.premium, intrinsic, iv: 0, refIv: 0 };
+    if (l.premium < intrinsic - (0.05 + intrinsic * 0.01)) {
+      out.push({ ...base, kind: "belowIntrinsic" });
+      return;
+    }
+    if (l.dte <= 2) return;
+    const iv = impliedVol(spot, l.strike, l.dte, l.premium, l.type);
+    if (iv < 0.05) { out.push({ ...base, kind: "ivTooLow", iv }); return; }
+    if (iv > 3) { out.push({ ...base, kind: "ivTooHigh", iv }); return; }
+    const r = ref?.legs.find((o) => (o.id === l.openLegId || o.id === l.id) && o.kind !== "stock" && o.type === l.type && o.strike === l.strike);
+    if (r && ref && ref.spot > 0 && r.premium > 0 && r.dte > 2) {
+      const refIv = impliedVol(ref.spot, r.strike, r.dte, r.premium, r.type);
+      if (refIv > 0.01 && (iv > refIv * 3 || iv < refIv / 3)) out.push({ ...base, kind: "ivJump", iv, refIv });
+    }
+  });
+  return out;
+}
+
 // ── P/L Attribution (盈亏归因) ──
 //
-// Decomposes the observed change in a combo's value into how much came
-// from price, time, and IV moving independently. Each single-factor effect
-// re-prices the OPENING legs with only that one shift applied (the other
-// two held at zero) and compares to the opening value — reusing priceCombo/
-// legShiftedPrice exactly as the analysis-mode sliders already do, just
-// three separate calls instead of one combined one.
-//
-// Black-Scholes isn't additively separable (price/time/vol interact —
-// e.g. gamma means the price effect itself depends on how much time has
-// passed), so priceEffect + timeEffect + ivEffect will not exactly equal
-// the real observed change. The gap is reported honestly as `residual`
-// (interaction effect) rather than silently absorbed into one of the three
-// factors, which would misattribute it.
+// 把盈亏变化拆成股价/时间/隐含波动率三项。三者在期权定价里会相互影响（股价变动的影响随剩余时间变化），
+// 按固定顺序叠加时结果取决于顺序，各自单独算又会剩下一大块"交叉项"。这里用shapley3：把三项按全部6种
+// 顺序依次叠加、取平均——三项之和严格等于模型算出的总变化，且跟顺序无关。
+// `residual`=实际变化−三项之和：分析模式下≈0；对比模式下是展期/平仓/保护/对冲等"调整"（见stockOptionMap.attributeSegment）。
 export interface PnlAttribution {
   priceEffect: number;
   timeEffect: number;
   ivEffect: number;
   residual: number;
   totalChange: number;
+}
+
+// 三个因素的平均法（Shapley值）。f(mask)：mask的第0/1/2位分别表示股价/时间/隐含波动率是否已变到终点。
+export function shapley3(f: (mask: number) => number): [number, number, number] {
+  const v = Array.from({ length: 8 }, (_, m) => f(m));
+  const out: [number, number, number] = [0, 0, 0];
+  const w = [1 / 3, 1 / 6, 1 / 3]; // 按"已经变过的其它因素个数"0/1/2加权
+  for (let i = 0; i < 3; i++) {
+    const bit = 1 << i;
+    for (let m = 0; m < 8; m++) {
+      if (m & bit) continue;
+      const k = (m & 1) + ((m >> 1) & 1) + ((m >> 2) & 1);
+      out[i] += w[k] * (v[m | bit] - v[m]);
+    }
+  }
+  return out;
 }
 
 export function attributePnl(
@@ -577,15 +564,9 @@ export function attributePnl(
   dVolPct: number,
   actualChange: number,
 ): PnlAttribution {
-  const base = priceCombo(legs, { dS: 0, dT: 0, dV: 0 }, spot).shiftedValue;
-  const priceOnly = priceCombo(legs, { dS: dSpot, dT: 0, dV: 0 }, spot).shiftedValue;
-  const timeOnly = priceCombo(legs, { dS: 0, dT: dDays, dV: 0 }, spot).shiftedValue;
-  const ivOnly = priceCombo(legs, { dS: 0, dT: 0, dV: dVolPct }, spot).shiftedValue;
-
-  const priceEffect = priceOnly - base;
-  const timeEffect = timeOnly - base;
-  const ivEffect = ivOnly - base;
+  const [priceEffect, timeEffect, ivEffect] = shapley3((m) =>
+    priceCombo(legs, { dS: m & 1 ? dSpot : 0, dT: m & 2 ? dDays : 0, dV: m & 4 ? dVolPct : 0 }, spot).shiftedValue,
+  );
   const residual = actualChange - (priceEffect + timeEffect + ivEffect);
-
   return { priceEffect, timeEffect, ivEffect, residual, totalChange: actualChange };
 }
