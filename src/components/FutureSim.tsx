@@ -537,6 +537,15 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
     g.fillText(t("future.title", { s: symbol.trim().toUpperCase() }), M.l + pw / 2, 15);
   };
 
+  const notes3d = {
+    top: (r: string, v: string) => t("future.noteTopEnd", { r, v }),
+    bottom: (r: string, v: string) => t("future.noteBottomEnd", { r, v }),
+    breakeven: t("future.noteBe"),
+    above: (a: string) => t("future.noteAbove", { a }),
+    below: (b: string) => t("future.noteBelow", { b }),
+    between: (a: string, b: string) => t("future.noteBetween", { a, b }),
+    outside: (a: string, b: string) => t("future.noteOutside", { a, b }),
+  };
   const labels3d = {
     open: t("future.axOpen"),
     expiry: t("future.axExpiry", { d: days }),
@@ -544,8 +553,9 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
     price: t("som.axisPrice"),
     pnl: t("future.axPnl"),
     hint: t("future.hint3d"),
+    intro: t("future.intro3d"),
     time: `${t("winRate.axisTimeOpen")} →`,
-    legend: [t("future.lg3dZ"), t("future.lg3dX", { a: t("future.axOpen"), b: t("future.axExpiry", { d: days }) }), t("future.lg3dY", { lo: model.sMin.toFixed(0), hi: model.sMax.toFixed(0) })],
+    legend: [t("future.lg3dZ"), t("future.lg3dX", { a: t("future.axOpen"), b: t("future.axExpiry", { d: days }) }), t("future.lg3dY", { lo: model.sMin.toFixed(0), hi: model.sMax.toFixed(0) }), t("future.lg3dCliff")],
   };
 
   // ── 结论卡片 ──
@@ -836,7 +846,12 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
             scenario={scen}
             endDay={p.endDay}
             labels={labels3d}
-            money={(v) => `$${v.toFixed(2)}`}
+            money={(v) => `${v < -0.005 ? "−" : ""}$${Math.abs(v).toFixed(2)}`}
+            notes={notes3d}
+            slices={[
+              ...(scen && scen.day > 0.5 && scen.day < days - 0.5 ? [{ day: scen.day, label: t("future.sliceDay", { d: Math.round(scen.day) }), color: "#38bdf8" }] : []),
+              { day: days, label: t("future.sliceEnd"), color: "#fde68a" },
+            ]}
           />
         ) : (
           <CanvasBox

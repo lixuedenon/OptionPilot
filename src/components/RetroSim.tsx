@@ -341,6 +341,15 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
     g.fillText(t("future.retroTitle", { s: symbol.trim().toUpperCase() }), M.l + pw / 2, 15);
   };
 
+  const notes3d = {
+    top: (r: string, v: string) => t("future.noteTopToday", { r, v }),
+    bottom: (r: string, v: string) => t("future.noteBottomToday", { r, v }),
+    breakeven: t("future.noteBe"),
+    above: (a: string) => t("future.noteAbove", { a }),
+    below: (b: string) => t("future.noteBelow", { b }),
+    between: (a: string, b: string) => t("future.noteBetween", { a, b }),
+    outside: (a: string, b: string) => t("future.noteOutside", { a, b }),
+  };
   const labels3d = {
     open: t("future.axOpen"),
     expiry: t("future.axToday", { d: days }),
@@ -348,6 +357,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
     price: t("som.axisPrice"),
     pnl: t("future.axPnl"),
     hint: t("future.hint3d"),
+    intro: t("future.intro3d"),
     time: `${t("future.axisRetro")} →`,
     legend: [t("future.lg3dZ"), t("future.lg3dX", { a: t("future.axOpen"), b: t("future.axToday", { d: days }) }), t("future.lg3dY", { lo: model.sMin.toFixed(0), hi: model.sMax.toFixed(0) })],
   };
@@ -654,7 +664,9 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
             scenario={null}
             endDay={days}
             labels={labels3d}
-            money={(v) => `$${v.toFixed(2)}`}
+            money={(v) => `${v < -0.005 ? "−" : ""}$${Math.abs(v).toFixed(2)}`}
+            notes={notes3d}
+            slices={[{ day: days, label: t("future.sliceToday", { d: days }), color: "#fde68a" }]}
             actual={actual.map((a) => ({ day: a.day, price: a.price }))}
             todayDay={days}
           />
