@@ -170,3 +170,90 @@ export function suggestRules(setup: SimSetup, vol: number, n: number, seed: numb
   }
   return { tried: list.length, current, best };
 }
+
+// ── 平面图：股价范围带 + 典型结局 ──────────────────────────────────────
+// 每条走势每天的股价都记下来（不管有没有下车）：画"股价可能在哪"的范围带要用全部走势——只用还拿着的会有偏差
+// （涨上去的早早止盈走了，剩下的偏低，范围带看起来会一天比一天往下沉）。
+export class PriceStore {
+  readonly days: number;
+  readonly data: Float32Array;
+  private idx = -1;
+  filled = 0;
+  constructor(n: number, days: number) {
+    this.days = days;
+    this.data = new Float32Array(n * (days + 1));
+  }
+  // runCloud的extraStep：每条走势按第0天、第1天…依次调用，第0天就是换到下一条
+  step = (day: number, price: number) => {
+    if (day === 0) {
+      this.idx++;
+      this.filled = this.idx + 1;
+    }
+    if (day <= this.days && this.idx * (this.days + 1) + day < this.data.length) this.data[this.idx * (this.days + 1) + day] = price;
+  };
+  path(i: number): number[] {
+    return Array.from(this.data.subarray(i * (this.days + 1), (i + 1) * (this.days + 1)));
+  }
+}
+
+export interface Band {
+  day: number;
+  p5: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p95: number;
+}
+
+// 范围带：最多取maxCols个日子（长期期权每天都排序太慢，画图也用不着那么细），其余日子画的时候连线。
+export function priceBands(store: PriceStore, maxCols = 60): Band[] {
+  const n = store.filled;
+  if (n === 0) return [];
+  const step = Math.max(1, Math.ceil(store.days / maxCols));
+  const days: number[] = [];
+  for (let d = 0; d <= store.days; d += step) days.push(d);
+  if (days[days.length - 1] !== store.days) days.push(store.days);
+  const col = new Float32Array(n);
+  const q = (f: number) => col[Math.min(n - 1, Math.floor(f * (n - 1)))];
+  return days.map((day) => {
+    for (let i = 0; i < n; i++) col[i] = store.data[i * (store.days + 1) + day];
+    col.sort();
+    return { day, p5: q(0.05), p25: q(0.25), p50: q(0.5), p75: q(0.75), p95: q(0.95) };
+  });
+}
+
+// 典型结局：按你的规则把1万条走势分成几类（加起来=100%），每类挑一条最典型的给图上画。
+// 止盈/止损/到时间平仓这几类取下车天数居中的那条；拿到期的取到期盈亏居中的那条。
+export type StoryKind = "tp" | "sl" | "time" | "win" | "loss";
+export interface Story {
+  kind: StoryKind;
+  share: number; // 0..100
+  day: number; // 下车（或到期）那天
+  pnl: number;
+  prices: number[]; // 这条走势从第0天到最早到期日的股价（下车后也接着记）
+}
+export function pickStories(outcomes: PathOutcome[], store: PriceStore, max = 4): Story[] {
+  const groups = new Map<StoryKind, number[]>();
+  outcomes.forEach((o, i) => {
+    const k: StoryKind = o.reason === "expiry" ? (o.pnl >= 0 ? "win" : "loss") : o.reason;
+    const g = groups.get(k);
+    if (g) g.push(i);
+    else groups.set(k, [i]);
+  });
+  const n = outcomes.length || 1;
+  const all = [...groups.entries()].map(([kind, idx]) => {
+    const byDay = kind === "win" || kind === "loss" ? (i: number) => outcomes[i].pnl : (i: number) => outcomes[i].day;
+    const sorted = [...idx].sort((a, b) => byDay(a) - byDay(b));
+    const pick = sorted[Math.floor(sorted.length / 2)];
+    const o = outcomes[pick];
+    return { kind, share: (idx.length / n) * 100, day: o.day, pnl: o.pnl, prices: store.path(pick) };
+  });
+  all.sort((a, b) => b.share - a.share);
+  const out = all.slice(0, Math.min(max, 3));
+  // 亏钱的那一类哪怕很少也要画出来——这正是用户最该看到的
+  for (const k of ["sl", "loss"] as StoryKind[]) {
+    const s = all.find((x) => x.kind === k);
+    if (s && !out.includes(s) && out.length < max) out.push(s);
+  }
+  return out;
+}

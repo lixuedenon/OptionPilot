@@ -66,6 +66,8 @@ export interface AdviceSignals {
   inProfitZone: boolean; // 按现价，到期时是否在盈利区
   sigmaToEdge: number | null; // 区内=离最近盈亏平衡点几个标准差（正）；区外=回到盈利区要走几个标准差（负）；null=范围内没有盈亏平衡点
   nearestBe: number | null;
+  sigmaIv: number; // 算"标准差"用的隐含波动率（组合平均）
+  sigmaMove: number; // 一个标准差 = 剩余天数里股价的"正常晃动"幅度（比例，例如0.08=±8%）
   elapsed: number; // 开仓总期限已过的比例
   remainingDays: number;
   pTp: number;
@@ -193,7 +195,7 @@ export function adviseCombo(input: AdviceInput): Advice | null {
 
   const signals: AdviceSignals = {
     pnl, pnlPct: pnl / input.basis, maxProfit: scan.maxProfit, maxLoss: scan.maxLoss, capture, remainingGain, remainingRisk, rr, rrRel,
-    breakevens, inProfitZone, sigmaToEdge, nearestBe, elapsed, remainingDays: p.horizon, pTp, pSl, pTime, pExpiry, pWin,
+    breakevens, inProfitZone, sigmaToEdge, nearestBe, sigmaIv: iv, sigmaMove: Math.exp(sig) - 1, elapsed, remainingDays: p.horizon, pTp, pSl, pTime, pExpiry, pWin,
     tpLine: p.tpLine, slLine: p.slLine, flags, status,
   };
   const out = (action: AdviceAction, rule: AdviceRule): Advice => ({ action, rule, signals });

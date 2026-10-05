@@ -2,7 +2,7 @@
 import { describe, it, expect } from "vitest";
 import type { Leg } from "@/lib/types";
 import { prepareSim, runBatch, computeStats, holdOutcomes, simPnlAt } from "@/lib/winRateSim";
-import { newDensity, runCloud, replayRules, suggestRules, FORK_PATHS, FORK_SEED } from "@/lib/futureSim";
+import { newDensity, runCloud, replayRules, suggestRules, PriceStore, priceBands, pickStories, FORK_PATHS, FORK_SEED } from "@/lib/futureSim";
 import { adviseCombo } from "@/lib/positionAdvisor";
 
 const put = (o: Partial<Leg>): Leg => ({ id: "p", kind: "option", action: "sell", type: "put", strike: 90, qty: 5, dte: 43, premium: 0.35, ...o }) as unknown as Leg;
@@ -120,5 +120,23 @@ describe("地形图风险分区（不用模拟的快速版建议）", async () =
     expect(a.current.avg).toBeCloseTo(computeStats(runBatch(p, 0.5, 800, 77).outcomes).avg, 10);
     // 建议的规则（如果有）真的满足"更好"的条件之一
     if (a.best) expect(a.best.avg > a.current.avg || a.best.worst5 >= a.current.worst5 * 0.8).toBe(true);
+  });
+
+  it("平面图：范围带用全部走势、典型结局按规则分类且占比加起来100%", () => {
+    const p = prepareSim(setup())!;
+    const spec = { sMin: 1, sMax: 1000, rows: 40, days: p.horizon };
+    const store = new PriceStore(400, p.horizon);
+    const run = runCloud(p, 0.5, 400, 21, spec, newDensity(spec), { extraStep: store.step });
+    expect(store.filled).toBe(400);
+    const bands = priceBands(store);
+    expect(bands[0].p50).toBeCloseTo(121.7, 3);
+    expect(bands[bands.length - 1].day).toBe(p.horizon);
+    for (const b of bands) expect(b.p5 <= b.p25 && b.p25 <= b.p50 && b.p50 <= b.p75 && b.p75 <= b.p95).toBe(true);
+    const stories = pickStories(run.outcomes, store, 5);
+    expect(stories.reduce((a, x) => a + x.share, 0)).toBeCloseTo(100, 6);
+    for (const st of stories) {
+      expect(st.prices.length).toBe(p.horizon + 1);
+      expect(st.prices[0]).toBeCloseTo(121.7, 4);
+    }
   });
 });

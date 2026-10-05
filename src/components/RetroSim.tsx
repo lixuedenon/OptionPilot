@@ -7,7 +7,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@/i18n/I18nContext";
 import type { Leg } from "@/lib/types";
 import { openingBasis, isCreditCombo, percentileOf, moveInSigma } from "@/lib/winRateSim";
-import type { EndDist, GridSpec, RuleExit } from "@/lib/futureSim";
+import type { EndDist, GridSpec, RuleExit, Band } from "@/lib/futureSim";
+import { drawZones, drawBands, labelBands, type PlaneFrame } from "@/lib/planeChart";
 import type { FutureRequest, FutureResponse, Sample, RetroDay } from "@/lib/futureSim.worker";
 import { buildMapModel, comboBaseIv, type PnlParts, type SegmentAttribution } from "@/lib/stockOptionMap";
 import { priceStance, journeyRows, keyLevels } from "@/lib/retroStory";
@@ -16,6 +17,7 @@ import { fetchHistoricalSeries, realizedVolSince } from "@/lib/historicalVolatil
 import { useSimSettings } from "@/lib/simSettings";
 import CanvasBox from "@/components/simCharts";
 import SimSurface3D from "@/components/SimSurface3D";
+import HowToRead from "@/components/HowToRead";
 
 interface Props {
   symbol: string;
@@ -51,13 +53,6 @@ function loadView(): "plane" | "3d" {
   }
 }
 
-function cellRgb(v: number, maxProfit: number, maxLoss: number): [number, number, number] {
-  const k = Math.sqrt(Math.min(1, v >= 0 ? v / maxProfit : -v / maxLoss));
-  const base = [22, 30, 46];
-  const to = v >= 0 ? [16, 185, 129] : [244, 63, 94];
-  return [0, 1, 2].map((i) => Math.round(base[i] + (to[i] - base[i]) * k)) as [number, number, number];
-}
-
 function niceStep(span: number, target: number) {
   const raw = span / target;
   const mag = 10 ** Math.floor(Math.log10(raw));
@@ -73,6 +68,7 @@ interface RetroRun {
   holding: Float32Array;
   samples: Sample[];
   end: EndDist;
+  bands: Band[]; // 平面图的股价范围带（开仓到今天，全部走势）
 }
 
 export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowSpot, pnlNow, history, ruleExit, ivChange, ivOpen, journey, todayLegs, adjusted, emptyText }: Props) {
@@ -147,7 +143,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
       w.onmessage = (e: MessageEvent<FutureResponse>) => {
         const m = e.data;
         if (cancelled || m.runId !== runId) return;
-        if (m.type === "retro") setRun({ key: runKey, sorted: m.sorted, prices: m.prices, days: m.days, holding: m.holding, samples: m.samples, end: m.end });
+        if (m.type === "retro") setRun({ key: runKey, sorted: m.sorted, prices: m.prices, days: m.days, holding: m.holding, samples: m.samples, end: m.end, bands: m.bands });
         else if (m.type === "error") setError(true);
       };
       // 回看不套规则：问的是"组合一直不动，到今天会在哪"，跟真实总账（含已实现）比；规则复盘另外沿真实的路做。
@@ -187,41 +183,19 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
 
   // ── 平面：开仓→今天的地形图做底色，可能走过的地方发亮，金色是真实走的路 ──
   const drawPlane = (g: CanvasRenderingContext2D, W: number, H: number) => {
-    const M = { l: 56, r: 74, t: 22, b: 34 };
+    const M = { l: 56, r: 96, t: 22, b: 34 };
     const pw = W - M.l - M.r, ph = H - M.t - M.b;
     const X = (d: number) => M.l + (d / days) * pw;
     const Y = (s: number) => M.t + ((model.sMax - s) / (model.sMax - model.sMin)) * ph;
-    const NXc = Math.min(90, Math.max(12, days * 3));
-    const cw = pw / NXc, ch = ph / ROWS;
+    const ch = ph / ROWS;
+    const f: PlaneFrame = { X, Y, left: M.l, top: M.t, width: pw, height: ph };
     g.save();
     g.beginPath();
     g.rect(M.l, M.t, pw, ph);
     g.clip();
-    for (let c = 0; c < NXc; c++) {
-      const day = ((c + 0.5) / NXc) * days;
-      for (let r = 0; r < ROWS; r++) {
-        const price = model.sMax - ((r + 0.5) / ROWS) * (model.sMax - model.sMin);
-        const [R, G, B] = cellRgb(model.pnlAt(day, price), model.maxProfit, model.maxLoss);
-        g.fillStyle = `rgb(${R},${G},${B})`;
-        g.fillRect(M.l + c * cw, M.t + r * ch, cw + 0.6, ch + 0.6);
-      }
-    }
-    g.fillStyle = "rgba(2,6,23,0.5)";
-    g.fillRect(M.l, M.t, pw, ph);
-    if (shown) {
-      const cellW = pw / days;
-      for (let d = 0; d <= days; d++) {
-        let mx = 0;
-        for (let r = 0; r < ROWS; r++) mx = Math.max(mx, shown.holding[d * ROWS + r]);
-        if (mx <= 0) continue;
-        for (let r = 0; r < ROWS; r++) {
-          const v = shown.holding[d * ROWS + r];
-          if (v <= 0) continue;
-          g.fillStyle = `rgba(226,240,255,${(0.8 * Math.sqrt(v / mx)).toFixed(3)})`;
-          g.fillRect(M.l + (d - 0.5) * cellW, M.t + r * ch, cellW + 0.6, ch + 0.6);
-        }
-      }
-    }
+    // 赚/亏两区（按开仓时的隐含波动率，那一天、那个股价平仓是赚是亏）+ 开仓那天看到今天的股价范围带
+    drawZones(g, model, days, f);
+    if (shown) drawBands(g, shown.bands, f);
     // 真实的路
     if (actual.length > 1) {
       g.strokeStyle = "rgba(2,6,23,0.9)";
@@ -310,10 +284,18 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
       g.lineTo(x0 - 7, ty + 4);
       g.closePath();
       g.fill();
-      g.fillStyle = "#64748b";
+      g.fillStyle = "#94a3b8";
       g.textAlign = "left";
-      g.fillText(t("future.retroEndLabel"), x0, M.t + ph + 14);
+      g.fillText(t("future.todayAllTitle"), x0, M.t - 4);
+      const win = 100 - percentileOf(shown.sorted, 1e-9);
+      g.font = "bold 10px sans-serif";
+      g.fillStyle = "#6ee7b7";
+      g.fillText(t("future.todayAllWin", { p: Math.round(win) }), x0, M.t + ph + 12);
+      g.fillStyle = "#fda4af";
+      g.fillText(t("future.todayAllLoss", { p: Math.round(100 - win) }), x0, M.t + ph + 24);
+      g.font = "10px sans-serif";
     }
+    if (shown) labelBands(g, shown.bands, f, { mid: t("future.bandMid"), dark: t("future.bandDark"), light: t("future.bandLight") });
     g.font = "10px sans-serif";
     g.fillStyle = "#64748b";
     g.textAlign = "left";
@@ -629,7 +611,15 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
   const legend = (
     <div className="flex flex-wrap items-center gap-3 text-[10px] text-slate-500">
       <span>{shown ? t("future.retroDone", { n: PATHS.toLocaleString(), iv: (openIv * 100).toFixed(1) }) : t("winRate.retroPending")}</span>
-      <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-slate-100/80" />{t("future.lgRetroCloud")}</span>
+      {view === "3d" ? (
+        <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-slate-100/80" />{t("future.lgRetroCloud")}</span>
+      ) : (
+        <>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-emerald-500/40" />{t("future.lgZoneGain")}</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-rose-500/50" />{t("future.lgZoneLoss")}</span>
+          <span>{t("future.lgBe")}</span>
+        </>
+      )}
       <span className="flex items-center gap-1"><span className="inline-block h-1 w-4 rounded-sm bg-amber-400" />{t("future.lgActual")}</span>
       {exitShown && (
         <span className="flex items-center gap-1">
@@ -649,7 +639,8 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
         </span>
         <span>{t("future.retroIntro")}</span>
       </div>
-      <div className="h-[340px] shrink-0 overflow-hidden rounded-md border border-slate-800">
+      {/* 图的高度跟着窗口走（窗口高度的70%，至少420、最多760像素）：立体图太矮看不清；下面的卡片在右栏里往下滚 */}
+      <div className="h-[clamp(420px,70vh,760px)] shrink-0 overflow-hidden rounded-md border border-slate-800">
         {view === "3d" ? (
           <SimSurface3D
             model={model}
@@ -674,12 +665,24 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
           <CanvasBox
             className="h-full w-full"
             draw={drawPlane}
-            deps={[model, shown, actual.length, nowSpot, exitShown, days, symbol, t]}
+            deps={[model, shown, actual.length, pnlNow, nowSpot, exitShown, days, symbol, t]}
             label={t("future.retroTitle", { s: symbol })}
           />
         )}
       </div>
       {legend}
+      <HowToRead
+        lines={
+          view === "3d"
+            ? [t("future.howRetro3d1"), t("future.howRetro3d2"), t("future.howRetro3d3"), t("future.howRetro3d4")]
+            : [
+                t("future.howRetroPlane1", { iv: (openIv * 100).toFixed(1), n: PATHS.toLocaleString() }),
+                t("future.howRetroPlane2"),
+                t("future.howRetroPlane3"),
+                shown ? t("future.howRetroPlane4", { w: Math.round(100 - percentileOf(shown.sorted, 1e-9)), n: PATHS.toLocaleString() }) : t("winRate.retroPending"),
+              ]
+        }
+      />
       <div className="shrink-0 rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 leading-relaxed">
         {error ? <span className="text-rose-300">{t("winRate.error")}</span> : <div className="flex flex-col gap-2">{ordered}</div>}
         <div className="mt-2 text-[10px] text-slate-500">{t("future.retroModel")}</div>

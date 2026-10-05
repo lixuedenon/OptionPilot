@@ -5,7 +5,7 @@ import {
   prepareSim, simPnlAt, computeStats, histogram, holdOutcomes, breakevenCurve, findBreakeven, curvePathCount, volGrid, deltaPerContract, driftGrid, driftCurve, findDriftBreakeven,
   type SimSetup, type SimStats, type Histogram, type CurvePoint, type Breakeven, type DriftPoint, type PathOutcome,
 } from "./winRateSim";
-import { newDensity, runCloud, suggestRules, FORK_PATHS, FORK_SEED, type GridSpec, type ExitPoint, type EndDist, type RuleSuggestion } from "./futureSim";
+import { newDensity, runCloud, suggestRules, PriceStore, priceBands, pickStories, FORK_PATHS, FORK_SEED, type GridSpec, type ExitPoint, type EndDist, type RuleSuggestion, type Band, type Story } from "./futureSim";
 
 export type FutureRequest =
   | { kind: "main"; runId: number; setup: SimSetup; vol: number; ivCenter: number; batches: number; perBatch: number; samples: number; seed: number; grid: GridSpec; debit: boolean }
@@ -27,13 +27,14 @@ export interface Sample {
 }
 
 export type FutureResponse =
-  | { runId: number; type: "batch"; index: number; stats: SimStats; holding: Float32Array; after: Float32Array; exits: ExitPoint[]; samples: Sample[] }
+  // bands：到这一批为止全部走势每天股价的范围（平面图的范围带）
+  | { runId: number; type: "batch"; index: number; stats: SimStats; holding: Float32Array; after: Float32Array; exits: ExitPoint[]; samples: Sample[]; bands: Band[] }
   // exitDays：每天有多少条按各规则下车（下标=第几天），用来说"走到情景那天之前已经有多少下车了"
-  | { runId: number; type: "done"; stats: SimStats; hold: SimStats; first: SimStats; hist: Histogram; end: EndDist; avgWin: number; avgLoss: number; holdAvgWin: number; holdAvgLoss: number; exitDays: Record<"tp" | "sl" | "time", number[]> }
+  | { runId: number; type: "done"; stats: SimStats; hold: SimStats; first: SimStats; hist: Histogram; end: EndDist; avgWin: number; avgLoss: number; holdAvgWin: number; holdAvgLoss: number; exitDays: Record<"tp" | "sl" | "time", number[]>; stories: Story[]; endPrices: number[] }
   | { runId: number; type: "alt"; suggestion: RuleSuggestion | null }
   | { runId: number; type: "curve"; curve: CurvePoint[]; breakeven: Breakeven; delta: number; driftCurve: DriftPoint[] | null; driftBreakeven: number | null }
   | { runId: number; type: "fork"; stats: SimStats; holding: Float32Array; samples: Sample[]; end: EndDist }
-  | { runId: number; type: "retro"; sorted: number[]; prices: number[]; days: RetroDay[]; holding: Float32Array; samples: Sample[]; end: EndDist }
+  | { runId: number; type: "retro"; sorted: number[]; prices: number[]; days: RetroDay[]; holding: Float32Array; samples: Sample[]; end: EndDist; bands: Band[] }
   | { runId: number; type: "error"; message: string };
 
 const ALT_SEED = 20261003;
@@ -61,7 +62,9 @@ self.onmessage = (e: MessageEvent<FutureRequest>) => {
       const pe = { ...p, endDay: Math.min(p.horizon, req.grid.days) };
       const check = new Map<number, { prices: number[]; pnls: number[] }>();
       for (const d of req.checkDays) if (d > 0 && d < pe.endDay) check.set(d, { prices: [], pnls: [] });
+      const store = new PriceStore(req.n, pe.endDay);
       const extraStep = (day: number, price: number) => {
+        store.step(day, price);
         const c = check.get(day);
         if (c) {
           c.prices.push(price);
@@ -73,7 +76,7 @@ self.onmessage = (e: MessageEvent<FutureRequest>) => {
       const days: RetroDay[] = [...check.entries()].map(([day, c]) => ({ day, prices: c.prices.sort(asc), pnls: c.pnls.sort(asc) }));
       post({
         runId: req.runId, type: "retro", sorted: run.outcomes.map((o) => o.pnl).sort(asc), prices: run.outcomes.map((o) => o.price).sort(asc), days,
-        holding: density.holding, samples: run.samples, end: run.end,
+        holding: density.holding, samples: run.samples, end: run.end, bands: priceBands(store),
       });
       return;
     }
@@ -87,8 +90,9 @@ self.onmessage = (e: MessageEvent<FutureRequest>) => {
     const all: PathOutcome[] = [];
     const end: EndDist = { counts: new Array(req.grid.rows).fill(0), pnlSum: new Array(req.grid.rows).fill(0) };
     let first: SimStats | null = null;
+    const store = new PriceStore(req.batches * req.perBatch, p.horizon);
     for (let i = 0; i < req.batches; i++) {
-      const run = runCloud(p, req.vol, req.perBatch, req.seed + i * 7919, req.grid, density, { samples: i === 0 ? req.samples : 0, exitSamples: 60 });
+      const run = runCloud(p, req.vol, req.perBatch, req.seed + i * 7919, req.grid, density, { samples: i === 0 ? req.samples : 0, exitSamples: 60, extraStep: store.step });
       all.push(...run.outcomes);
       run.end.counts.forEach((c, k) => {
         end.counts[k] += c;
@@ -96,7 +100,7 @@ self.onmessage = (e: MessageEvent<FutureRequest>) => {
       });
       const stats = computeStats(run.outcomes);
       if (i === 0) first = stats;
-      post({ runId: req.runId, type: "batch", index: i, stats, holding: density.holding.slice(), after: density.after.slice(), exits: run.exits, samples: run.samples });
+      post({ runId: req.runId, type: "batch", index: i, stats, holding: density.holding.slice(), after: density.after.slice(), exits: run.exits, samples: run.samples, bands: priceBands(store) });
     }
     const hold = holdOutcomes(all, p.horizon);
     const exitDays = { tp: new Array(p.horizon + 1).fill(0), sl: new Array(p.horizon + 1).fill(0), time: new Array(p.horizon + 1).fill(0) };
@@ -106,6 +110,7 @@ self.onmessage = (e: MessageEvent<FutureRequest>) => {
     post({
       runId: req.runId, type: "done", stats: computeStats(all), hold: computeStats(hold), first: first!, hist: histogram(all), end,
       avgWin: wl.win, avgLoss: wl.loss, holdAvgWin: hwl.win, holdAvgLoss: hwl.loss, exitDays,
+      stories: pickStories(all, store), endPrices: Array.from({ length: store.filled }, (_, k) => store.data[k * (store.days + 1) + store.days]),
     });
     // 换个规则试试，在曲线之前算：它直接出现在结论卡片里。用固定种子：点"换一组随机走势"时建议不该忽有忽无。
     const altN = curvePathCount(p, 7, 3000);

@@ -81,7 +81,9 @@ export default function SimSurface3D(props: Props) {
   const view = useRef({ ...DEFAULT_VIEW });
   const size = useRef({ w: 0, h: 0 });
   const raf = useRef(0);
-  const drag = useRef<{ x: number; y: number } | null>(null);
+  const drag = useRef<{ x: number; y: number; pan: boolean } | null>(null);
+  // 放大缩小+平移：屏幕坐标 = 自动缩放居中后的坐标 × k + (tx, ty)。滚轮以鼠标所在的点为中心放大，按住Shift（或右键）拖动平移。
+  const zoom = useRef({ k: 1, tx: 0, ty: 0 });
 
   const zScale = Math.max(model.maxProfit, model.maxLoss) || 1;
   const X = (day: number) => -1 + (2 * day) / Math.max(1, days);
@@ -140,10 +142,7 @@ export default function SimSurface3D(props: Props) {
     const { yaw, pitch } = view.current;
     const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
     // 三个轴共用一个原点：开仓那天、最低股价、盈亏0。BASE=盈亏0的高度，那里画一层网格（"0面"）：曲面在它上面是赚、下面是亏。
-    // 盒子（用来缩放居中）只包住曲面真正占的高度加上0面，图才不会缩在一角。
     const BASE = Z(0);
-    const FLOOR = Math.min(Z(surface.lo), BASE) - 0.12;
-    const TOP = Math.max(Z(surface.hi), BASE) + 0.14;
     const raw = (x: number, y: number, z: number) => {
       const x1 = x * cy - y * sy;
       const y1 = x * sy + y * cy;
@@ -152,19 +151,27 @@ export default function SimSurface3D(props: Props) {
       const f = 1 / (1 + 0.14 * depth);
       return { x: x1 * f, y: -u * f, depth };
     };
-    // 每次按当前角度把整个盒子（地板+最高最低点）缩放、居中到画布里，转到哪个角度都不出界。
+    // 每次按当前角度，把真正画出来的东西（曲面上的点、0面四角、三根轴的两头）缩放、居中到画布里，转到哪个角度都不出界。
+    // 不用整个盒子的八个角：盒子底面的角大多空着，按它算会在下面留一大片空白，窗口再大曲面也只占一小块。
     let bx0 = Infinity, bx1 = -Infinity, by0 = Infinity, by1 = -Infinity;
-    for (const x of [-1.15, 1.1]) for (const y of [-1, 1]) for (const z of [FLOOR, TOP]) {
+    const fit = (x: number, y: number, z: number) => {
       const r = raw(x, y, z);
       bx0 = Math.min(bx0, r.x); bx1 = Math.max(bx1, r.x); by0 = Math.min(by0, r.y); by1 = Math.max(by1, r.y);
-    }
-    const padX = 48, padTop = 16, padBottom = 26;
+    };
+    const step = Math.max(1, Math.floor(surface.NX / 12));
+    for (let i = 0; i < surface.NX; i += step) for (let j = 0; j < NY; j += 5) fit(X(surface.pts[i][j].day), Y(surface.pts[i][j].price), Z(surface.pts[i][j].pnl));
+    for (const j of [0, NY - 1]) fit(X(surface.pts[surface.NX - 1][j].day), Y(surface.pts[surface.NX - 1][j].price), Z(surface.pts[surface.NX - 1][j].pnl));
+    for (const x of [-1, 1.16]) for (const y of [-1, 1.16]) fit(x, y, Z(0));
+    fit(-1, -1, Math.max(Z(model.maxProfit), Z(0) + 0.1) + 0.12);
+    fit(-1, -1, Math.min(Z(-model.maxLoss), Z(0)));
+    const padX = 64, padTop = 28, padBottom = 36;
     const S = Math.min((W - 2 * padX) / (bx1 - bx0), (H - padTop - padBottom) / (by1 - by0));
     const ox = padX + ((W - 2 * padX) - (bx1 - bx0) * S) / 2 - bx0 * S;
     const oy = padTop + ((H - padTop - padBottom) - (by1 - by0) * S) / 2 - by0 * S;
     const proj = (x: number, y: number, z: number) => {
       const r = raw(x, y, z);
-      return { sx: ox + r.x * S, sy: oy + r.y * S, depth: r.depth };
+      const zm = zoom.current;
+      return { sx: (ox + r.x * S) * zm.k + zm.tx, sy: (oy + r.y * S) * zm.k + zm.ty, depth: r.depth };
     };
     const line = (a: V3, b: V3, style: string, width = 1, dash: number[] = []) => {
       const p = proj(...a), q = proj(...b);
@@ -527,6 +534,10 @@ export default function SimSurface3D(props: Props) {
     g.fillStyle = "#64748b";
     g.textAlign = "right";
     g.fillText(labels.hint, W - 8, H - 8);
+    if (zoom.current.k > 1.01) {
+      g.fillStyle = "#94a3b8";
+      g.fillText(`×${zoom.current.k.toFixed(1)}`, W - 8, H - 22);
+    }
     // 开场从正上方看的那一会儿：告诉用户这就是平面图
     if (pitch > 1.35) {
       g.font = "bold 12px sans-serif";
@@ -540,6 +551,10 @@ export default function SimSurface3D(props: Props) {
     }
     // 左上角说明：三个方向各代表什么（转到任何角度都看得懂）
     g.textAlign = "left";
+    // 放大后曲面会铺到左上角，说明文字垫一层底色免得看不清
+    const lw = Math.max(...labels.legend.map((ln) => g.measureText(ln).width));
+    g.fillStyle = "rgba(2,6,23,0.75)";
+    g.fillRect(4, 4, lw + 12, labels.legend.length * 15 + 4);
     labels.legend.forEach((ln, i) => {
       g.fillStyle = i === 0 ? "#e2e8f0" : "#cbd5e1";
       g.fillText(ln, 10, 16 + i * 15);
@@ -590,6 +605,25 @@ export default function SimSurface3D(props: Props) {
     return () => cancelAnimationFrame(id);
   }, []);
 
+  // 滚轮放大缩小：以鼠标所在的点为中心（那一点放大前后不动），1～8倍。要用非passive的监听才能挡住页面跟着滚动。
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const z = zoom.current;
+      const k = Math.min(8, Math.max(1, z.k * Math.exp(-e.deltaY * 0.0015)));
+      if (k === z.k) return;
+      if (k === 1) zoom.current = { k: 1, tx: 0, ty: 0 };
+      else zoom.current = { k, tx: mx - ((mx - z.tx) / z.k) * k, ty: my - ((my - z.ty) / z.k) * k };
+      schedule();
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
   // 数据变了就重画
   useEffect(() => {
     schedule();
@@ -600,22 +634,25 @@ export default function SimSurface3D(props: Props) {
       ref={wrapRef}
       className="relative h-full w-full cursor-grab touch-none select-none active:cursor-grabbing"
       onPointerDown={(e) => {
-        drag.current = { x: e.clientX, y: e.clientY };
+        drag.current = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2 };
         (e.target as HTMLElement).setPointerCapture(e.pointerId);
       }}
       onPointerMove={(e) => {
         if (!drag.current) return;
         const dx = e.clientX - drag.current.x;
         const dy = e.clientY - drag.current.y;
-        drag.current = { x: e.clientX, y: e.clientY };
-        view.current = { yaw: view.current.yaw + dx * 0.008, pitch: Math.min(1.35, Math.max(0.1, view.current.pitch + dy * 0.006)) };
+        drag.current = { ...drag.current, x: e.clientX, y: e.clientY };
+        if (drag.current.pan) zoom.current = { ...zoom.current, tx: zoom.current.tx + dx, ty: zoom.current.ty + dy };
+        else view.current = { yaw: view.current.yaw + dx * 0.008, pitch: Math.min(1.35, Math.max(0.1, view.current.pitch + dy * 0.006)) };
         schedule();
       }}
       onPointerUp={() => {
         drag.current = null;
       }}
+      onContextMenu={(e) => e.preventDefault()}
       onDoubleClick={() => {
         view.current = { ...DEFAULT_VIEW };
+        zoom.current = { k: 1, tx: 0, ty: 0 };
         schedule();
       }}
     >

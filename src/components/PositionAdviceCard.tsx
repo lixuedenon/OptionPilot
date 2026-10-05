@@ -11,6 +11,7 @@ import { PRESET_GROUPS } from "@/lib/presets";
 import { matchStrategy } from "@/lib/matchStrategy";
 import { addCalendarDays } from "@/lib/dateUtils";
 import { comboBaseIv } from "@/lib/stockOptionMap";
+import { ncdf } from "@/lib/bs";
 import { openingBasis, isCreditCombo } from "@/lib/winRateSim";
 import { adviseCombo, ADVICE_DRIVER, type Advice, type AdviceAction, type AdviceDriver } from "@/lib/positionAdvisor";
 import { useSimSettings, useHv20, fracLabel } from "@/lib/simSettings";
@@ -75,6 +76,7 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
 
   // 模拟要几十毫秒：输入停下来一会儿再算（地形图上鼠标移动时不至于卡）；固定种子，同样的输入给同样的结果。
   const [advice, setAdvice] = useState<Advice | null>(null);
+  const [sdOpen, setSdOpen] = useState(false);
   const runKey = useMemo(() => {
     if (!nowLegs || basis == null || hasStock || !volReady) return "";
     const lk = nowLegs.map((l) => [l.action, l.type, l.strike, l.dte.toFixed(2), l.premium.toFixed(4), l.qty ?? 1].join(":")).join("|");
@@ -175,6 +177,38 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
       priceTxt = s.nearestBe != null
         ? t("advice.priceOut", { s: S.toFixed(2), be: s.nearestBe.toFixed(2), dir: t(s.nearestBe > S ? "advice.up" : "advice.down"), p: pctSmall(Math.abs(s.nearestBe / S - 1)), z: (-s.sigmaToEdge!).toFixed(1) })
         : t("advice.priceOutNoBe", { s: S.toFixed(2) });
+    // "几个标准差"对新手是个黑话：点开后用通勤打比方，再给出按这个幅度粗算的概率。
+    const sdLines: string[] = [];
+    if (s.nearestBe != null && s.sigmaToEdge != null && Math.abs(s.sigmaToEdge) >= 0.05) {
+      const z = Math.abs(s.sigmaToEdge);
+      const inZ = s.inProfitZone;
+      const tier = z < 0.5 ? 0 : z < 1 ? 1 : z < 2 ? 2 : 3;
+      const beyond = 1 - ncdf(z);
+      sdLines.push(
+        t("advice.sdWhat", { iv: (s.sigmaIv * 100).toFixed(0), d: s.remainingDays, m: pctSmall(s.sigmaMove), usd: usd(S * s.sigmaMove) }),
+        t(inZ ? "advice.sdAnalogyIn" : "advice.sdAnalogyOut", {
+          z: z.toFixed(1), min: Math.max(1, Math.round(z * 10)), tier: t(`advice.sdTier${inZ ? "In" : "Out"}${tier}`),
+        }),
+        t(inZ ? "advice.sdOddsIn" : "advice.sdOddsOut", { be: s.nearestBe.toFixed(2), pe: pct0(beyond), pt: pct0(Math.min(1, 2 * beyond)) }),
+      );
+    }
+    const priceCell = (
+      <>
+        <div>
+          {priceTxt}
+          {sdLines.length > 0 && (
+            <button onClick={() => setSdOpen((o) => !o)} className="ml-1.5 text-[10px] font-normal text-sky-400 underline-offset-2 hover:underline">
+              {t(sdOpen ? "advice.sdClose" : "advice.sdOpen")}
+            </button>
+          )}
+        </div>
+        {sdOpen && sdLines.length > 0 && (
+          <div className="mt-0.5 space-y-0.5 rounded border border-slate-700/70 bg-slate-950/50 px-1.5 py-1 text-[10.5px] font-normal text-slate-300">
+            {sdLines.map((l, i) => <div key={i}>{l}</div>)}
+          </div>
+        )}
+      </>
+    );
     const timeTxt = t("advice.time", { p: pct0(s.elapsed), d: s.remainingDays });
     const base = t(cr ? "advice.basePremium" : "advice.baseCost");
     const pnlTxt =
@@ -211,7 +245,7 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
     const why = t(`advice.why.${a.rule}`, {
       rr: pct0(s.rrRel ?? 0), z: (s.sigmaToEdge ?? 0).toFixed(1), sl: pct0(s.pSl), w: pct0(s.pWin),
     });
-    const row = (key: Exclude<AdviceDriver, null>, label: string, lines: string[]) => (
+    const row = (key: Exclude<AdviceDriver, null>, label: string, lines: ReactNode[]) => (
       <div className={`grid grid-cols-[14px_34px_1fr] gap-x-1 ${driver === key ? "text-slate-100" : "text-slate-400"}`}>
         <span className="text-sky-400">{driver === key ? "▶" : ""}</span>
         <span className={driver === key ? "font-semibold" : "text-slate-500"}>{label}</span>
@@ -226,7 +260,7 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
           <span className={`rounded px-1.5 py-0.5 text-[12px] font-bold ${ACTION_CLS[a.action]}`}>{t(`advice.act.${a.action}`)}</span>
           <span className="min-w-0 text-[12px] text-slate-200">{why}</span>
         </div>
-        {row("price", t("advice.lblPrice"), [priceTxt])}
+        {row("price", t("advice.lblPrice"), [priceCell])}
         {row("time", t("advice.lblTime"), [timeTxt])}
         {row("pnl", t("advice.lblPnl"), [pnlTxt])}
         {row("forward", t("advice.lblForward"), [settingsTxt, fwdTxt, ...unreachable, roomTxt])}

@@ -11,7 +11,8 @@ import {
   openingBasis, isCreditCombo, prepareSim, simPnlAt, probPriceBeyond, batchStability, driftCushion,
   type SimRules, type SimStats, type Histogram, type CurvePoint, type Breakeven, type DriftPoint, type ExitReason,
 } from "@/lib/winRateSim";
-import type { ExitPoint, EndDist, GridSpec, RuleSuggestion } from "@/lib/futureSim";
+import type { ExitPoint, GridSpec, RuleSuggestion, Band, Story } from "@/lib/futureSim";
+import { drawZones, drawBands, labelBands, tagBox, type PlaneFrame, type Placed } from "@/lib/planeChart";
 import type { FutureRequest, FutureResponse, Sample } from "@/lib/futureSim.worker";
 import { buildMapModel, comboBaseIv, attributeSegment } from "@/lib/stockOptionMap";
 import { priceStance } from "@/lib/retroStory";
@@ -21,6 +22,7 @@ import { useSimSettings, setSideRules, setVolOverride as setVolOverrideFor, setD
 import { computeHV, fetchHistoricalSeries } from "@/lib/historicalVolatility";
 import CanvasBox from "@/components/simCharts";
 import SimSurface3D from "@/components/SimSurface3D";
+import HowToRead from "@/components/HowToRead";
 import { drawVolCurve, drawDriftCurve, drawPnlHist } from "@/lib/simChartDraw";
 
 interface Props {
@@ -71,20 +73,13 @@ interface MainRun {
   after: Float32Array | null;
   exits: ExitPoint[];
   samples: Sample[];
+  bands: Band[]; // 平面图的股价范围带（到这一批为止的全部走势）
   done: Extract<FutureResponse, { type: "done" }> | null;
   curve: Extract<FutureResponse, { type: "curve" }> | null;
   alt: RuleSuggestion | null | undefined; // undefined=还没算完
   error: string | null;
 }
-const EMPTY_RUN: MainRun = { batches: [], holding: null, after: null, exits: [], samples: [], done: null, curve: null, alt: undefined, error: null };
-
-// 地形图同款配色：盈利按最大盈利、亏损按最大亏损各自换算深浅。
-function cellRgb(v: number, maxProfit: number, maxLoss: number): [number, number, number] {
-  const k = Math.sqrt(Math.min(1, v >= 0 ? v / maxProfit : -v / maxLoss));
-  const base = [22, 30, 46];
-  const to = v >= 0 ? [16, 185, 129] : [244, 63, 94];
-  return [0, 1, 2].map((i) => Math.round(base[i] + (to[i] - base[i]) * k)) as [number, number, number];
-}
+const EMPTY_RUN: MainRun = { batches: [], holding: null, after: null, exits: [], samples: [], bands: [], done: null, curve: null, alt: undefined, error: null };
 
 function niceStep(span: number, target: number) {
   const raw = span / target;
@@ -262,7 +257,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
       const head = q[0];
       if (head.type === "batch") {
         q.shift();
-        setRun((r) => ({ ...r, batches: [...r.batches, head.stats], holding: head.holding, after: head.after, exits: [...r.exits, ...head.exits], samples: head.samples.length ? head.samples : r.samples }));
+        setRun((r) => ({ ...r, batches: [...r.batches, head.stats], holding: head.holding, after: head.after, exits: [...r.exits, ...head.exits], samples: head.samples.length ? head.samples : r.samples, bands: head.bands }));
         return;
       }
       while (q.length && q[0].type !== "batch") {
@@ -395,57 +390,68 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
     </div>
   );
 
-  // ── 平面视图：地形图做底色，上面是密度云、下车点、到期落点、情景点和蓝色的分叉云 ──
-  const end: EndDist | undefined = run.done?.end;
+  // ── 平面视图：赚/亏两区做底色，上面是全部走势的股价范围带、几种典型结局、上方每天下车多少、右侧全拿到期停在哪 ──
+  const STORY_COLOR: Record<Story["kind"], string> = { tp: "#34d399", sl: "#f43f5e", time: "#fbbf24", win: "#fde68a", loss: "#fb7185" };
+  const shareText = (v: number) => (v > 0 && v < 1 ? t("future.shareLt1") : t("future.shareAbout", { p: Math.round(v) }));
+  const stories = run.done?.stories ?? [];
   const drawPlane = (g: CanvasRenderingContext2D, W: number, H: number) => {
-    const M = { l: 56, r: 74, t: 22, b: 34 };
+    const ed = run.done?.exitDays;
+    const M = { l: 56, r: 96, t: ed ? 66 : 22, b: 34 };
     const pw = W - M.l - M.r, ph = H - M.t - M.b;
     const X = (d: number) => M.l + (d / days) * pw;
     const Y = (s: number) => M.t + ((model.sMax - s) / (model.sMax - model.sMin)) * ph;
-    const cw = pw / (model.cols - 1), ch = ph / (model.rows - 1);
+    const f: PlaneFrame = { X, Y, left: M.l, top: M.t, width: pw, height: ph };
     g.save();
     g.beginPath();
     g.rect(M.l, M.t, pw, ph);
     g.clip();
-    for (let r = 0; r < model.rows; r++)
-      for (let c = 0; c < model.cols; c++) {
-        const [R, G, B] = cellRgb(model.grid[r * model.cols + c], model.maxProfit, model.maxLoss);
-        g.fillStyle = `rgb(${R},${G},${B})`;
-        g.fillRect(M.l + c * cw - cw / 2, M.t + r * ch - ch / 2, cw + 1, ch + 1);
-      }
-    g.fillStyle = "rgba(2,6,23,0.5)";
-    g.fillRect(M.l, M.t, pw, ph);
-    const cellW = pw / days, cellH = ph / ROWS;
-    const paint = (dens: Float32Array | null, rgb: string, k: number) => {
-      if (!dens) return;
+    drawZones(g, model, days, f);
+    drawBands(g, run.bands, f);
+    // 情景点往后：蓝色的分叉云（还拿着的走势密度）
+    if (forkShown) {
+      const cellW = pw / days, cellH = ph / ROWS;
       for (let d = 0; d <= days; d++) {
         let mx = 0;
-        for (let r = 0; r < ROWS; r++) mx = Math.max(mx, dens[d * ROWS + r]);
+        for (let r = 0; r < ROWS; r++) mx = Math.max(mx, forkShown.holding[d * ROWS + r]);
         if (mx <= 0) continue;
         for (let r = 0; r < ROWS; r++) {
-          const v = dens[d * ROWS + r];
+          const v = forkShown.holding[d * ROWS + r];
           if (v <= 0) continue;
-          g.fillStyle = `rgba(${rgb},${(k * Math.sqrt(v / mx)).toFixed(3)})`;
+          g.fillStyle = `rgba(56,189,248,${(0.75 * Math.sqrt(v / mx)).toFixed(3)})`;
           g.fillRect(M.l + (d - 0.5) * cellW, M.t + r * cellH, cellW + 0.6, cellH + 0.6);
         }
       }
-    };
-    paint(run.after, "148,163,184", 0.22);
-    paint(run.holding, "226,240,255", 0.8);
-    paint(forkShown?.holding ?? null, "56,189,248", 0.85);
-    for (const e of run.exits) {
-      g.fillStyle = REASON_COLOR[e.reason];
+    }
+    // 典型结局：下车前实线，下车后接着画成淡色虚线（已经不算数，只是看股价后来去了哪）
+    for (const st of stories) {
+      const c = STORY_COLOR[st.kind];
+      g.strokeStyle = c;
+      g.lineWidth = 1.8;
       g.beginPath();
-      g.arc(X(e.day), Y(e.price), 2.1, 0, Math.PI * 2);
-      g.fill();
+      st.prices.slice(0, st.day + 1).forEach((v, d) => (d ? g.lineTo(X(d), Y(v)) : g.moveTo(X(d), Y(v))));
+      g.stroke();
+      if (st.day < days) {
+        g.globalAlpha = 0.35;
+        g.setLineDash([3, 4]);
+        g.beginPath();
+        st.prices.slice(st.day).forEach((v, i) => (i ? g.lineTo(X(st.day + i), Y(v)) : g.moveTo(X(st.day), Y(v))));
+        g.stroke();
+        g.setLineDash([]);
+        g.globalAlpha = 1;
+        g.fillStyle = c;
+        g.beginPath();
+        g.arc(X(st.day), Y(st.prices[st.day]), 4, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.lineWidth = 1;
     }
     g.restore();
     // 行权价、平仓日
     g.font = "10px sans-serif";
     for (const k of model.strikes) {
       if (k < model.sMin || k > model.sMax) continue;
-      g.strokeStyle = "rgba(226,232,240,0.4)";
-      g.setLineDash([3, 3]);
+      g.strokeStyle = "rgba(226,232,240,0.3)";
+      g.setLineDash([2, 4]);
       g.beginPath();
       g.moveTo(M.l, Y(k));
       g.lineTo(M.l + pw, Y(k));
@@ -461,24 +467,83 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
       g.stroke();
       g.setLineDash([]);
     }
+    labelBands(g, run.bands, f, { mid: t("future.bandMid"), dark: t("future.bandDark"), light: t("future.bandLight") });
     // 纵轴刻度
     const step = niceStep(model.sMax - model.sMin, 6);
     g.fillStyle = "#94a3b8";
     g.textAlign = "right";
+    g.font = "10px sans-serif";
     for (let v = Math.ceil(model.sMin / step) * step; v <= model.sMax; v += step) g.fillText(String(Math.round(v * 100) / 100), M.l - 4, Y(v) + 3);
-    // 右侧：到期（或平仓那天）还拿着的走势落在哪
-    if (end) {
-      const mx = Math.max(...end.counts) || 1;
-      const x0 = M.l + pw + 6;
-      end.counts.forEach((c, r) => {
-        if (!c) return;
-        g.fillStyle = end.pnlSum[r] >= 0 ? "rgba(52,211,153,0.8)" : "rgba(251,113,133,0.8)";
-        g.fillRect(x0, M.t + r * cellH, (c / mx) * (M.r - 14), Math.max(1, cellH - 0.5));
-      });
-      g.fillStyle = "#64748b";
+    // 上方：每天按规则下车多少（止盈绿、止损红、到时间平仓黄），加几个累计数
+    if (ed && run.done) {
+      const n = run.done.stats.n || 1;
+      const top = 4, hh = 24;
+      const tot = ed.tp.map((v, d) => v + ed.sl[d] + ed.time[d]);
+      const mx = Math.max(1, ...tot);
+      const bw = Math.max(1, pw / days - 1);
+      for (let d = 1; d <= days && d < tot.length; d++) {
+        let y = top + 32 + hh;
+        for (const [k, col] of [["tp", "rgba(52,211,153,0.8)"], ["sl", "rgba(244,63,94,0.85)"], ["time", "rgba(251,191,36,0.8)"]] as const) {
+          const hgt = (ed[k][d] / mx) * hh;
+          if (hgt <= 0) continue;
+          g.fillStyle = col;
+          g.fillRect(X(d) - bw / 2, y - hgt, bw, hgt);
+          y -= hgt;
+        }
+      }
+      g.font = "10px sans-serif";
+      g.fillStyle = "#94a3b8";
       g.textAlign = "left";
-      g.fillText(t(p.endDay < days ? "future.endClose" : "future.endExpiry"), x0, M.t + ph + 14);
+      g.fillText(t("future.exitBarTitle"), M.l, top + 9);
+      let cum = 0;
+      const marks = [Math.max(1, Math.round(days * 0.15)), Math.round(days * 0.5), days];
+      for (let d = 0; d <= days && d < tot.length; d++) {
+        cum += tot[d];
+        if (marks.includes(d)) {
+          g.fillStyle = "#6ee7b7";
+          g.textAlign = d === days ? "right" : "center";
+          g.fillText(t("future.exitCum", { d, p: Math.round((cum / n) * 100) }), d === days ? M.l + pw : X(d), top + 22);
+        }
+      }
     }
+    // 右侧：不管规则、全部拿到期时停在哪（按到期那天那个价位是赚是亏上色）
+    const endPrices = run.done?.endPrices;
+    if (endPrices && run.done) {
+      const BIN = 40, cnt = new Array(BIN).fill(0);
+      for (const v of endPrices) if (v >= model.sMin && v <= model.sMax) cnt[Math.min(BIN - 1, Math.floor(((model.sMax - v) / (model.sMax - model.sMin)) * BIN))]++;
+      const mx = Math.max(1, ...cnt), x0 = M.l + pw + 6, bh = ph / BIN;
+      cnt.forEach((c, i) => {
+        if (!c) return;
+        const mid = model.sMax - ((i + 0.5) / BIN) * (model.sMax - model.sMin);
+        g.fillStyle = model.pnlAt(days, mid) >= 0 ? "rgba(52,211,153,0.8)" : "rgba(251,113,133,0.85)";
+        g.fillRect(x0, M.t + i * bh + 0.5, (c / mx) * (M.r - 30), Math.max(1, bh - 1));
+      });
+      g.font = "10px sans-serif";
+      g.fillStyle = "#94a3b8";
+      g.textAlign = "left";
+      g.fillText(t("future.endAllTitle"), x0, M.t - 4);
+      const win = run.done.hold.winPct;
+      g.font = "bold 10px sans-serif";
+      g.fillStyle = "#6ee7b7";
+      g.fillText(t("future.endAllWin", { p: Math.round(win) }), x0, M.t + ph + 12);
+      g.fillStyle = "#fda4af";
+      g.fillText(t("future.endAllLoss", { p: Math.round(100 - win) }), x0, M.t + ph + 24);
+    }
+    // 典型结局的故事：贴在每条线下车（或到期）的那一点
+    const placed: Placed[] = [];
+    stories.forEach((st, i) => {
+      const c = STORY_COLOR[st.kind];
+      const v = st.prices[Math.min(st.day, st.prices.length - 1)];
+      const anchor = { x: X(st.day), y: Y(Math.min(model.sMax, Math.max(model.sMin, v))) };
+      tagBox(
+        g, anchor,
+        [
+          { text: `${i === 0 ? t("future.storyFirst") : ""}${t(`future.story_${st.kind}`)}${shareText(st.share)}`, color: c, bold: true },
+          { text: t(`future.story_${st.kind}D`, { d: st.day, v: `${st.pnl >= 0 ? "+" : "−"}$${Math.abs(st.pnl).toFixed(2)}` }), color: "#e2e8f0" },
+        ],
+        c, placed, { left: M.l + 2, right: M.l + pw - 2, top: M.t + 2, bottom: M.t + ph - 2 }, st.day >= days * 0.6,
+      );
+    });
     // 情景点
     if (scen) {
       const sx = X(scen.day), sy = Y(scen.price);
@@ -494,16 +559,8 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
       g.fill();
       g.stroke();
       g.lineWidth = 1;
-      const label = t("winRate.scenMark", { d: Math.round(scen.day), s: scen.price.toFixed(2) });
-      g.font = "bold 11px sans-serif";
-      const tw = g.measureText(label).width;
-      const lx = sx + 10 + tw > M.l + pw ? sx - 10 - tw : sx + 10;
-      const ly = Math.max(M.t + 12, Math.min(M.t + ph - 6, sy - 8));
-      g.fillStyle = "rgba(2,6,23,0.85)";
-      g.fillRect(lx - 3, ly - 11, tw + 6, 15);
-      g.fillStyle = "#7dd3fc";
-      g.textAlign = "left";
-      g.fillText(label, lx, ly);
+      tagBox(g, { x: sx, y: sy }, [{ text: t("winRate.scenMark", { d: Math.round(scen.day), s: scen.price.toFixed(2) }), color: "#7dd3fc", bold: true }], "#38bdf8", placed,
+        { left: M.l + 2, right: M.l + pw - 2, top: M.t + 2, bottom: M.t + ph - 2 });
     }
     // 坐标轴说明和标题
     g.font = "10px sans-serif";
@@ -532,9 +589,6 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
       g.fillText(`${yLabel} →`, 0, 4);
       g.restore();
     }
-    g.font = "bold 12px sans-serif";
-    g.fillStyle = "#f8fafc";
-    g.fillText(t("future.title", { s: symbol.trim().toUpperCase() }), M.l + pw / 2, 15);
   };
 
   const notes3d = {
@@ -811,6 +865,19 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
     scenTop = <div className="flex flex-col gap-2">{parts}</div>;
   }
 
+  // "怎么看这张图"：平面图的几条带上这一次推演的真实数字（典型结局占比、全拿到期赚亏），立体图是固定说明
+  const howLines =
+    view === "3d"
+      ? [t("future.how3d1"), t("future.how3d2"), t("future.how3d3"), t("future.how3d4"), t("future.how3d5")]
+      : [
+          t("future.howPlane1"),
+          t("future.howPlane2"),
+          stories.length
+            ? t("future.howPlane3", { list: stories.map((st) => `${t(`future.story_${st.kind}`)}${shareText(st.share)}`).join(t("future.sep")) })
+            : t("future.howPlane3Pending"),
+          t("future.howPlane4"),
+          run.done ? t("future.howPlane5", { w: Math.round(run.done.hold.winPct), l: Math.round(100 - run.done.hold.winPct) }) : t("future.howPlane5Pending"),
+        ];
   const stability = finished && run.done ? batchStability(run.done.first, run.done.stats, p.basis) : null;
   const legend = (
     <div className="flex flex-wrap items-center gap-3 text-[10px] text-slate-500">
@@ -821,9 +888,20 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
             ? t("future.batch", { i: revealed, n: BATCHES, per: PER_BATCH.toLocaleString() })
             : t(stability?.similar ? "future.stableYes" : "future.stableNo")}
       </span>
-      <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-slate-100/80" />{t("future.lgHold")}</span>
-      {rules.takeProfitPct != null && <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: REASON_COLOR.tp }} />{t("winRate.lg_tp")}</span>}
-      {rules.stopMult != null && <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: REASON_COLOR.sl }} />{t("winRate.lg_sl")}</span>}
+      {view === "3d" ? (
+        <>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-slate-100/80" />{t("future.lgHold")}</span>
+          {rules.takeProfitPct != null && <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: REASON_COLOR.tp }} />{t("winRate.lg_tp")}</span>}
+          {rules.stopMult != null && <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: REASON_COLOR.sl }} />{t("winRate.lg_sl")}</span>}
+        </>
+      ) : (
+        <>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-emerald-500/40" />{t("future.lgZoneGain")}</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-rose-500/50" />{t("future.lgZoneLoss")}</span>
+          <span>{t("future.lgBe")}</span>
+          <span>{t("future.lgStories")}</span>
+        </>
+      )}
       {forkKey && <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-sky-400/80" />{t("future.lgFork")}</span>}
     </div>
   );
@@ -831,7 +909,8 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
   return (
     <div className="flex h-full flex-col gap-2 overflow-y-auto pr-1 text-[11px] text-slate-300">
       {controls}
-      <div className="h-[340px] shrink-0 overflow-hidden rounded-md border border-slate-800">
+      {/* 图的高度跟着窗口走（窗口高度的70%，至少420、最多760像素）：立体图太矮看不清；下面的卡片在右栏里往下滚 */}
+      <div className="h-[clamp(420px,70vh,760px)] shrink-0 overflow-hidden rounded-md border border-slate-800">
         {view === "3d" ? (
           <SimSurface3D
             model={model}
@@ -857,12 +936,13 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
           <CanvasBox
             className="h-full w-full"
             draw={drawPlane}
-            deps={[model, run.holding, run.after, run.exits, end, forkShown, scen?.day, scen?.price, p.endDay, symbol, t]}
+            deps={[model, run.bands, run.done, forkShown, scen?.day, scen?.price, p.endDay, symbol, t]}
             label={t("future.title", { s: symbol })}
           />
         )}
       </div>
       {legend}
+      <HowToRead lines={howLines} />
       <div className="shrink-0 rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 leading-relaxed">
         {scenTop}
         {moved && <div className="mb-1 mt-2 border-t border-slate-800 pt-2 text-[12px] font-bold text-slate-100">{t("future.tradeTitle", { n: (BATCHES * PER_BATCH).toLocaleString() })}</div>}
