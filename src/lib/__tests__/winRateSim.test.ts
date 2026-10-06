@@ -28,6 +28,17 @@ const setup = (rules: SimRules = RULES, extra: Partial<{ pnlOffset: number }> = 
 });
 
 describe("winRateSim", () => {
+  it("hold-to-expiry: the last day is labelled expiry, never tp/sl (max profit at expiry is not a take-profit)", () => {
+    const p = prepareSim(setup({ takeProfitPct: 0.5, stopMult: 2, closeFrac: 0 }))!;
+    const { outcomes } = runBatch(p, 0.3, 2000, 7);
+    for (const o of outcomes) {
+      if (o.reason === "tp" || o.reason === "sl") expect(o.day).toBeLessThan(p.horizon);
+      if (o.day === p.horizon) expect(o.reason).toBe("expiry");
+    }
+    // 到期赚钱（股价停在两个卖出腿之间）的走势一定有：不会全被归成止盈
+    expect(outcomes.some((o) => o.reason === "expiry" && o.pnl > 0)).toBe(true);
+  });
+
   it("P&L matches priceCombo at the same shifts", () => {
     const p = prepareSim(setup())!;
     for (const [day, price] of [[0, 100], [5, 96.5], [15, 108], [30, 91]] as const) {

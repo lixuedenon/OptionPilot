@@ -143,18 +143,26 @@ function runPath(p: Prepared, vol: number, z: () => number, keep: boolean, onSte
   const dt = 1 / 365;
   const drift = (p.drift - 0.5 * vol * vol) * dt;
   const diff = vol * Math.sqrt(dt);
+  return walkPath(p, () => Math.exp(drift + diff * z()), keep, onStep);
+}
+
+// 走一条路：next(d)给出第d天相对前一天的股价倍数（随机走势=对数正态一步；历史走势=那段真实走势当天的涨跌）。
+// 规则判断、下车、"一直拿着"的结果都在这里，随机和历史两种走法共用，结果才可比。
+function walkPath(p: Prepared, next: (d: number) => number, keep: boolean, onStep?: StepFn): { out: PathOutcome; prices?: number[] } {
   let S = p.spot;
   const prices = keep ? [S] : undefined;
   onStep?.(0, S, p.endDay > 0);
   let out: PathOutcome | null = p.endDay === 0 ? { reason: "time", day: 0, pnl: p.pnlOffset, price: S, holdPnl: 0 } : null;
   for (let d = 1; d <= p.horizon; d++) {
-    S *= Math.exp(drift + diff * z());
+    S *= next(d);
     prices?.push(S);
     if (!out && d <= p.endDay) {
       const pnl = simPnlAt(p, d, S);
-      if (pnl >= p.tpLine) out = { reason: "tp", day: d, pnl, price: S, holdPnl: 0 };
+      // 最后那天（到期/到点平仓）按"到期/到时间"算，不套止盈止损：到期那天股价只要还在卖出腿外侧，盈利自动就是全部权利金、
+      // 一定够得着止盈线，原来会被算成"止盈"，止盈概率虚高、"拿到期"几乎为0（2026-10-06修）。盈亏数字不变，只是归类。
+      if (d === p.endDay) out = { reason: p.endDay < p.horizon ? "time" : "expiry", day: d, pnl, price: S, holdPnl: 0 };
+      else if (pnl >= p.tpLine) out = { reason: "tp", day: d, pnl, price: S, holdPnl: 0 };
       else if (pnl <= p.slLine) out = { reason: "sl", day: d, pnl, price: S, holdPnl: 0 };
-      else if (d === p.endDay) out = { reason: p.endDay < p.horizon ? "time" : "expiry", day: d, pnl, price: S, holdPnl: 0 };
     }
     onStep?.(d, S, !out || out.day >= d);
   }
@@ -173,6 +181,32 @@ export function runBatch(p: Prepared, vol: number, n: number, seed: number, samp
     outcomes.push(out);
     if (keep && prices) samples.push({ prices, reason: out.reason, exitDay: out.day });
   }
+  return { outcomes, samples };
+}
+
+// 历史真实走法（第2组）：ratios是 count 段真实走势、每段 days+1 个"第d个日历日收盘价 ÷ 起点收盘价"（见lib/histPaths.ts），
+// 按 indices 的顺序一段一段走（套到今天的股价上）。跟runBatch同样的规则判断和输出，只是走势换成真实出现过的。
+export interface HistSource {
+  ratios: Float32Array;
+  days: number;
+  indices: number[];
+}
+export function runBatchPaths(p: Prepared, hist: HistSource, sampleCount = 0, onStep?: StepFn): { outcomes: PathOutcome[]; samples: SamplePath[] } {
+  const outcomes: PathOutcome[] = [];
+  const samples: SamplePath[] = [];
+  const w = hist.days + 1;
+  hist.indices.forEach((idx, k) => {
+    const base = idx * w;
+    const keep = k < sampleCount;
+    const next = (d: number) => {
+      const dd = Math.min(d, hist.days);
+      const prev = hist.ratios[base + dd - 1];
+      return prev > 0 ? hist.ratios[base + dd] / prev : 1;
+    };
+    const { out, prices } = walkPath(p, next, keep, onStep);
+    outcomes.push(out);
+    if (keep && prices) samples.push({ prices, reason: out.reason, exitDay: out.day });
+  });
   return { outcomes, samples };
 }
 

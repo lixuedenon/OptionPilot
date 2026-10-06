@@ -19,7 +19,7 @@ export interface HistoricalSeries {
 // 同一个代码（和区间）10分钟内不重复请求（标签来回切换时会反复用到）。只在内存里，不落盘。
 const seriesCache = new Map<string, { at: number; p: Promise<HistoricalSeries> }>();
 
-export type HistoryRange = "2mo" | "6mo" | "1y" | "2y";
+export type HistoryRange = "2mo" | "6mo" | "1y" | "2y" | "5y" | "10y";
 
 export function fetchHistoricalSeries(symbol: string, range: HistoryRange = "2mo"): Promise<HistoricalSeries> {
   const key = `${symbol.toUpperCase()}|${range}`;

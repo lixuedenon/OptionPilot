@@ -19,10 +19,12 @@ import { priceStance } from "@/lib/retroStory";
 import { NowCells, JourneyBlock } from "@/components/ValueJourney";
 import { expiryScan } from "@/lib/positionAdvisor";
 import { useSimSettings, setSideRules, setVolOverride as setVolOverrideFor, setDriftPct as setDriftPctFor, fracLabel, type Side } from "@/lib/simSettings";
-import { computeHV, fetchHistoricalSeries } from "@/lib/historicalVolatility";
+import { computeHV, fetchHistoricalSeries, type HistoryRange } from "@/lib/historicalVolatility";
+import { buildHistPaths, histProbBeyond, MIN_HIST_PATHS } from "@/lib/histPaths";
 import CanvasBox from "@/components/simCharts";
 import SimSurface3D from "@/components/SimSurface3D";
 import HowToRead from "@/components/HowToRead";
+import MoneyPanel from "@/components/MoneyPanel";
 import { drawVolCurve, drawDriftCurve, drawPnlHist } from "@/lib/simChartDraw";
 
 interface Props {
@@ -33,17 +35,28 @@ interface Props {
   scenario: { day: number; price: number } | null; // 股价/时间滑块定的情景点（都为0时null）
   // 情景点那一刻的腿位（理论价）和开仓以来盈亏，跟左边持仓建议卡片的输入完全一样；null=情景日期已过最早到期日
   fork: { legs: Leg[]; spot: number; day: number; pnl: number } | null;
-  ivBase: number; // 开仓时的平均隐含波动率（跟波动率滑块小字同一个数，小数）
+  // 市场预期波动（小数）：最近到期日平值期权的隐含波动率（见lib/atmIv.ts），取不到期权链时是各腿平均。
+  // 跟波动率滑块小字、地形图喇叭口、持仓建议同一个数。
+  marketIv: number;
+  ivSource: "atm" | "legs";
   emptyText: string | null;
 }
 
 const BATCHES = 10;
+// 平面图左右边距：下面"你的钱会怎么变"用同样的边距，两张图的时间轴才竖着对齐
+const PLANE_ML = 56;
+const PLANE_MR = 96;
 const PER_BATCH = 1000;
 const SAMPLES = 60;
 const ROWS = 80;
 const REVEAL_MS = 330;
 const LIMIT_KEY = "optionpilot.winRateLossLimit";
 const VIEW_KEY = "optionpilot.simView";
+// 第2组：股价怎么走——随机（按假设波动）/ 这只股票历史上的真实走法（用过去几年）
+const PATH_KEY = "optionpilot.simPathMode";
+const YEARS_KEY = "optionpilot.simHistYears";
+const HIST_YEARS = [1, 2, 5, 10] as const;
+type HistYears = (typeof HIST_YEARS)[number];
 const TP_OPTIONS: Record<Side, number[]> = { credit: [0.25, 0.5, 0.75], debit: [0.5, 1, 2] };
 const SL_OPTIONS: Record<Side, number[]> = { credit: [0.5, 1, 1.5, 2, 3], debit: [0.25, 0.5, 0.75] };
 const CLOSE_FRACS = [0.25, 1 / 3, 0.5];
@@ -57,6 +70,17 @@ function loadNumber(key: string, fallback: number): number {
   } catch {
     return fallback;
   }
+}
+function loadPathMode(): "random" | "hist" {
+  try {
+    return localStorage.getItem(PATH_KEY) === "hist" ? "hist" : "random";
+  } catch {
+    return "random";
+  }
+}
+function loadYears(): HistYears {
+  const v = loadNumber(YEARS_KEY, 2);
+  return (HIST_YEARS as readonly number[]).includes(v) ? (v as HistYears) : 2;
 }
 function loadView(): "plane" | "3d" {
   try {
@@ -87,7 +111,7 @@ function niceStep(span: number, target: number) {
   return (n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10) * mag;
 }
 
-export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBase, emptyText }: Props) {
+export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, marketIv: marketIvProp, ivSource, emptyText }: Props) {
   const { t } = useI18n();
   const { rules: rulesBySide, volOverride, driftPct } = useSimSettings(symbol);
   const setVolOverride = (v: number | null) => setVolOverrideFor(symbol, v);
@@ -99,6 +123,9 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
   const [forkRun, setForkRun] = useState<{ key: string; stats: SimStats; holding: Float32Array; samples: Sample[] } | null>(null);
   const [runNonce, setRunNonce] = useState(0);
   const [storyIdx, setStoryIdx] = useState(0); // 立体图里看哪一种典型结局
+  const [pathMode, setPathMode] = useState<"random" | "hist">(loadPathMode);
+  const [histYears, setHistYears] = useState<HistYears>(loadYears);
+  const [histSeries, setHistSeries] = useState<{ key: string; status: "loading" | "ok" | "error"; series?: { closes: number[]; timestamps: number[] } }>({ key: "", status: "loading" });
   const workerRef = useRef<Worker | null>(null);
   const forkWorkerRef = useRef<Worker | null>(null);
   const queueRef = useRef<FutureResponse[]>([]);
@@ -107,10 +134,27 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
     try {
       localStorage.setItem(LIMIT_KEY, String(lossLimit));
       localStorage.setItem(VIEW_KEY, view);
+      localStorage.setItem(PATH_KEY, pathMode);
+      localStorage.setItem(YEARS_KEY, String(histYears));
     } catch {
       /* 浏览器禁止存储时只是不记住 */
     }
-  }, [lossLimit, view]);
+  }, [lossLimit, view, pathMode, histYears]);
+
+  // 历史真实走法：按选的年数拉日线（historical-prices的5y/10y要重新部署函数才有；没部署时会拿到较短的数据，界面照实说拿到了多久）
+  const histKey = pathMode === "hist" && symbol ? `${symbol}|${histYears}` : "";
+  useEffect(() => {
+    if (!histKey) return;
+    let alive = true;
+    setHistSeries({ key: histKey, status: "loading" });
+    fetchHistoricalSeries(symbol, `${histYears}y` as HistoryRange)
+      .then((s) => alive && setHistSeries({ key: histKey, status: s.timestamps.length === s.closes.length && s.closes.length > 10 ? "ok" : "error", series: s }))
+      .catch(() => alive && setHistSeries({ key: histKey, status: "error" }));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [histKey]);
 
   useEffect(() => {
     if (!symbol) return;
@@ -145,7 +189,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
   }, [legs]);
   const hasStock = legs.some((l) => l.kind === "stock");
   const stance = useMemo(() => (basis != null ? priceStance(legs, spot, basis) : "neutral"), [legs, spot, basis]);
-  const ivCenter = useMemo(() => comboBaseIv(legs, spot) ?? 0.3, [legs, spot]);
+  const ivCenter = marketIvProp > 0.01 ? marketIvProp : comboBaseIv(legs, spot) ?? 0.3;
   const vol = volOverride != null ? volOverride / 100 : hv.status === "ok" && hv.hv20 ? hv.hv20 : ivCenter;
   const volReady = volOverride != null || hv.status !== "loading";
   const drift = credit ? 0 : driftPct / 100;
@@ -156,8 +200,22 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
   );
   const prepared = useMemo(() => (setup ? prepareSim(setup) : null), [setup]);
   const days = prepared?.horizon ?? 1;
+  const histPaths = useMemo(
+    () => (histKey && histSeries.key === histKey && histSeries.status === "ok" && histSeries.series ? buildHistPaths(histSeries.series, days) : null),
+    [histKey, histSeries, days],
+  );
+  // 真正用历史走法：选了、拉到了、段数够（太少的话统计没意义，退回随机并说明）
+  const histWaiting = pathMode === "hist" && !!symbol && (histSeries.key !== histKey || histSeries.status === "loading");
+  const histActive = pathMode === "hist" && !!histPaths && histPaths.count >= MIN_HIST_PATHS;
+  const histProblem: "short" | "error" | null =
+    pathMode !== "hist" || histWaiting || histActive ? null : histSeries.status === "error" || !histPaths ? "error" : "short";
+  const histInput = useMemo(
+    () => (histActive && histPaths ? { ratios: histPaths.ratios, days: histPaths.days, count: histPaths.count, starts: histPaths.starts, vols: histPaths.vols, to: histPaths.to } : undefined),
+    [histActive, histPaths],
+  );
+  const histAvgVol = useMemo(() => (histPaths && histPaths.vols.length ? histPaths.vols.reduce((a, b) => a + b, 0) / histPaths.vols.length : null), [histPaths]);
   const model = useMemo(
-    () => (setup ? buildMapModel(legs, spot, dV, { extraPrices: scenario ? [scenario.price] : [] }, 120, ROWS) : null),
+    () => (setup ? buildMapModel(legs, spot, dV, { extraPrices: scenario ? [scenario.price] : [], baseIv: ivCenter }, 120, ROWS) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [setup, legs, spot, dV, scenario?.price],
   );
@@ -168,12 +226,13 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
   const runKey = useMemo(() => {
     if (!setup || !grid) return "";
     const lk = setup.legs.map((l) => [l.action, l.type, l.strike, l.dte, l.premium, l.qty ?? 1].join(":")).join("|");
-    return [lk, spot.toFixed(3), JSON.stringify(rules), vol.toFixed(4), drift, dV, totalTerm, grid.sMin.toFixed(3), grid.sMax.toFixed(3), runNonce].join("#");
-  }, [setup, grid, spot, rules, vol, drift, dV, totalTerm, runNonce]);
+    return [lk, spot.toFixed(3), JSON.stringify(rules), vol.toFixed(4), ivCenter.toFixed(4), drift, dV, totalTerm, grid.sMin.toFixed(3), grid.sMax.toFixed(3), runNonce,
+      histInput ? `hist:${histKey}:${histInput.count}` : histWaiting ? "histWait" : "random"].join("#");
+  }, [setup, grid, spot, rules, vol, ivCenter, drift, dV, totalTerm, runNonce, histInput, histKey, histWaiting]);
 
   // 主推演：输入变了（防抖400ms）就换一个后台线程从头算。
   useEffect(() => {
-    if (!setup || !prepared || !grid || !volReady || emptyText) return;
+    if (!setup || !prepared || !grid || !volReady || emptyText || histWaiting) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       workerRef.current?.terminate();
@@ -187,7 +246,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
       };
       const req: FutureRequest = {
         kind: "main", runId, setup, vol, ivCenter: Math.max(0.05, ivCenter + dV / 100), batches: BATCHES, perBatch: PER_BATCH, samples: SAMPLES,
-        seed: Math.floor(Math.random() * 1e9), grid, debit: !credit,
+        seed: Math.floor(Math.random() * 1e9), grid, debit: !credit, hist: histInput,
       };
       w.postMessage(req);
     }, 400);
@@ -196,7 +255,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
       window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runKey, volReady, emptyText]);
+  }, [runKey, volReady, emptyText, histWaiting]);
 
   // 情景点：按规则还走得到那里时，从那一点往后再推演一团（跟持仓建议同一组走势）。
   const scenState = useMemo(() => {
@@ -232,7 +291,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
         setForkRun({ key: forkKey, stats: m.stats, holding: m.holding, samples: m.samples });
       };
       const req: FutureRequest = {
-        kind: "fork", runId, vol, startDay: Math.round(fork.day), samples: 30, grid,
+        kind: "fork", runId, vol, startDay: Math.round(fork.day), samples: 30, grid, hist: histInput,
         setup: { legs: fork.legs, spot: fork.spot, basis, pnlOffset: fork.pnl, rules, totalTerm, drift },
       };
       w.postMessage(req);
@@ -282,6 +341,8 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
 
   const p = prepared;
   const revealed = run.batches.length;
+  // 走势条数：随机=10批×1000；历史走法=真实切出来的段数（"1万次"的说法在历史走法下都指这些段）
+  const totalN = run.done?.stats.n ?? (histInput ? histInput.count : BATCHES * PER_BATCH);
   const finished = revealed >= BATCHES && run.done != null;
   const forkShown = forkRun && forkRun.key === forkKey ? forkRun : null;
   const scen = scenario && scenState && scenState.kind !== "expired" ? scenario : null;
@@ -365,6 +426,36 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
         </label>
       )}
       <span className="flex flex-wrap items-center gap-1">
+        {t("future.pathLabel")}
+        <span className="flex overflow-hidden rounded border border-slate-600">
+          {(["random", "hist"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => setPathMode(m)}
+              className={`px-2 py-0.5 text-[11px] font-semibold ${pathMode === m ? "bg-sky-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
+            >
+              {t(m === "random" ? "future.pathRandom" : "future.pathHist")}
+            </button>
+          ))}
+        </span>
+        {pathMode === "hist" && (
+          <>
+            <span className="ml-1">{t("future.histYearsLabel")}</span>
+            {HIST_YEARS.map((y) => (
+              <button
+                key={y}
+                onClick={() => setHistYears(y)}
+                className={`rounded border px-1.5 py-0.5 text-[10px] ${histYears === y ? "border-sky-500 text-sky-300" : "border-slate-700 text-slate-400 hover:text-slate-200"}`}
+              >
+                {t("future.histYearsOpt", { y })}
+              </button>
+            ))}
+            {histWaiting && <span className="text-slate-500">{t("future.histLoading")}</span>}
+            {histProblem && <span className="text-amber-300">{t(histProblem === "short" ? "future.histTooShort" : "future.histError", { n: histPaths?.count ?? 0 })}</span>}
+          </>
+        )}
+      </span>
+      <span className={`flex flex-wrap items-center gap-1 ${histActive ? "opacity-40" : ""}`} title={histActive ? t("future.volUnusedHist") : undefined}>
         {t("winRate.vol")}
         <input
           type="number"
@@ -382,11 +473,14 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
         %
         {hv.status === "loading" && <span className="text-slate-500">{t("winRate.volLoading")}</span>}
         {chip(t("winRate.volHv", { v: hv.hv20 ? (hv.hv20 * 100).toFixed(1) : "" }), hv.hv20, "hv")}
-        {chip(t("winRate.volIv", { v: (ivCenter * 100).toFixed(1) }), ivCenter, "iv")}
+        {chip(t(ivSource === "atm" ? "winRate.volIvAtm" : "winRate.volIv", { v: (ivCenter * 100).toFixed(1) }), ivCenter, "iv")}
       </span>
-      <button onClick={() => setRunNonce((n) => n + 1)} className="ml-auto rounded border border-slate-600 px-2 py-0.5 text-[11px] font-semibold text-slate-200 hover:bg-slate-800">
-        {t("future.reroll")}
-      </button>
+      {/* 历史走法每次都是同一批真实走势，"换一组"没有意义 */}
+      {!histActive && (
+        <button onClick={() => setRunNonce((n) => n + 1)} className="ml-auto rounded border border-slate-600 px-2 py-0.5 text-[11px] font-semibold text-slate-200 hover:bg-slate-800">
+          {t("future.reroll")}
+        </button>
+      )}
     </div>
   );
 
@@ -396,7 +490,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
   const stories = run.done?.stories ?? [];
   const drawPlane = (g: CanvasRenderingContext2D, W: number, H: number) => {
     const ed = run.done?.exitDays;
-    const M = { l: 56, r: 96, t: ed ? 66 : 22, b: 34 };
+    const M = { l: PLANE_ML, r: PLANE_MR, t: ed ? 66 : 22, b: 34 };
     const pw = W - M.l - M.r, ph = H - M.t - M.b;
     const X = (d: number) => M.l + (d / days) * pw;
     const Y = (s: number) => M.t + ((model.sMax - s) / (model.sMax - model.sMin)) * ph;
@@ -422,27 +516,34 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
         }
       }
     }
-    // 典型结局：下车前实线，下车后接着画成淡色虚线（已经不算数，只是看股价后来去了哪）
-    for (const st of stories) {
+    // 典型结局：下车前实线，下车后接着画成淡色虚线（已经不算数，只是看股价后来去了哪）。
+    // 选中的那条（上方按钮，跟下面"你的钱会怎么变"、立体图是同一条）画粗、贴说明，其余的淡淡画一下；选中的最后画，压在最上面。
+    const selIdx = Math.min(storyIdx, Math.max(0, stories.length - 1));
+    const order = stories.map((_, i) => i).filter((i) => i !== selIdx).concat(stories.length ? [selIdx] : []);
+    for (const si of order) {
+      const st = stories[si];
+      const sel = si === selIdx;
       const c = STORY_COLOR[st.kind];
+      g.globalAlpha = sel ? 1 : 0.3;
       g.strokeStyle = c;
-      g.lineWidth = 1.8;
+      g.lineWidth = sel ? 2.4 : 1.2;
       g.beginPath();
       st.prices.slice(0, st.day + 1).forEach((v, d) => (d ? g.lineTo(X(d), Y(v)) : g.moveTo(X(d), Y(v))));
       g.stroke();
       if (st.day < days) {
-        g.globalAlpha = 0.35;
+        g.globalAlpha = sel ? 0.5 : 0.15;
         g.setLineDash([3, 4]);
         g.beginPath();
         st.prices.slice(st.day).forEach((v, i) => (i ? g.lineTo(X(st.day + i), Y(v)) : g.moveTo(X(st.day), Y(v))));
         g.stroke();
         g.setLineDash([]);
-        g.globalAlpha = 1;
+        g.globalAlpha = sel ? 1 : 0.3;
         g.fillStyle = c;
         g.beginPath();
-        g.arc(X(st.day), Y(st.prices[st.day]), 4, 0, Math.PI * 2);
+        g.arc(X(st.day), Y(st.prices[st.day]), sel ? 4.5 : 3, 0, Math.PI * 2);
         g.fill();
       }
+      g.globalAlpha = 1;
       g.lineWidth = 1;
     }
     g.restore();
@@ -529,16 +630,17 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
       g.fillStyle = "#fda4af";
       g.fillText(t("future.endAllLoss", { p: Math.round(100 - win) }), x0, M.t + ph + 24);
     }
-    // 典型结局的故事：贴在每条线下车（或到期）的那一点
+    // 典型结局的故事：只给选中的那条贴说明（贴在下车或到期的那一点）
     const placed: Placed[] = [];
     stories.forEach((st, i) => {
+      if (i !== Math.min(storyIdx, stories.length - 1)) return;
       const c = STORY_COLOR[st.kind];
       const v = st.prices[Math.min(st.day, st.prices.length - 1)];
       const anchor = { x: X(st.day), y: Y(Math.min(model.sMax, Math.max(model.sMin, v))) };
       tagBox(
         g, anchor,
         [
-          { text: `${i === 0 ? t("future.storyFirst") : ""}${t(`future.story_${st.kind}`)}${shareText(st.share)}`, color: c, bold: true },
+          { text: `${i === 0 && st.share >= Math.max(...stories.map((x) => x.share)) ? t("future.storyFirst") : ""}${t(`future.story_${st.kind}`)}${shareText(st.share)}`, color: c, bold: true },
           { text: t(`future.story_${st.kind}D`, { d: st.day, v: `${st.pnl >= 0 ? "+" : "−"}$${Math.abs(st.pnl).toFixed(2)}` }), color: "#e2e8f0" },
         ],
         c, placed, { left: M.l + 2, right: M.l + pw - 2, top: M.t + 2, bottom: M.t + ph - 2 }, st.day >= days * 0.6,
@@ -612,7 +714,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
     floor: t("future.floorTag"),
     curtain: t("future.curtainTag"),
     zero: t("future.zeroTag"),
-    band: t("future.bandTag3d", { n: (BATCHES * PER_BATCH).toLocaleString() }),
+    band: t("future.bandTag3d", { n: totalN.toLocaleString() }),
     dayTick: (d: number) => t("future.dayTick", { d }),
     scen: (d: number, price: string, v: string) => t("future.scenTag3d", { d, p: price, v }),
   };
@@ -634,9 +736,11 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
   const be: Breakeven | null = curve?.breakeven ?? null;
   const directional = !credit && curve != null && Math.abs(curve.delta) >= 0.3;
   // 假设波动从哪来：手填的 / 最近20天历史 / 取不到历史时暂按隐含波动率——说法必须跟真实来源一致。
-  const volSrc: "assumed" | "recent" | "iv" = volOverride != null ? "assumed" : hv.status === "ok" && hv.hv20 ? "recent" : "iv";
-  const srcLabel = t(volSrc === "assumed" ? "future.srcAssumed" : volSrc === "recent" ? "future.srcRecent" : "future.srcIv");
-  const srcBar = t(volSrc === "assumed" ? "future.barAssumed" : volSrc === "recent" ? "future.barRecent" : "future.barIv");
+  // 历史走法时，"实际波动"是那些真实走势自己的平均波动
+  const volSrc: "assumed" | "recent" | "iv" | "hist" = histActive && histAvgVol ? "hist" : volOverride != null ? "assumed" : hv.status === "ok" && hv.hv20 ? "recent" : "iv";
+  const srcLabel = volSrc === "hist" ? t("future.srcHist", { y: histYears }) : t(volSrc === "assumed" ? "future.srcAssumed" : volSrc === "recent" ? "future.srcRecent" : "future.srcIv");
+  const srcBar = volSrc === "hist" ? t("future.barHist") : t(volSrc === "assumed" ? "future.barAssumed" : volSrc === "recent" ? "future.barRecent" : "future.barIv");
+  const effVol = volSrc === "hist" ? histAvgVol! : vol;
   const marketIv = Math.max(0.01, ivCenter + dV / 100);
   type Verdict = "good" | "slight" | "flat" | "bad";
   // 判断直接看1万次的结果：平均盈亏要明显离开0（超过随机误差的2倍，且至少是基准的3%）才算有优势/吃亏。
@@ -663,9 +767,9 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
     // 卖方（以及买入跨式这类靠波动的买方）：开仓时市场定价的隐含波动率 vs 实际波动，差10%以内算差不多。
     // ⚠️ 必须跟开仓时的隐含波动率比（权利金是按它收/付的）；波动率滑块是开仓后隐含波动率的变化，另外单独说。
     const openIv = ivCenter;
-    const ratio = vol / openIv;
+    const ratio = effVol / openIv;
     const cmpKey = ratio < 0.9 ? (credit ? "future.cmpCalmSeller" : "future.cmpCalmBuyer") : ratio > 1.1 ? (credit ? "future.cmpWildSeller" : "future.cmpWildBuyer") : "future.cmpEven";
-    const mx = Math.max(openIv, vol) * 1.1;
+    const mx = Math.max(openIv, effVol) * 1.1;
     const bar = (label: string, v: number, color: string) => (
       <div className="flex items-center gap-2 text-[10px] text-slate-400">
         <span className="w-24 shrink-0">{label}</span>
@@ -675,12 +779,12 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
     );
     why = (
       <>
-        {t("future.whyVol", { iv: (openIv * 100).toFixed(1) })} {srcLabel} {(vol * 100).toFixed(1)}%{t("future.comma")}{t(cmpKey)}
+        {t(ivSource === "atm" ? "future.whyVolAtm" : "future.whyVol", { iv: (openIv * 100).toFixed(1) })} {srcLabel} {(effVol * 100).toFixed(1)}%{t("future.comma")}{t(cmpKey)}
         {dV !== 0 && <> {t(`future.dv${dV < 0 ? "Crush" : "Spike"}${credit ? "Seller" : "Buyer"}`, { n: Math.abs(dV) })}</>}
         <div className="mt-1 flex flex-col gap-0.5">
           {bar(t("future.barMarket"), openIv, "#a78bfa")}
           {dV !== 0 && bar(t("future.barAfterDv"), marketIv, "#c4b5fd")}
-          {bar(srcBar, vol, "#fbbf24")}
+          {bar(srcBar, effVol, "#fbbf24")}
         </div>
       </>
     );
@@ -710,6 +814,19 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
         </span>
       </div>,
     );
+    // 历史真实走法：先说清楚这次用的是哪些数据、多少段（相邻两段大部分重叠）
+    if (histActive && histPaths) {
+      const fmtD = (sec: number) => new Date(sec * 1000).toLocaleDateString();
+      const gotYears = (histPaths.to - histPaths.from) / (365 * 86400);
+      card.push(
+        row("hdata", t("future.histDataLabel"), (
+          <>
+            {t("future.histData", { s: symbol, from: fmtD(histPaths.from), to: fmtD(histPaths.to), n: histPaths.count.toLocaleString(), d: days })}
+            {gotYears < histYears * 0.8 && <span className="text-amber-300"> {t("future.histShortRange", { y: histYears, g: gotYears.toFixed(1) })}</span>}
+          </>
+        ), "text-sky-100"),
+      );
+    }
     // 隐含波动率远高于最近实际波动：常见于财报等大事件前，市场在为跳空定价，而这里的随机走势不含跳空。
     if (hv.status === "ok" && hv.hv20 && ivCenter / hv.hv20 >= IV_HV_WARN) {
       card.push(
@@ -730,7 +847,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
           "worst",
           t("future.worstLabel"),
           <span className="flex flex-wrap items-center gap-1">
-            <span>{t("winRate.worst", { v: usd(s.worst5) })}</span>
+            <span>{histActive ? t("future.worstHist", { k: Math.max(1, Math.round(s.n * 0.05)), n: s.n.toLocaleString(), v: usd(s.worst5) }) : t("winRate.worst", { v: usd(s.worst5) })}</span>
             <span>{t("winRate.sizingPre")}</span>
             <span>$</span>
             <input
@@ -749,7 +866,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
         ),
       );
     } else {
-      card.push(row("worst", t("future.worstLabel"), t("winRate.worstPositive", { v: usd(s.worst5) })));
+      card.push(row("worst", t("future.worstLabel"), histActive ? t("future.worstPositiveHist", { k: Math.max(1, Math.round(s.n * 0.05)), v: usd(s.worst5) }) : t("winRate.worstPositive", { v: usd(s.worst5) })));
     }
     // 你的规则：只说打开了的规则；跟同一组走势"一直拿到期"比，看规则在换什么。
     const ruleOn = rules.takeProfitPct != null || rules.stopMult != null || rules.closeFrac > 0;
@@ -777,6 +894,51 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
     card.push(
       row("rules", t("future.rulesLabel"), <>{ruleBits}{warn.length > 0 && <div className="text-amber-300">{warn.join(" ")}</div>}</>),
     );
+    // 这个胜率稳不稳（历史走法）：同样的规则放到最近1/2/5/10年、最动荡/最平静的几段里各算一遍
+    const stab = run.done.stab;
+    if (histActive && stab && stab.length > 1) {
+      const wins = stab.map((r) => r.win);
+      const spread = Math.max(...wins) - Math.min(...wins);
+      card.push(
+        row("stab", t("future.stabLabel"), (
+          <div className="flex flex-col gap-0.5">
+            {stab.map((r) => (
+              <div key={r.key} className="grid grid-cols-[110px_minmax(0,1fr)_88px] items-center gap-2 text-[10px]">
+                <span className="text-slate-400">{t(`future.stab_${r.key}`)}</span>
+                <span className="h-2 overflow-hidden rounded bg-slate-800"><span className="block h-2" style={{ width: `${Math.max(0, Math.min(100, r.win))}%`, background: r.win < s.winPct - 10 ? "#f59e0b" : "#10b981" }} /></span>
+                <span className="tabular-nums text-slate-200">{t("future.stabWin", { p: r.win.toFixed(0), n: r.n })}</span>
+              </div>
+            ))}
+            <div className={spread >= 15 ? "text-amber-300" : "text-slate-300"}>
+              {spread >= 15 ? t("future.stabShaky", { pp: spread.toFixed(0) }) : t("future.stabSteady", { pp: spread.toFixed(0) })}
+            </div>
+          </div>
+        )),
+      );
+    }
+    // 这笔值不值：同一组走势"一直拿到期"平均每笔多少 → 折算成这组期权理论上值多少，跟你实际收/付的比
+    {
+      const avgHold = hold.avg;
+      const fair = credit ? p.basis - avgHold : p.basis + avgHold;
+      const src = histActive ? t("future.theoSrcHist", { s: symbol, y: histYears }) : t("future.theoSrcRandom", { v: (vol * 100).toFixed(1) });
+      const edgePct = credit ? (fair > 0.005 ? (avgHold / fair) * 100 : null) : p.basis > 0 ? (avgHold / p.basis) * 100 : null;
+      const body = t(credit ? "future.theoCredit" : "future.theoDebit", {
+        src, a: money(avgHold), f: usd(Math.max(0, fair)), b: usd(p.basis),
+        cmp: t(`future.theo${avgHold >= 0 ? "Good" : "Bad"}${credit ? "Credit" : "Debit"}`, { d: usd(avgHold), p: edgePct == null ? "—" : `${avgHold >= 0 ? "+" : "−"}${Math.abs(edgePct).toFixed(0)}` }),
+      });
+      card.push(row("theo", t("future.theoLabel"), <>{body}{!histActive && <span className="text-slate-500"> {t("future.theoRandomNote")}</span>}</>));
+    }
+    // 跟只买股票比：同一批走势、同样的天数
+    {
+      const st = run.done.stock;
+      const sAvg = `${st.avg >= 0 ? "+" : "−"}${Math.abs(st.avg * 100).toFixed(1)}%`;
+      card.push(
+        row("stock", t("future.stockLabel"),
+          histActive
+            ? t(credit ? "future.stockHistCredit" : "future.stockHistDebit", { d: days, w: st.win.toFixed(0), a: sAvg, mine: s.winPct.toFixed(0) })
+            : t("future.stockRandom", { w: st.win.toFixed(0), a: sAvg })),
+      );
+    }
     // 换个规则试试：同一组走势下几种常见规则，明显更好才建议，一键套用（持仓建议跟着一起变）。
     const alt = run.alt;
     let altBody: ReactNode;
@@ -808,7 +970,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
     if (scenState.kind === "expired") scenLines.push(t("winRate.scenExpired"));
     else {
       if (scenario.day > 0 && Math.abs(scenario.price - spot) > 0.005) {
-        const prob = probPriceBeyond(spot, scenario.price, vol, drift, scenario.day);
+        const prob = histActive && histPaths ? histProbBeyond(histPaths, scenario.day, scenario.price / spot) : probPriceBeyond(spot, scenario.price, vol, drift, scenario.day);
         const chg = scenario.price / spot - 1;
         scenLines.push(
           t("future.scenWhere", {
@@ -838,7 +1000,8 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
       else if (forkKey) {
         scenLines.push(
           forkShown
-            ? t("future.scenFork", {
+            ? t(histActive ? "future.scenForkHist" : "future.scenFork", {
+                n: forkShown.stats.n.toLocaleString(),
                 tp: forkShown.stats.byReason.tp.pct.toFixed(0), sl: forkShown.stats.byReason.sl.pct.toFixed(0), w: forkShown.stats.winPct.toFixed(0),
                 a: money(forkShown.stats.avg), w5: money(forkShown.stats.worst5),
                 cmp: s ? t("future.scenForkCmp", { w: s.winPct.toFixed(0), a: money(s.avg), w5: money(s.worst5) }) : "",
@@ -854,7 +1017,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
   const moved = scenario != null || dV !== 0;
   const sDay = scenario?.day ?? 0;
   const sPrice = scenario?.price ?? spot;
-  const ivA = ivBase * 100;
+  const ivA = ivCenter * 100;
   const ivB = Math.max(0, ivA + dV);
   let scenTop: ReactNode = null;
   if (moved) {
@@ -876,7 +1039,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
         )),
       );
     }
-    parts.push(sec("sim", t("future.scenSimTitle", { n: (BATCHES * PER_BATCH).toLocaleString() }), <div className="flex flex-col gap-1 text-sky-100">{scenLines.map((l, i) => <div key={i}>{l}</div>)}</div>));
+    parts.push(sec("sim", t("future.scenSimTitle", { n: totalN.toLocaleString() }), <div className="flex flex-col gap-1 text-sky-100">{scenLines.map((l, i) => <div key={i}>{l}</div>)}</div>));
     scenTop = <div className="flex flex-col gap-2">{parts}</div>;
   }
 
@@ -892,6 +1055,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
             : t("future.howPlane3Pending"),
           t("future.howPlane4"),
           run.done ? t("future.howPlane5", { w: Math.round(run.done.hold.winPct), l: Math.round(100 - run.done.hold.winPct) }) : t("future.howPlane5Pending"),
+          t("future.howPlane6"),
         ];
   const stability = finished && run.done ? batchStability(run.done.first, run.done.stats, p.basis) : null;
   const legend = (
@@ -900,7 +1064,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
         {revealed === 0
           ? t("future.running")
           : !finished
-            ? t("future.batch", { i: revealed, n: BATCHES, per: PER_BATCH.toLocaleString() })
+            ? t("future.batch", { i: revealed, n: BATCHES, per: (histInput ? Math.round(histInput.count / BATCHES) : PER_BATCH).toLocaleString() })
             : t(stability?.similar ? "future.stableYes" : "future.stableNo")}
       </span>
       {view === "3d" ? (
@@ -925,7 +1089,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
     <div className="flex h-full flex-col gap-2 overflow-y-auto pr-1 text-[11px] text-slate-300">
       {controls}
       {/* 图的高度跟着窗口走（窗口高度的70%，至少420、最多760像素）：立体图太矮看不清；下面的卡片在右栏里往下滚 */}
-      {view === "3d" && stories.length > 0 && (
+      {stories.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
           <span className="text-slate-400">{t("future.pickStory")}</span>
           {stories.map((st, i) => (
@@ -961,16 +1125,36 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
           <CanvasBox
             className="h-full w-full"
             draw={drawPlane}
-            deps={[model, run.bands, run.done, forkShown, scen?.day, scen?.price, p.endDay, symbol, t]}
-            label={t("future.title", { s: symbol })}
+            deps={[model, run.bands, run.done, forkShown, scen?.day, scen?.price, p.endDay, symbol, storyIdx, t]}
+            label={histActive ? t("future.titleHist", { s: symbol, n: totalN.toLocaleString() }) : t("future.title", { s: symbol })}
           />
         )}
       </div>
       {legend}
+      {/* ⑤ 你的钱会怎么变：平面图正下方，同一批走势、同一条时间轴（左右边距跟平面图一样） */}
+      {view === "plane" && run.done?.money && run.done.money.length > 0 && (
+        <MoneyPanel
+          days={days}
+          endDay={p.endDay}
+          spot={spot}
+          stories={stories}
+          storyIdx={storyIdx}
+          colors={STORY_COLOR}
+          money={run.done.money}
+          exitDays={run.done.exitDays}
+          stats={run.done.stats}
+          tpLine={p.tpLine}
+          slLine={p.slLine}
+          scen={scen}
+          scenPnl={scen && fork ? fork.pnl : null}
+          margin={{ l: PLANE_ML, r: PLANE_MR }}
+          n={run.done.stats.n}
+        />
+      )}
       <HowToRead lines={howLines} />
       <div className="shrink-0 rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 leading-relaxed">
         {scenTop}
-        {moved && <div className="mb-1 mt-2 border-t border-slate-800 pt-2 text-[12px] font-bold text-slate-100">{t("future.tradeTitle", { n: (BATCHES * PER_BATCH).toLocaleString() })}</div>}
+        {moved && <div className="mb-1 mt-2 border-t border-slate-800 pt-2 text-[12px] font-bold text-slate-100">{t("future.tradeTitle", { n: totalN.toLocaleString() })}</div>}
         {run.error ? (
           <span className="text-rose-300">{t("winRate.error")}</span>
         ) : card.length ? (
@@ -980,7 +1164,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
         )}
         {!moved && <div className="mt-1.5 border-t border-slate-800 pt-1.5 text-sky-100">{t("future.scenNone")}</div>}
         <div className="mt-1.5 text-[10px] text-slate-500">
-          {t(credit ? "winRate.basisCredit" : "winRate.basisDebit", { v: usd(p.basis) })} {t("future.model")}
+          {t(credit ? "winRate.basisCredit" : "winRate.basisDebit", { v: usd(p.basis) })} {t(histActive ? "future.modelHist" : "future.model")}
         </div>
       </div>
       <details className="shrink-0 rounded-md border border-slate-800 px-3 py-1.5">
@@ -1012,9 +1196,9 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
             )}
           </div>
           <div className="min-w-0">
-            <div className="mb-1 text-[10px] text-slate-500">{t("winRate.distTitle", { n: (BATCHES * PER_BATCH).toLocaleString() })}</div>
+            <div className="mb-1 text-[10px] text-slate-500">{t("winRate.distTitle", { n: totalN.toLocaleString() })}</div>
             {run.done && (
-              <CanvasBox className="h-[130px]" draw={(g, W, H) => drawPnlHist(g, W, H, run.done!.hist as Histogram, money)} deps={[run.done]} label={t("winRate.distTitle", { n: BATCHES * PER_BATCH })} />
+              <CanvasBox className="h-[130px]" draw={(g, W, H) => drawPnlHist(g, W, H, run.done!.hist as Histogram, money)} deps={[run.done]} label={t("winRate.distTitle", { n: totalN })} />
             )}
             {s && (
               <div className="mt-1 grid grid-cols-5 gap-1 text-center text-[10px]">

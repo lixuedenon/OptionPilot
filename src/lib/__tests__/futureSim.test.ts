@@ -2,7 +2,7 @@
 import { describe, it, expect } from "vitest";
 import type { Leg } from "@/lib/types";
 import { prepareSim, runBatch, computeStats, holdOutcomes, simPnlAt } from "@/lib/winRateSim";
-import { newDensity, runCloud, replayRules, suggestRules, PriceStore, priceBands, pickStories, FORK_PATHS, FORK_SEED } from "@/lib/futureSim";
+import { newDensity, runCloud, replayRules, suggestRules, PriceStore, priceBands, pickStories, moneyBands, FORK_PATHS, FORK_SEED } from "@/lib/futureSim";
 import { adviseCombo } from "@/lib/positionAdvisor";
 
 const put = (o: Partial<Leg>): Leg => ({ id: "p", kind: "option", action: "sell", type: "put", strike: 90, qty: 5, dte: 43, premium: 0.35, ...o }) as unknown as Leg;
@@ -10,6 +10,29 @@ const rules = { takeProfitPct: 0.5, stopMult: 2, closeFrac: 0 };
 const setup = (extra: object = {}) => ({ legs: [put({})], spot: 121.7, basis: 1.75, pnlOffset: 0, rules, totalTerm: 43, ...extra });
 
 describe("万次推演", () => {
+  it("⑤ 钱的范围带：下车后停在下车时的盈亏；中位数和分位数跟逐条重算一致；典型走法带每天的盈亏", () => {
+    const p = prepareSim(setup())!;
+    const n = 400;
+    const store = new PriceStore(n, p.horizon);
+    const spec = { sMin: 60, sMax: 200, rows: 40, days: p.horizon };
+    const run = runCloud(p, 0.5, n, 11, spec, newDensity(spec), { extraStep: store.step });
+    const bands = moneyBands(store, run.outcomes, p, 1000, 10000);
+    expect(bands[0].p5).toBeCloseTo(0, 10);
+    expect(bands[0].p95).toBeCloseTo(0, 10);
+    const day = Math.floor(p.horizon / 2);
+    const vals = run.outcomes.map((o, i) => (day >= o.day ? o.pnl : simPnlAt(p, day, store.data[i * (p.horizon + 1) + day]))).sort((a, b) => a - b);
+    const b = bands.find((x) => x.day === day)!;
+    expect(b.p50).toBeCloseTo(vals[Math.floor(0.5 * (n - 1))], 4);
+    expect(b.p5).toBeCloseTo(vals[Math.floor(0.05 * (n - 1))], 4);
+    // 止盈下车的走势最后都停在止盈线以上：最后一天的最高分位不会低于止盈线（这批里有人止盈的话）
+    if (run.outcomes.some((o) => o.reason === "tp")) expect(bands[bands.length - 1].p95).toBeGreaterThanOrEqual(p.tpLine - 1e-9);
+    const stories = pickStories(run.outcomes, store, 4, p);
+    for (const st of stories) {
+      expect(st.pnls!.length).toBe(p.horizon + 1);
+      if (st.day < p.horizon) expect(st.pnls![st.day]).toBeCloseTo(st.pnl, 3);
+    }
+  });
+
   it("每条走势都走到到期日；换规则不改变走势本身", () => {
     const p1 = prepareSim(setup())!;
     const p2 = prepareSim(setup({ rules: { takeProfitPct: null, stopMult: null, closeFrac: 0 } }))!;

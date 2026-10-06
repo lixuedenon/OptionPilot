@@ -34,6 +34,8 @@ interface Props {
   scenario?: { day: number; price: number } | null;
   // 推演未来：风险分区和走势上的节点用的快速版持仓建议（跟左边持仓建议同一套规则）。
   zoneCtx?: QuickAdviceCtx | null;
+  // 推演未来：市场预期波动（最近到期日平值IV，见lib/atmIv.ts），走势幅度和±σ喇叭口按它；不传按各腿平均。
+  marketIv?: number | null;
 }
 
 type MapPoint = { day: number; price: number };
@@ -87,7 +89,7 @@ function cellColor(v: number, maxProfit: number, maxLoss: number): [number, numb
   return [0, 1, 2].map((i) => Math.round(base[i] + (to[i] - base[i]) * k)) as [number, number, number];
 }
 
-export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, daysSinceOpen, emptyText, onPointChange, liveSpot, tracked, scenario, zoneCtx }: Props) {
+export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, daysSinceOpen, emptyText, onPointChange, liveSpot, tracked, scenario, zoneCtx, marketIv }: Props) {
   const { t } = useI18n();
   const [colorMode, setColorMode] = useState<"pnl" | "zone">(() => {
     try {
@@ -189,11 +191,11 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
         tracked
           ? { timeOffset: tracked.todayDay, pnlOffset: tracked.pnlOffset, opening: tracked.opening, extraPrices: [...tracked.history.map((h) => h.price), ...pricePath.map((p) => p.price)] }
           : useToday
-            ? { start: { day: daysSinceOpen!, price: liveSpot! }, extraPrices: scenario ? [scenario.price] : [] }
-            : { extraPrices: scenario ? [scenario.price] : [] },
+            ? { start: { day: daysSinceOpen!, price: liveSpot! }, extraPrices: scenario ? [scenario.price] : [], baseIv: marketIv ?? undefined }
+            : { extraPrices: scenario ? [scenario.price] : [], baseIv: marketIv ?? undefined },
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [legs, spot, dV, useToday, daysSinceOpen, liveSpot, tracked, pricePath, scenario?.price],
+    [legs, spot, dV, useToday, daysSinceOpen, liveSpot, tracked, pricePath, scenario?.price, marketIv],
   );
   const zoneOn = colorMode === "zone" && !!zoneCtx && !tracked;
   // 风险分区：每一格换成左边持仓建议在那一点会给的建议（快速版，不跑模拟）。

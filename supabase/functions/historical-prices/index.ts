@@ -1,5 +1,6 @@
 // supabase/functions/historical-prices/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "npm:@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -20,7 +21,35 @@ interface HistoricalPricesResult {
   source: string;
 }
 
-const ALLOWED_RANGES = new Set(["1mo", "2mo", "3mo", "6mo", "1y", "2y"]);
+// 5y/10y：万次推演"这只股票历史上的真实走法"（第2组）
+const ALLOWED_RANGES = new Set(["1mo", "2mo", "3mo", "6mo", "1y", "2y", "5y", "10y"]);
+
+// 共享缓存（表price_history_cache，迁移20261006180000）：所有用户共用一份，6小时内同一个代码同一个区间只打一次Yahoo。
+// 缓存读写失败都不影响正常返回（当成没命中 / 不写）。
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
+function db() {
+  return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+}
+
+async function readCache(symbol: string, range: string): Promise<HistoricalPricesResult | null> {
+  try {
+    const { data, error } = await db().from("price_history_cache").select("data, fetched_at").eq("symbol", symbol).eq("range", range).maybeSingle();
+    if (error || !data) return null;
+    if (Date.now() - new Date(data.fetched_at as string).getTime() > CACHE_TTL_MS) return null;
+    return data.data as HistoricalPricesResult;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCache(symbol: string, range: string, result: HistoricalPricesResult): Promise<void> {
+  try {
+    await db().from("price_history_cache").upsert({ symbol, range, data: result, fetched_at: new Date().toISOString() });
+  } catch {
+    /* 缓存只是省请求，写失败下次再拉 */
+  }
+}
 
 // Separate from stock-quote (which only ever needs today's price) because
 // this needs a multi-month RANGE of daily closes to compute historical
@@ -43,6 +72,11 @@ Deno.serve(async (req: Request) => {
 
     // 默认2个月（历史波动率和回填够用）；今昔对比画开仓以来的真实走势时按开仓距今多久传更长的range。
     const range = ALLOWED_RANGES.has(url.searchParams.get("range") ?? "") ? url.searchParams.get("range")! : "2mo";
+    const sym = symbol.trim().toUpperCase();
+    const cached = await readCache(sym, range);
+    if (cached) {
+      return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
     const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=${range}`;
     const resp = await fetch(yahooUrl, {
       headers: {
@@ -98,12 +132,13 @@ Deno.serve(async (req: Request) => {
     }
 
     const out: HistoricalPricesResult = {
-      symbol: symbol.toUpperCase(),
+      symbol: sym,
       closes,
       opens,
       timestamps,
       source: "yahoo-finance",
     };
+    await writeCache(sym, range, out);
 
     return new Response(
       JSON.stringify(out),

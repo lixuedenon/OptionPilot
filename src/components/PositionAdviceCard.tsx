@@ -29,6 +29,9 @@ interface Props {
   adjusted?: boolean; // 今昔对比：中途展期/平仓/保护过
   customPresets: CustomPreset[];
   onOpenSettings: () => void;
+  // 推演未来：市场预期波动（最近到期日平值IV，见lib/atmIv.ts），跟地形图喇叭口、万次推演、波动率滑块小字同一个数；
+  // 不传或null就按各腿隐含波动率平均（今昔对比一直按各腿平均：拿不到开仓那天的期权链）。
+  marketIv?: number | null;
 }
 
 const ACTION_CLS: Record<AdviceAction, string> = {
@@ -49,7 +52,7 @@ const pct0 = (v: number) => String(Math.round(v * 100));
 const pctSmall = (v: number) => (Math.abs(v) < 0.01 ? (v * 100).toFixed(1) : String(Math.round(v * 100)));
 const fmtStrike = (k: number) => (Number.isInteger(k) ? String(k) : k.toFixed(2));
 
-export default function PositionAdviceCard({ mode, symbol, openingLegs, openingSpot, openingAt, nowLegs, nowSpot, nowDay, pnl, adjusted, customPresets, onOpenSettings }: Props) {
+export default function PositionAdviceCard({ mode, symbol, openingLegs, openingSpot, openingAt, nowLegs, nowSpot, nowDay, pnl, adjusted, customPresets, onOpenSettings, marketIv }: Props) {
   const { t, lang } = useI18n();
   const { rules: rulesBySide, volOverride, driftPct } = useSimSettings(symbol);
   const hv = useHv20(symbol);
@@ -60,8 +63,12 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
   const options = openingLegs.filter((l) => l.kind !== "stock");
   const hasStock = openingLegs.some((l) => l.kind === "stock") || (nowLegs ?? []).some((l) => l.kind === "stock");
   const totalTerm = options.length ? Math.max(1, Math.round(Math.min(...options.map((l) => l.dte)))) : 0;
-  const openingIv = useMemo(() => comboBaseIv(openingLegs, openingSpot), [openingLegs, openingSpot]);
-  const nowIv = useMemo(() => (nowLegs ? comboBaseIv(nowLegs, nowSpot) : null), [nowLegs, nowSpot]);
+  const legsOpenIv = useMemo(() => comboBaseIv(openingLegs, openingSpot), [openingLegs, openingSpot]);
+  const legsNowIv = useMemo(() => (nowLegs ? comboBaseIv(nowLegs, nowSpot) : null), [nowLegs, nowSpot]);
+  const useMarket = mode === "analysis" && marketIv != null && marketIv > 0.01;
+  const openingIv = useMarket ? marketIv! : legsOpenIv;
+  // 推演未来的情景IV = 平值IV + 情景里各腿IV的变化（就是波动率滑块的变化量）
+  const nowIv = useMarket ? (legsNowIv != null && legsOpenIv != null ? Math.max(0.01, marketIv! + legsNowIv - legsOpenIv) : null) : legsNowIv;
   // 默认的假设波动跟胜率模拟一样：历史20日，取不到就用隐含（推演未来按开仓时，今昔对比按今天）。
   const ivForDefault = (mode === "analysis" ? openingIv : nowIv) ?? 0.3;
   const vol = volOverride != null ? volOverride / 100 : hv.status === "ok" && hv.hv20 ? hv.hv20 : ivForDefault;
@@ -80,8 +87,8 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
   const runKey = useMemo(() => {
     if (!nowLegs || basis == null || hasStock || !volReady) return "";
     const lk = nowLegs.map((l) => [l.action, l.type, l.strike, l.dte.toFixed(2), l.premium.toFixed(4), l.qty ?? 1].join(":")).join("|");
-    return [lk, nowSpot.toFixed(3), pnl.toFixed(4), basis.toFixed(4), JSON.stringify(rules), vol.toFixed(4), driftPct, totalTerm, credit].join("#");
-  }, [nowLegs, nowSpot, pnl, basis, hasStock, volReady, rules, vol, driftPct, totalTerm, credit]);
+    return [lk, nowSpot.toFixed(3), pnl.toFixed(4), basis.toFixed(4), JSON.stringify(rules), vol.toFixed(4), driftPct, totalTerm, credit, useMarket && nowIv != null ? nowIv.toFixed(4) : ""].join("#");
+  }, [nowLegs, nowSpot, pnl, basis, hasStock, volReady, rules, vol, driftPct, totalTerm, credit, useMarket, nowIv]);
   useEffect(() => {
     if (!runKey || !nowLegs || basis == null) {
       setAdvice(null);
@@ -91,7 +98,7 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
       try {
         setAdvice(
           adviseCombo({
-            legs: nowLegs, spot: nowSpot, basis, credit, pnl, totalTerm, rules, vol,
+            legs: nowLegs, spot: nowSpot, basis, credit, pnl, totalTerm, rules, vol, iv: useMarket && nowIv != null ? nowIv : undefined,
             drift: credit ? 0 : driftPct / 100, n: mode === "tracked" ? 3000 : 1500, seed: 20261001,
           }),
         );

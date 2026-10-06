@@ -42,12 +42,23 @@ describe("stockOptionMap", () => {
     });
   }
 
-  it("paths start at the start point and cone is symmetric in log space", () => {
+  it("paths start at the start point; cone is centred on the zero-drift lognormal median (same as the Monte Carlo)", () => {
     const m = buildMapModel(COMBOS.bullCall, 100, 0)!;
     for (const g of PATH_GROUPS) for (const id of g.paths) expect(m.path(id, 0)).toBeCloseTo(100, 8);
     expect(m.path("up", m.horizon)).toBeCloseTo(100 + m.move, 8);
     const [lo, hi] = m.cone(1, m.horizon);
-    expect(Math.log(hi / 100)).toBeCloseTo(-Math.log(lo / 100), 8);
+    const t = m.horizon / 365;
+    const median = 100 * Math.exp(-0.5 * m.baseIv * m.baseIv * t);
+    expect(Math.sqrt(lo * hi)).toBeCloseTo(median, 8);
+    expect(Math.log(hi / lo) / 2).toBeCloseTo(m.baseIv * Math.sqrt(t), 8);
+  });
+
+  it("opts.baseIv (ATM IV) drives path size and cone, but not leg pricing", () => {
+    const a = buildMapModel(COMBOS.ironCondor, 100, 0)!;
+    const b = buildMapModel(COMBOS.ironCondor, 100, 0, { baseIv: 0.2 })!;
+    expect(b.baseIv).toBe(0.2);
+    expect(b.move).toBeCloseTo(100 * 0.2 * Math.sqrt(b.horizon / 365), 8);
+    expect(b.pnlAt(10, 97)).toBeCloseTo(a.pnlAt(10, 97), 10);
   });
 
   it("'from today' start moves the path origin and skips earlier days", () => {

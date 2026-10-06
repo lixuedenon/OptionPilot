@@ -40,6 +40,7 @@ export interface AdviceInput {
   totalTerm: number; // 开仓时（最早到期）总期限天数
   rules: SimRules;
   vol: number; // 假设的未来实际波动
+  iv?: number; // 市场预期波动（小数，推演未来=最近到期日平值IV，见lib/atmIv.ts），用来量"离盈亏平衡几个标准差"；不传按各腿平均
   drift?: number;
   n?: number;
   seed?: number;
@@ -145,7 +146,7 @@ export function adviseCombo(input: AdviceInput): Advice | null {
   const elapsed = input.totalTerm > 0 ? Math.min(1, Math.max(0, 1 - p.horizon / input.totalTerm)) : 0;
 
   const scan = expiryScan(p, S);
-  const iv = comboBaseIv(legs, S) ?? 0.3;
+  const iv = input.iv && input.iv > 0.01 ? input.iv : comboBaseIv(legs, S) ?? 0.3;
   const sig = Math.max(1e-6, iv * Math.sqrt(Math.max(1, p.horizon) / 365));
   const breakevens: number[] = [];
   for (let i = 0; i < scan.vals.length - 1; i++) {
@@ -245,7 +246,7 @@ export interface QuickAdviceCtx {
   th: AdviceThresholds;
 }
 
-export function prepareQuickAdvice(input: { legs: Leg[]; spot: number; basis: number; credit: boolean; rules: SimRules; totalTerm: number; thresholds?: AdviceThresholds }): QuickAdviceCtx | null {
+export function prepareQuickAdvice(input: { legs: Leg[]; spot: number; basis: number; credit: boolean; rules: SimRules; totalTerm: number; thresholds?: AdviceThresholds; iv?: number }): QuickAdviceCtx | null {
   const legs = input.legs.filter((l) => !l.disabled);
   const p = prepareSim({ legs, spot: input.spot, basis: input.basis, pnlOffset: 0, rules: input.rules, totalTerm: input.totalTerm });
   if (!p) return null;
@@ -257,7 +258,7 @@ export function prepareQuickAdvice(input: { legs: Leg[]; spot: number; basis: nu
     if ((a > 0) !== (b > 0)) breakevens.push(scan.prices[i] + ((scan.prices[i + 1] - scan.prices[i]) * a) / (a - b));
   }
   return {
-    p, credit: input.credit, basis: input.basis, totalTerm: input.totalTerm, iv: comboBaseIv(legs, input.spot) ?? 0.3,
+    p, credit: input.credit, basis: input.basis, totalTerm: input.totalTerm, iv: input.iv && input.iv > 0.01 ? input.iv : comboBaseIv(legs, input.spot) ?? 0.3,
     maxProfit: scan.maxProfit, maxLoss: scan.maxLoss,
     rr0: scan.maxProfit != null && scan.maxLoss != null && scan.maxLoss < -1e-9 ? scan.maxProfit / -scan.maxLoss : null,
     breakevens, th: input.thresholds ?? ADVICE_THRESHOLDS,

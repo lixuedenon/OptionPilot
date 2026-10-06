@@ -60,7 +60,7 @@ export interface MapModel {
   sMin: number;
   sMax: number;
   move: number; // 走势线的一个标准差幅度（按开仓时隐含波动率、从起点到到期的天数）
-  baseIv: number; // 开仓时各期权腿隐含波动率的平均值（小数）
+  baseIv: number; // 走势幅度用的波动率（小数）：传了opts.baseIv（平值IV）就是它，否则是各期权腿隐含波动率的平均值
   cols: number;
   rows: number;
   grid: Float64Array; // rows×cols，row 0 = sMax（顶部）
@@ -90,6 +90,9 @@ export interface MapOptions {
   // 跟踪对比模式：今天之前的日子铺"开仓那天看到的地形"——开仓组合、开仓时各腿隐含波动率、不做调整。
   // legs的dte按开仓那天；不传则今天之前没有底色（pnlAt返回NaN）。
   opening?: { legs: Leg[]; spot: number };
+  // 市场预期波动（小数）：推演未来时用最近到期日平值期权的隐含波动率（见lib/atmIv.ts），走势幅度和喇叭口都按它；
+  // 不传就按各腿隐含波动率的平均。只影响"股价怎么走"，各腿自己的定价仍用各自的隐含波动率。
+  baseIv?: number;
 }
 
 export function buildMapModel(legs: Leg[], spot: number, dV: number, opts: MapOptions = {}, cols = 120, rows = 80): MapModel | null {
@@ -108,7 +111,7 @@ export function buildMapModel(legs: Leg[], spot: number, dV: number, opts: MapOp
   }, 0);
 
   // 走势幅度只按开仓时的隐含波动率（不跟IV滑块），否则拖IV会同时改变"市场怎么走"和"期权怎么定价"两件事。
-  const baseIv = averageIv(ivs);
+  const baseIv = opts.baseIv && opts.baseIv > 0.01 ? opts.baseIv : averageIv(ivs);
   const move = spot * baseIv * Math.sqrt(innerHorizon / 365);
   const start = t0 > 0
     ? { day: t0, price: spot }
@@ -166,10 +169,13 @@ export function buildMapModel(legs: Leg[], spot: number, dV: number, opts: MapOp
 
   const path = (id: PathId, day: number) =>
     day < start.day - 1e-9 ? NaN : start.price + SHAPES[id]((day - start.day) / remaining) * pathMove;
+  // 喇叭口的中心是零漂移对数正态的中位数 start×e^(−σ²t/2)，跟万次推演的随机走势同一个约定（runPath：不预测涨跌、漂移−σ²/2）。
+  // 原来以起点价格为中心上下对称，±1σ那两条线跟万次推演"16%的走法涨得更多/跌得更多"的分位线对不上（期限越长偏得越多）。
   const cone = (k: number, day: number): [number, number] => {
     const t = Math.max(0, day - start.day) / 365;
+    const mid = Math.log(start.price) - 0.5 * baseIv * baseIv * t;
     const w = k * baseIv * Math.sqrt(t);
-    return [start.price * Math.exp(-w), start.price * Math.exp(w)];
+    return [Math.exp(mid - w), Math.exp(mid + w)];
   };
 
   return {

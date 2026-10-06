@@ -24,6 +24,7 @@ import { useCompareSlots, COMPARE_SLOT_COLORS, MAX_COMPARE_SLOT_LEGS, MAX_COMPAR
 import ComboCompareSlots from "@/components/ComboCompareSlots";
 import PositionAdviceCard from "@/components/PositionAdviceCard";
 import { scenarioLegs, prepareQuickAdvice } from "@/lib/positionAdvisor";
+import { useMarketIv } from "@/lib/atmIv";
 import { useStrategyOrchestration } from "@/hooks/useStrategyOrchestration";
 import { nearestFridayDte, formatDateInput, parseDateInput, addCalendarDays, calendarDaysBetween, calendarDaysSince } from "@/lib/dateUtils";
 import { uid, PRESET_DTE_SET } from "@/lib/legFactory";
@@ -850,6 +851,17 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const showWinRate = showChartTabs && chartView === "winRate";
   // 地形图用开仓基准的腿位（第0天=开仓日），跟图表头部盈亏/归因用的是同一份数据。
   const mapLegs = useMemo(() => analyticsLegs.filter((l) => !l.disabled), [analyticsLegs]);
+  // 第1组「波动率口径统一」：推演未来时，地形图喇叭口、万次推演的"隐含"选项、持仓建议、波动率滑块小字都用同一个数——
+  // 最近到期日平值期权的隐含波动率（lib/atmIv.ts）。只在开仓日是今天时用（期权链是今天的报价，开仓在过去时对不上），
+  // 取不到就退回各腿隐含波动率平均。今昔对比不变：拿不到开仓那天的期权链，仍按各腿加权平均（跟trackedVolShift同一种平均法）。
+  const marketIvInfo = useMarketIv({
+    symbol,
+    legs: mapLegs,
+    spot: analyticsSpot,
+    chainSpot: quote && quote.price > 0 ? quote.price : undefined,
+    enabled: !isCompareMode && !!openingSimBasis && openingSimBasis.daysSinceOpen === 0,
+  });
+  const analysisIv = marketIvInfo.iv ?? 0;
   // 地形图"风险分区"/走势节点用的快速版持仓建议（规则跟万次推演、持仓建议共用simSettings）。
   const { rules: simRulesBySide } = useSimSettings(symbol);
   const mapZoneCtx = useMemo(() => {
@@ -859,9 +871,9 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     const credit = isCreditCombo(mapLegs);
     return prepareQuickAdvice({
       legs: mapLegs, spot: analyticsSpot, basis, credit, rules: simRulesBySide[credit ? "credit" : "debit"],
-      totalTerm: Math.max(1, Math.round(Math.min(...opts.map((l) => l.dte)))),
+      totalTerm: Math.max(1, Math.round(Math.min(...opts.map((l) => l.dte)))), iv: analysisIv || undefined,
     });
-  }, [mapLegs, analyticsSpot, simRulesBySide]);
+  }, [mapLegs, analyticsSpot, simRulesBySide, analysisIv]);
   // 开仓那天的开仓组合（dte按开仓日算）。对比模式下legs/activeLegs的dte是按今天算的剩余天数，
   // 胜率模拟和持仓建议的"总期限"、回看都要用开仓那天的版本。
   const openingDayLegs = useMemo(
@@ -875,8 +887,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   );
   // 波动率滑块小字的基准：开仓时的平均隐含波动率（对比模式按开仓那天的腿位；跟trackedVolShift同一种平均法，加上变化量就是统计格的"当前"）。
   const sliderBaseIv = useMemo(
-    () => (isCompareMode ? weightedAvgIV(openingDayLegs, spot) : weightedAvgIV(mapLegs, analyticsSpot)),
-    [isCompareMode, openingDayLegs, spot, mapLegs, analyticsSpot],
+    () => (isCompareMode ? weightedAvgIV(openingDayLegs, spot) : analysisIv),
+    [isCompareMode, openingDayLegs, spot, analysisIv],
   );
 
   // 今昔对比：真实走过的路（开仓点→各快照→今天），地形图和万次推演回看共用。
@@ -1243,6 +1255,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 pnl={isCompareMode ? (trackedResult ? trackedResult.change + realizedTrackedPnl : 0) : result.change}
                 adjusted={isCompareMode && (trackedLegs ?? []).some((l) => l.derivedFrom || l.closedPnl != null)}
                 customPresets={customPresets}
+                marketIv={isCompareMode ? null : analysisIv || null}
                 onOpenSettings={() => {
                   setShifts({ dS: 0, dT: 0, dV: 0 });
                   setChartView("winRate");
@@ -1337,7 +1350,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   dV={shifts.dV}
                   scenario={shifts.dS !== 0 || shifts.dT !== 0 ? { day: shifts.dT, price: analyticsSpot + shifts.dS } : null}
                   fork={adviceScenarioLegs ? { legs: adviceScenarioLegs, spot: analyticsSpot + analyticsShifts.dS, day: analyticsShifts.dT, pnl: result.change } : null}
-                  ivBase={sliderBaseIv}
+                  marketIv={analysisIv}
+                  ivSource={marketIvInfo.source}
                   emptyText={needSymbol ? t("chart.noSpot") : activeLegs.length === 0 ? t("chart.addLegs") : null}
                 />
               </div>
@@ -1373,6 +1387,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   dV={isCompareMode ? 0 : shifts.dV}
                   scenario={!isCompareMode && (shifts.dS !== 0 || shifts.dT !== 0) ? { day: shifts.dT, price: analyticsSpot + shifts.dS } : null}
                   zoneCtx={isCompareMode ? null : mapZoneCtx}
+                  marketIv={isCompareMode ? null : analysisIv || null}
                   openingAt={openingAt}
                   daysSinceOpen={openingSimBasis && !isExpiredOpening ? openingSimBasis.daysSinceOpen : undefined}
                   emptyText={needSymbol ? t("chart.noSpot") : t("chart.addLegs")}

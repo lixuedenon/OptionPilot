@@ -1,7 +1,7 @@
 // src/lib/futureSim.ts
 // "万次推演"（分析模式）的统计层：在winRateSim的逐日走势上，累计画图要用的密度云、下车点、到期落点。
 // 走势、定价、规则判断全部沿用winRateSim（同一个runBatch），这里只做"看得见"的汇总。
-import { runBatch, prepareSim, computeStats, type Prepared, type PathOutcome, type ExitReason, type SimRules, type SimSetup } from "@/lib/winRateSim";
+import { runBatch, runBatchPaths, prepareSim, computeStats, simPnlAt, type HistSource, type Prepared, type PathOutcome, type ExitReason, type SimRules, type SimSetup } from "@/lib/winRateSim";
 
 // 密度网格：横轴按天（第0天..horizon），纵轴按股价分rows格（row 0 = sMax，跟地形图一致）。
 export interface GridSpec {
@@ -48,7 +48,7 @@ export interface CloudRun {
 // 跑一批走势，同时把密度累计进density（dayOffset：分叉云从情景点那天开始，横轴要往后挪）。
 export function runCloud(
   p: Prepared, vol: number, n: number, seed: number, spec: GridSpec, density: Density,
-  opts: { samples?: number; exitSamples?: number; dayOffset?: number; extraStep?: (day: number, price: number) => void } = {},
+  opts: { samples?: number; exitSamples?: number; dayOffset?: number; extraStep?: (day: number, price: number) => void; hist?: HistSource } = {},
 ): CloudRun {
   const off = opts.dayOffset ?? 0;
   const onStep = (day: number, price: number, holding: boolean) => {
@@ -57,7 +57,8 @@ export function runCloud(
     if (d > spec.days || price < spec.sMin || price > spec.sMax) return;
     (holding ? density.holding : density.after)[d * spec.rows + rowOf(spec, price)] += 1;
   };
-  const { outcomes, samples } = runBatch(p, vol, n, seed, opts.samples ?? 0, onStep);
+  // 传了hist就走真实出现过的走势（n、seed、vol不用）
+  const { outcomes, samples } = opts.hist ? runBatchPaths(p, opts.hist, opts.samples ?? 0, onStep) : runBatch(p, vol, n, seed, opts.samples ?? 0, onStep);
   const exits: ExitPoint[] = [];
   const end: EndDist = { counts: new Array(spec.rows).fill(0), pnlSum: new Array(spec.rows).fill(0) };
   const maxExits = opts.exitSamples ?? 80;
@@ -132,11 +133,12 @@ export interface RuleSuggestion {
   best: (RuleScore & { why: "avg" | "worst" }) | null;
 }
 
-export function suggestRules(setup: SimSetup, vol: number, n: number, seed: number, side: "credit" | "debit"): RuleSuggestion | null {
+export function suggestRules(setup: SimSetup, vol: number, n: number, seed: number, side: "credit" | "debit", hist?: HistSource): RuleSuggestion | null {
   const run = (rules: SimRules) => {
     const p = prepareSim({ ...setup, rules });
-    return p ? { p, outcomes: runBatch(p, vol, n, seed).outcomes } : null;
+    return p ? { p, outcomes: hist ? runBatchPaths(p, hist).outcomes : runBatch(p, vol, n, seed).outcomes } : null;
   };
+  if (hist) n = hist.indices.length;
   const cur = run(setup.rules);
   if (!cur) return null;
   const cs = computeStats(cur.outcomes);
@@ -231,8 +233,11 @@ export interface Story {
   day: number; // 下车（或到期）那天
   pnl: number;
   prices: number[]; // 这条走势从第0天到最早到期日的股价（下车后也接着记）
+  // 这条走势每天"一直拿着"的盈亏（第0天..最早到期日，含pnlOffset）：下车前就是真实走过的钱，下车后是"要是还拿着会怎样"（画虚线）。
+  // 传了p才有。
+  pnls?: number[];
 }
-export function pickStories(outcomes: PathOutcome[], store: PriceStore, max = 4): Story[] {
+export function pickStories(outcomes: PathOutcome[], store: PriceStore, max = 4, p?: Prepared): Story[] {
   const groups = new Map<StoryKind, number[]>();
   outcomes.forEach((o, i) => {
     const k: StoryKind = o.reason === "expiry" ? (o.pnl >= 0 ? "win" : "loss") : o.reason;
@@ -246,7 +251,9 @@ export function pickStories(outcomes: PathOutcome[], store: PriceStore, max = 4)
     const sorted = [...idx].sort((a, b) => byDay(a) - byDay(b));
     const pick = sorted[Math.floor(sorted.length / 2)];
     const o = outcomes[pick];
-    return { kind, share: (idx.length / n) * 100, day: o.day, pnl: o.pnl, prices: store.path(pick) };
+    const prices = store.path(pick);
+    const pnls = p ? prices.map((price, d) => (d === 0 ? p.pnlOffset : simPnlAt(p, d, price))) : undefined;
+    return { kind, share: (idx.length / n) * 100, day: o.day, pnl: o.pnl, prices, pnls };
   });
   all.sort((a, b) => b.share - a.share);
   const out = all.slice(0, Math.min(max, 3));
@@ -256,4 +263,32 @@ export function pickStories(outcomes: PathOutcome[], store: PriceStore, max = 4)
     if (s && !out.includes(s) && out.length < max) out.push(s);
   }
   return out;
+}
+
+// ── ⑤ 你的钱会怎么变：同一批走势每天的盈亏范围 ──────────────────────────
+// 每条走势：下车之前是那天的盈亏（simPnlAt），下车之后停在下车时的盈亏（钱已经落袋/认亏，不再变）。
+// 跟股价范围带用同一批走势（PriceStore + outcomes，下标一一对应）。长期期权每天每条都重新定价太慢：
+// 日子最多取maxCols个，走势最多取maxPaths条（等间隔抽，固定种子下结果可复现）。
+export function moneyBands(store: PriceStore, outcomes: PathOutcome[], p: Prepared, maxCols = 60, maxPaths = 4000): Band[] {
+  const n = Math.min(store.filled, outcomes.length);
+  if (n === 0) return [];
+  const stride = Math.max(1, Math.ceil(n / maxPaths));
+  const ids: number[] = [];
+  for (let i = 0; i < n; i += stride) ids.push(i);
+  const step = Math.max(1, Math.ceil(store.days / maxCols));
+  const days: number[] = [];
+  for (let d = 0; d <= store.days; d += step) days.push(d);
+  if (days[days.length - 1] !== store.days) days.push(store.days);
+  const m = ids.length;
+  const col = new Float32Array(m);
+  const q = (f: number) => col[Math.min(m - 1, Math.floor(f * (m - 1)))];
+  return days.map((day) => {
+    for (let k = 0; k < m; k++) {
+      const i = ids[k];
+      const o = outcomes[i];
+      col[k] = day === 0 ? p.pnlOffset : day >= o.day ? o.pnl : simPnlAt(p, day, store.data[i * (store.days + 1) + day]);
+    }
+    col.sort();
+    return { day, p5: q(0.05), p25: q(0.25), p50: q(0.5), p75: q(0.75), p95: q(0.95) };
+  });
 }
