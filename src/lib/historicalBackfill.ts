@@ -29,6 +29,7 @@ export const BACKFILL_RATE = 0.05;
 export interface HistoricalBar {
   dateISO: string; // local calendar day
   avgPrice: number; // (open + close) / 2 for that trading day
+  close: number;
 }
 
 // Pulls a symbol's ~2mo daily bar history from the historical-prices Edge
@@ -59,6 +60,7 @@ export async function fetchHistoricalBars(symbol: string): Promise<HistoricalBar
     bars.push({
       dateISO: formatDateInput(timestamps[i] * 1000),
       avgPrice: (opens[i] + closes[i]) / 2,
+      close: closes[i],
     });
   }
   return bars;

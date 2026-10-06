@@ -305,3 +305,52 @@ export function quickAdvice(ctx: QuickAdviceCtx, day: number, price: number, pnl
   if (outsideFar && elapsed >= th.elapsedStop) return "holdOrStopLoss";
   return "hold";
 }
+
+// 风险分区的鼠标读数：这一点为什么是这个建议（跟quickAdvice同一套判断顺序，返回第一条起作用的理由）。
+// key对应翻译som.why.<key>，vars是填进去的数字（金额每股、比例0..100、标准差个数）。
+export interface QuickWhy {
+  action: AdviceAction;
+  key: string;
+  vars: Record<string, string | number>;
+}
+export function quickAdviceWhy(ctx: QuickAdviceCtx, day: number, price: number, pnl: number): QuickWhy {
+  const { p, th } = ctx;
+  const usd = (v: number) => `$${Math.abs(v).toFixed(2)}`;
+  const remaining = p.horizon - day;
+  if (pnl >= p.tpLine) return { action: "takeProfit", key: "tpLine", vars: { v: usd(p.tpLine) } };
+  if (pnl <= p.slLine) return { action: "stopLoss", key: "slLine", vars: { v: usd(p.slLine) } };
+  if (remaining <= 0 || (p.closeAtRemaining > 0 && remaining <= p.closeAtRemaining)) {
+    return { action: pnl >= 0 ? "takeProfit" : "stopLoss", key: remaining <= 0 ? "expiry" : "closeWindow", vars: { d: Math.max(0, Math.round(remaining)) } };
+  }
+  const action = quickAdvice(ctx, day, price, pnl);
+  const elapsed = ctx.totalTerm > 0 ? Math.min(1, Math.max(0, day / ctx.totalTerm)) : 0;
+  const sig = Math.max(1e-6, ctx.iv * Math.sqrt(Math.max(1, remaining) / 365));
+  const inProfitZone = simPnlAt(p, p.horizon, price) > 0;
+  let best = Infinity;
+  for (const be of ctx.breakevens) {
+    const d = Math.abs(Math.log(be / price)) / sig;
+    if (d < 5 && d < best) best = d;
+  }
+  const sg = best === Infinity ? "—" : best.toFixed(1);
+  const flat = Math.abs(pnl / ctx.basis) < th.flatPct;
+  if (pnl > 0 && !flat) {
+    const capture = ctx.maxProfit != null && ctx.maxProfit > 1e-9 ? pnl / ctx.maxProfit : null;
+    if (action === "takeProfit") {
+      if (capture != null && capture >= th.captureTakeProfit) return { action, key: "capture", vars: { p: Math.round(capture * 100) } };
+      return { action, key: "rrLow", vars: { g: usd(Math.max(0, (ctx.maxProfit ?? pnl) - pnl)) } };
+    }
+    if (action === "holdOrTakeProfit") {
+      if (ctx.credit && inProfitZone && best < th.nearEdgeSigma) return { action, key: "nearEdge", vars: { s: sg } };
+      if (!ctx.credit && elapsed >= th.debitLateElapsed) return { action, key: "debitLate", vars: { p: Math.round(elapsed * 100) } };
+      return { action, key: "rrWatch", vars: { g: usd(Math.max(0, (ctx.maxProfit ?? pnl) - pnl)) } };
+    }
+    return { action, key: "holdProfit", vars: { v: usd(Math.max(0, p.tpLine - pnl)) } };
+  }
+  if (action === "stopLoss") return { action, key: "farOut", vars: { s: sg, p: Math.round(elapsed * 100) } };
+  if (action === "holdOrStopLoss") {
+    if (!ctx.credit && -pnl / ctx.basis >= 0) return { action, key: "debitLoss", vars: { p: Math.round((-pnl / ctx.basis) * 100) } };
+    return { action, key: "outside", vars: { s: sg } };
+  }
+  return { action, key: flat ? "flat" : "holdLoss", vars: { v: usd(pnl) } };
+}
+

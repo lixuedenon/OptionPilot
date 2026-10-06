@@ -71,6 +71,7 @@ const MODULE_SECTIONS: Record<HelpModuleId, { titleKey: string; sections: { titl
       { titleKey: "help.moduleCompareUpdate", descKey: "help.moduleCompareUpdateDesc" },
       { titleKey: "help.moduleCompareAttribution", descKey: "help.moduleCompareAttributionDesc" },
       { titleKey: "help.moduleCompareAdvice", descKey: "help.moduleCompareAdviceDesc" },
+      { titleKey: "help.moduleCompareMap", descKey: "help.moduleCompareMapDesc" },
       { titleKey: "help.moduleCompareWinRate", descKey: "help.moduleCompareWinRateDesc" },
       { titleKey: "help.moduleCompareHealth", descKey: "help.moduleCompareHealthDesc" },
       { titleKey: "help.moduleCompareSave", descKey: "help.moduleCompareSaveDesc" },

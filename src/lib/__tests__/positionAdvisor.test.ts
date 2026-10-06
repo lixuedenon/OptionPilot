@@ -4,8 +4,8 @@ import { describe, it, expect } from "vitest";
 import type { Leg } from "@/lib/types";
 import { priceCombo } from "@/lib/pricing";
 import { blackScholes } from "@/lib/bs";
-import { openingBasis, isCreditCombo, type SimRules } from "@/lib/winRateSim";
-import { adviseCombo, scenarioLegs, ADVICE_DRIVER } from "@/lib/positionAdvisor";
+import { openingBasis, isCreditCombo, simPnlAt, type SimRules } from "@/lib/winRateSim";
+import { adviseCombo, scenarioLegs, ADVICE_DRIVER, prepareQuickAdvice, quickAdvice, quickAdviceWhy } from "@/lib/positionAdvisor";
 
 const bs = (type: "call" | "put", strike: number, dte = 30, vol = 0.3, spot = 100) =>
   Math.round(blackScholes({ spot, strike, dte, vol, rate: 0.05, type }).price * 10000) / 10000;
@@ -64,5 +64,23 @@ describe("positionAdvisor", () => {
     const a = adviseAt(3, 10, { takeProfitPct: null, stopMult: null, closeFrac: 0 });
     expect(a).not.toBeNull();
     expect(["hold", "holdOrStopLoss", "stopLoss", "holdOrTakeProfit"]).toContain(a.action);
+  });
+});
+
+describe("risk-zone reasons", () => {
+  it("quickAdviceWhy gives the same call as quickAdvice everywhere on the map", () => {
+    const debitCall: Leg[] = [leg({ strike: 95, premium: bs("call", 95) }), leg({ action: "sell", strike: 105, premium: bs("call", 105) })];
+    for (const [legs, rules] of [[bearCall, CREDIT], [debitCall, { takeProfitPct: 1, stopMult: 0.5, closeFrac: 0.25 }]] as [Leg[], SimRules][]) {
+      const basis = openingBasis(legs)!;
+      const ctx = prepareQuickAdvice({ legs, spot: 100, basis, credit: isCreditCombo(legs), rules, totalTerm: 30 })!;
+      for (const day of [0, 5, 12, 20, 25, 29, 30]) {
+        for (const price of [85, 92, 97, 100, 103, 108, 115]) {
+          const pnl = simPnlAt(ctx.p, day, price);
+          const why = quickAdviceWhy(ctx, day, price, pnl);
+          expect(why.action).toBe(quickAdvice(ctx, day, price, pnl));
+          expect(why.key.length).toBeGreaterThan(0);
+        }
+      }
+    }
   });
 });

@@ -3,7 +3,8 @@
 import { describe, it, expect } from "vitest";
 import type { Leg } from "@/lib/types";
 import { priceCombo } from "@/lib/pricing";
-import { buildMapModel, summarizePath, PATH_GROUPS, comboBaseIv, trackedTotalPnl, buildTrackedHistory, buildAttributionTimeline } from "@/lib/stockOptionMap";
+import { buildMapModel, summarizePath, PATH_GROUPS, comboBaseIv, trackedTotalPnl, buildTrackedHistory, buildAttributionTimeline, openingTerrain } from "@/lib/stockOptionMap";
+import { repriceLegsAtDate } from "@/lib/historicalBackfill";
 
 const leg = (over: Partial<Leg>): Leg => ({ id: Math.random().toString(36), action: "buy", type: "call", strike: 100, dte: 30, premium: 5, ...over });
 
@@ -91,6 +92,17 @@ describe("stockOptionMap tracked mode", () => {
     expect(Number.isNaN(m.pnlAt(5, 100))).toBe(true);
     expect(m.pnlAt(10, 102)).toBeCloseTo(0.7, 8);
     expect(m.start).toEqual({ day: 10, price: 102 });
+  });
+
+  it("opening terrain fills the days before today; an estimated snapshot sits exactly on it (gap 0)", () => {
+    const m = buildMapModel(opening.map((l) => ({ ...l, dte: 30 })), 102, 0, { timeOffset: 10, pnlOffset: 0.7, opening: { legs: opening, spot: 100 } })!;
+    const terrain = openingTerrain({ legs: opening, spot: 100 })!;
+    expect(terrain(0, 100)).toBeCloseTo(0, 6);
+    expect(m.pnlAt(5, 98)).toBeCloseTo(terrain(5, 98), 10);
+    expect(m.pnlAt(10, 102)).toBeCloseTo(0.7, 8);
+    // 估算快照=开仓组合按开仓IV重定价（隐含波动率不变、没调整），真实总账跟地形之差应为0（只差权利金四舍五入到分）
+    const est = repriceLegsAtDate(opening, 100, 97, 6);
+    expect(trackedTotalPnl(opening, est, 97, 100)).toBeCloseTo(terrain(6, 97), 1);
   });
 
   it("history lists snapshots in time order and marks the first appearance of a roll", () => {

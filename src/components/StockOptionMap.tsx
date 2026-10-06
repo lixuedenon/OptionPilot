@@ -5,10 +5,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Leg } from "@/lib/types";
 import { useI18n } from "@/i18n/I18nContext";
-import { PATH_GROUPS, buildMapModel, summarizePath, type MapModel, type PathId, type HistoryPoint, type AdjustMarker, type SegmentAttribution, type PnlParts } from "@/lib/stockOptionMap";
-import { quickAdvice, type QuickAdviceCtx, type AdviceAction } from "@/lib/positionAdvisor";
+import { PATH_GROUPS, buildMapModel, summarizePath, openingTerrain, type MapModel, type PathId, type HistoryPoint, type AdjustMarker, type SegmentAttribution, type PnlParts } from "@/lib/stockOptionMap";
+import { quickAdvice, quickAdviceWhy, type QuickAdviceCtx, type AdviceAction } from "@/lib/positionAdvisor";
 import { simPnlAt } from "@/lib/winRateSim";
 import { priceCombo } from "@/lib/pricing";
+import { fetchHistoricalSeries, rangeSince, type HistoricalSeries } from "@/lib/historicalVolatility";
+import { calendarDaysBetween } from "@/lib/dateUtils";
 
 interface Props {
   symbol: string;
@@ -22,11 +24,12 @@ interface Props {
   onPointChange?: (p: { day: number; price: number } | null) => void;
   // 实时现价：开仓日在过去时，可以切换成"从今天、现价出发"画走势线和概率范围。
   liveSpot?: number;
-  // 跟踪对比模式：左半边画开仓至今真实走过的股价（history）和展期/保护/对冲标记，
-  // 右半边从今天（todayDay）、现价推演，所有盈亏都加上开仓至今的总盈亏（pnlOffset），显示总账。
+  // 跟踪对比模式（今昔对比，只解释过去）：左半边底色是开仓那天看到的地形（opening：开仓组合、开仓时隐含波动率），
+  // 白线是开仓以来每天的真实收盘价，圆点是快照的真实总账；右半边是今天组合剩下的地形，调暗、不画推演走势。
+  // 所有盈亏都是开仓至今的总账（pnlOffset）。
   // segments/totals：今昔对比——开仓至今的盈亏逐段拆成股价/时间/波动率/调整，画在左半边底部，读数和图下方的总结都用它。
   // ruleExit：按你的止盈止损规则，真实走过的路上第一次碰到线的那一天（今昔对比，标"这里本该下车"）。
-  tracked?: { todayDay: number; pnlOffset: number; history: HistoryPoint[]; markers: AdjustMarker[]; segments?: SegmentAttribution[]; totals?: PnlParts & { total: number }; ruleExit?: { day: number; price: number; pnl: number; kind: "tp" | "sl" | "time" } | null };
+  tracked?: { todayDay: number; pnlOffset: number; opening?: { legs: Leg[]; spot: number }; history: HistoryPoint[]; markers: AdjustMarker[]; segments?: SegmentAttribution[]; totals?: PnlParts & { total: number }; ruleExit?: { day: number; price: number; pnl: number; kind: "tp" | "sl" | "time" } | null };
   // 推演未来：底部股价/时间滑块定的情景点（画蓝色菱形）；滑块一动，鼠标钉住的点就让位给滑块。
   scenario?: { day: number; price: number } | null;
   // 推演未来：风险分区和走势上的节点用的快速版持仓建议（跟左边持仓建议同一套规则）。
@@ -54,9 +57,19 @@ const ZONE_RGB: Record<AdviceAction, [number, number, number]> = {
   stopLoss: [225, 29, 72],
 };
 const COLOR_KEY = "optionpilot.mapColor";
+const DIM_BASE = [15, 23, 42];
 
 const fmtPnlRaw = (v: number) => (Math.abs(v) < 0.005 ? "$0.00" : `${v > 0 ? "+" : "−"}$${Math.abs(v).toFixed(2)}`);
 const pnlColor = (v: number) => (Math.abs(v) < 0.005 ? "#cbd5e1" : v > 0 ? "#34d399" : "#fb7185");
+
+// 股价线上第day天的价格（相邻两点之间按天线性插值）。
+function interpPath(path: { day: number; price: number }[], day: number): number {
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1], b = path[i];
+    if (day >= a.day && day <= b.day) return b.day === a.day ? b.price : a.price + ((b.price - a.price) * (day - a.day)) / (b.day - a.day);
+  }
+  return path.length ? path[path.length - 1].price : NaN;
+}
 
 function niceStep(span: number, target: number) {
   const raw = span / target;
@@ -130,6 +143,40 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     setPoint(null);
   }, [scenKey]);
 
+  // 今昔对比：开仓以来每天的真实收盘价（不依赖快照）。
+  const [series, setSeries] = useState<{ key: string; data: HistoricalSeries } | null>(null);
+  const seriesKey = tracked && symbol ? `${symbol}|${openingAt}` : "";
+  useEffect(() => {
+    if (!seriesKey) return;
+    let alive = true;
+    fetchHistoricalSeries(symbol, rangeSince(openingAt))
+      .then((data) => alive && setSeries({ key: seriesKey, data }))
+      .catch(() => alive && setSeries(null));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seriesKey]);
+  // 股价线：开仓点 → 每天收盘（数据窗口以前的日子用快照补）→ 今天。开仓当天和今天用开仓价/现价，不用收盘价。
+  const pricePath = useMemo(() => {
+    if (!tracked) return [] as { day: number; price: number }[];
+    const today = tracked.todayDay;
+    const closes: { day: number; price: number }[] = [];
+    const data = series && series.key === seriesKey ? series.data : null;
+    if (data && data.timestamps.length === data.closes.length) {
+      data.timestamps.forEach((ts, i) => {
+        const day = calendarDaysBetween(openingAt, ts * 1000);
+        if (day > 0 && day < today && data.closes[i] > 0) closes.push({ day, price: data.closes[i] });
+      });
+    }
+    const firstClose = closes.length ? closes[0].day : Infinity;
+    const snaps = tracked.history.slice(1).filter((h) => h.day < Math.min(firstClose, today)).map((h) => ({ day: h.day, price: h.price }));
+    const start = tracked.history[0] ?? { day: 0, price: spot };
+    return [{ day: 0, price: start.price }, ...snaps, ...closes, { day: today, price: spot }];
+  }, [tracked, series, seriesKey, openingAt, spot]);
+  const closeByDay = useMemo(() => new Map(pricePath.map((p) => [p.day, p.price])), [pricePath]);
+  const terrainAt = useMemo(() => openingTerrain(tracked?.opening), [tracked?.opening]);
+
   const canStartToday = !tracked && daysSinceOpen !== undefined && daysSinceOpen > 0 && liveSpot !== undefined && liveSpot > 0;
   const useToday = startMode === "today" && canStartToday;
   const todayDay = tracked ? tracked.todayDay : daysSinceOpen;
@@ -140,13 +187,13 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
         spot,
         dV,
         tracked
-          ? { timeOffset: tracked.todayDay, pnlOffset: tracked.pnlOffset, extraPrices: tracked.history.map((h) => h.price) }
+          ? { timeOffset: tracked.todayDay, pnlOffset: tracked.pnlOffset, opening: tracked.opening, extraPrices: [...tracked.history.map((h) => h.price), ...pricePath.map((p) => p.price)] }
           : useToday
             ? { start: { day: daysSinceOpen!, price: liveSpot! }, extraPrices: scenario ? [scenario.price] : [] }
             : { extraPrices: scenario ? [scenario.price] : [] },
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [legs, spot, dV, useToday, daysSinceOpen, liveSpot, tracked, scenario?.price],
+    [legs, spot, dV, useToday, daysSinceOpen, liveSpot, tracked, pricePath, scenario?.price],
   );
   const zoneOn = colorMode === "zone" && !!zoneCtx && !tracked;
   // 风险分区：每一格换成左边持仓建议在那一点会给的建议（快速版，不跑模拟）。
@@ -185,8 +232,8 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
   }, [model, zoneCtx, tracked, groupId]);
   const group = PATH_GROUPS.find((g) => g.id === groupId) ?? PATH_GROUPS[0];
   const summaries = useMemo(
-    () => (model ? group.paths.map((id) => ({ id, ...summarizePath(model, id) })) : []),
-    [model, group],
+    () => (model && !tracked ? group.paths.map((id) => ({ id, ...summarizePath(model, id) })) : []),
+    [model, group, tracked],
   );
   // 图下方的"发现"（推演未来）：都从数字直接算，不靠模型生成文字。
   const findings = useMemo(() => {
@@ -264,7 +311,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     g.clearRect(0, 0, size.w, size.h);
     draw(g, model, size.w, size.h);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model, size, group, hover, daysSinceOpen, point, pinned, symbol, zoneGrid, pathNodes, scenario]);
+  }, [model, size, group, hover, daysSinceOpen, point, pinned, symbol, zoneGrid, pathNodes, scenario, pricePath, zoneOn]);
 
   function draw(g: CanvasRenderingContext2D, m: MapModel, W: number, H: number) {
     const pw = W - M.l - M.r;
@@ -279,8 +326,11 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     const og = off.getContext("2d");
     if (og) {
       const img = og.createImageData(m.cols, m.rows);
+      // 今昔对比：今天以后只是"还剩什么地形"，调暗，让视线停在已经走过的左半边。
+      const dimFromCol = tracked ? Math.ceil((tracked.todayDay / m.horizon) * (m.cols - 1)) : Infinity;
       for (let i = 0; i < m.grid.length; i++) {
-        const [r, gg, b] = zoneGrid ? ZONE_RGB[ZONE_ORDER[zoneGrid[i]]] : cellColor(m.grid[i], m.maxProfit, m.maxLoss);
+        let [r, gg, b] = zoneGrid ? ZONE_RGB[ZONE_ORDER[zoneGrid[i]]] : cellColor(m.grid[i], m.maxProfit, m.maxLoss);
+        if (i % m.cols >= dimFromCol) [r, gg, b] = [r, gg, b].map((v, k) => Math.round(DIM_BASE[k] + (v - DIM_BASE[k]) * 0.35));
         img.data[i * 4] = r;
         img.data[i * 4 + 1] = gg;
         img.data[i * 4 + 2] = b;
@@ -380,8 +430,8 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       g.font = "10px ui-sans-serif, system-ui, sans-serif";
     }
 
-    // 概率范围（按隐含波动率的±1σ、±2σ），从走势起点展开成喇叭口
-    for (const k of [1, 2]) {
+    // 概率范围（按隐含波动率的±1σ、±2σ），从走势起点展开成喇叭口；今昔对比不往后推演，不画
+    for (const k of tracked ? [] : [1, 2]) {
       g.strokeStyle = k === 1 ? "rgba(196,181,253,0.8)" : "rgba(196,181,253,0.45)";
       g.lineWidth = 1;
       g.setLineDash(k === 1 ? [6, 3] : [2, 4]);
@@ -462,20 +512,25 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
         g.fillText(t(`som.adjust.${mk.via}`), tx(mk.day) + 3, M.t + ph - (tracked.segments?.length ? BAND_H + 6 : 4));
       }
       g.setLineDash([]);
-      const pts = [...tracked.history, { day: tracked.todayDay, price: spot, pnl: tracked.pnlOffset }];
       g.beginPath();
-      pts.forEach((h, i) => (i === 0 ? g.moveTo(tx(h.day), ty(h.price)) : g.lineTo(tx(h.day), ty(h.price))));
+      pricePath.forEach((h, i) => (i === 0 ? g.moveTo(tx(h.day), ty(h.price)) : g.lineTo(tx(h.day), ty(h.price))));
       g.strokeStyle = "#020617";
-      g.lineWidth = 5;
+      g.lineWidth = 4;
       g.stroke();
       g.strokeStyle = "#f8fafc";
-      g.lineWidth = 2.5;
+      g.lineWidth = 1.8;
       g.stroke();
       for (const h of tracked.history.slice(1)) {
         g.fillStyle = pnlColor(h.pnl);
         g.beginPath();
         g.arc(tx(h.day), ty(h.price), h.estimated ? 2.5 : 4.5, 0, Math.PI * 2);
         g.fill();
+        if (!h.estimated) {
+          g.strokeStyle = "#020617";
+          g.lineWidth = 1.5;
+          g.stroke();
+          g.lineWidth = 1;
+        }
       }
       // 盈亏拆解条：每一段一根柱，正的部分往上叠、负的往下叠，颜色=股价/时间/波动率/调整。
       const segs = tracked.segments ?? [];
@@ -531,8 +586,8 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       }
     }
 
-    // 走势线 + 终点盈亏标签
-    group.paths.forEach((id, i) => {
+    // 走势线 + 终点盈亏标签（今昔对比不画）
+    (tracked ? [] : group.paths).forEach((id, i) => {
       const color = pathColor(id, i);
       const steps = 80;
       g.beginPath();
@@ -696,10 +751,10 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       g.lineTo(M.l + pw, hover.y);
       g.stroke();
       // 读数：日期、股价、组合盈亏、组合净值、每条腿的价值（每股计，跟"盈亏图"标签口径一致）。
-      // 跟踪对比模式"已走过"半边：显示离鼠标最近的那条真实快照（当天股价和当时的总盈亏）。
-      const near = inPast && tracked
-        ? tracked.history.reduce((a, b) => (Math.abs(b.day - day) < Math.abs(a.day - day) ? b : a))
-        : null;
+      // 跟踪对比模式"已走过"半边：贴到真实股价线上——那天的收盘价、开仓时地形给的盈亏；那天有快照时再给真实总账和差额。
+      const pastPrice = inPast ? closeByDay.get(day) ?? interpPath(pricePath, day) : NaN;
+      const snap = inPast && tracked ? tracked.history.find((h) => h.day === day && h.day > 0) : undefined;
+      const expected = inPast && terrainAt ? terrainAt(day, pastPrice) : NaN;
       const legVals = m.legValuesAt(day, price);
       const net = legVals.reduce((a, b) => a + b, 0);
       const seg = inPast && tracked?.segments ? tracked.segments.find((sg) => day > sg.fromDay - 1e-9 && day <= sg.toDay + 1e-9 && sg.toDay > sg.fromDay) : undefined;
@@ -708,12 +763,27 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
         ...PART_KEYS.map((k) => ({ text: `  ${t(`som.attr_${k}`)} ${fmtPnl(seg[k])}`, color: PART_COLORS[k] })),
         ...(seg.estimated ? [{ text: t("som.attrSegEst"), color: "#94a3b8" }] : []),
       ] : [];
-      const lines: { text: string; color: string }[] = near ? [
-        { text: `${dateLabel(near.day)} · ${t("som.day", { n: near.day })}${near.estimated ? ` · ${t("som.estimated")}` : ""}`, color: "#e2e8f0" },
-        { text: `${t("som.tipPrice")} ${near.price.toFixed(2)}`, color: "#e2e8f0" },
-        { text: `${t("som.tipTotal")} ${fmtPnl(near.pnl)}`, color: pnlColor(near.pnl) },
-        ...segLines,
-      ] : [
+      const pastLines: { text: string; color: string }[] = [
+        { text: `${dateLabel(day)} · ${t("som.day", { n: day })}${snap?.estimated ? ` · ${t("som.estimated")}` : ""}`, color: "#e2e8f0" },
+        { text: `${t(closeByDay.has(day) ? "som.tipClose" : "som.tipPrice")} ${Number.isFinite(pastPrice) ? pastPrice.toFixed(2) : "—"}`, color: "#e2e8f0" },
+        ...(Number.isFinite(expected) ? [{ text: `${t("som.tipExpected")} ${fmtPnl(expected)}`, color: pnlColor(expected) }] : []),
+        ...(snap
+          ? [
+            { text: `${t("som.tipTotal")} ${fmtPnl(snap.pnl)}`, color: pnlColor(snap.pnl) },
+            ...(Number.isFinite(expected) ? [{ text: `${t("som.tipGap")} ${fmtPnl(snap.pnl - expected)}`, color: "#fbbf24" }] : []),
+          ]
+          : [{ text: t("som.tipNoSnap"), color: "#94a3b8" }]),
+      ];
+      // 风险分区：读数第一行就是这一点的建议和理由（这才是跟"盈亏颜色"不一样的地方）
+      const why = zoneOn && zoneCtx && !inPast ? quickAdviceWhy(zoneCtx, day, price, v) : null;
+      const zoneLines: { text: string; color: string }[] = why
+        ? [
+          { text: `${t("som.tipAdvice")} ${t(`advice.act.${why.action}`)}`, color: `rgb(${ZONE_RGB[why.action].map((c) => Math.min(255, c + 70)).join(",")})` },
+          { text: `  ${t(`som.why.${why.key}`, why.vars)}`, color: "#e2e8f0" },
+        ]
+        : [];
+      const lines: { text: string; color: string }[] = inPast ? [...pastLines, ...segLines] : [
+        ...zoneLines,
         { text: `${dateLabel(day)} · ${t("som.day", { n: day })}`, color: "#e2e8f0" },
         { text: `${t("som.tipPrice")} ${price.toFixed(2)}`, color: "#e2e8f0" },
         { text: `${tracked ? t("som.tipTotal") : t("som.tipPnl")} ${fmtPnl(v)}`, color: pnlColor(v) },
@@ -726,6 +796,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
           return { text: `  ${act} ${kind}${qty}  ${val}`, color: l.action === "buy" ? "#6ee7b7" : "#fda4af" };
         }),
       ];
+      const sepAfter = inPast ? pastLines.length - 1 : zoneLines.length + 3;
       g.font = "11px ui-sans-serif, system-ui, sans-serif";
       const bw = Math.max(...lines.map((ln) => g.measureText(ln.text).width)) + 12;
       const bh = lines.length * 13 + 6;
@@ -739,7 +810,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       lines.forEach((ln, i) => {
         g.fillStyle = ln.color;
         g.fillText(ln.text, bx + 6, by + 14 + i * 13);
-        if (i === (near ? 2 : 3)) {
+        if (i === sepAfter && i < lines.length - 1) {
           g.strokeStyle = "#334155";
           g.beginPath();
           g.moveTo(bx + 4, by + 17 + i * 13);
@@ -759,7 +830,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
   return (
     <div className="flex h-full min-h-0 flex-col gap-1">
       <div className="flex flex-wrap items-center gap-1">
-        {PATH_GROUPS.map((gr) => (
+        {!tracked && PATH_GROUPS.map((gr) => (
           <button
             key={gr.id}
             onClick={() => setGroupId(gr.id)}
@@ -801,7 +872,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
           </span>
         )}
         <span className="ml-auto text-[10px] text-slate-500">
-          {t("som.moveNote", { pct: ((model.move / model.start.price) * 100).toFixed(1) })}
+          {tracked ? t("som.colorNote") : zoneOn ? t("som.zoneNote") : t("som.moveNote", { pct: ((model.move / model.start.price) * 100).toFixed(1) })}
           {multiExpiry && ` · ${t("som.multiExpiryNote")}`}
         </span>
       </div>
@@ -835,6 +906,19 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
           }}
         />
       </div>
+      {tracked && terrainAt && tracked.todayDay > 0 && (() => {
+        // 开仓那天的地形在今天这一点给的盈亏 vs 真实总账：差额 = 隐含波动率变化 + 调整。
+        const expected = terrainAt(tracked.todayDay, spot);
+        const gap = tracked.pnlOffset - expected;
+        const adjusted = tracked.markers.length > 0 || Math.abs(tracked.totals?.adjust ?? 0) > 0.005;
+        const vars = { s: spot.toFixed(2), d: tracked.todayDay, a: fmtPnl(expected), b: fmtPnl(tracked.pnlOffset), c: fmtPnl(gap) };
+        return (
+          <div className="rounded-md border border-slate-800 bg-slate-900/50 px-2 py-1 text-[11px] leading-relaxed text-slate-300">
+            {t("som.gapExpected", vars)}{" "}
+            {Math.abs(gap) < 0.005 ? t("som.gapNone") : t(adjusted ? "som.gapIvAdj" : "som.gapIv", vars)}
+          </div>
+        );
+      })()}
       {tracked?.totals && tracked.segments && tracked.segments.length > 0 && (() => {
         const tot = tracked.totals;
         // "为什么是今天这样"：跟总结果同方向、贡献最大的那一项；反方向更大的一项算"抵消了一部分"。
@@ -901,49 +985,6 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-// 今昔对比时这个标签下只保留隐含波动率滑块（时间和股价已经体现在图上）。baseIv是开仓时各期权腿IV的平均值（小数）。
-export function IvShiftSlider({ value, onChange, baseIv, baseIsToday }: { value: number; onChange: (v: number) => void; baseIv: number | null; baseIsToday?: boolean }) {
-  const { t } = useI18n();
-  const pct = ((value + 100) / 200) * 100;
-  const basePct = baseIv !== null ? baseIv * 100 : null;
-  const nowPct = basePct !== null ? Math.max(1, basePct + value) : null;
-  return (
-    <div>
-      <div className="mb-1 flex items-center justify-between">
-        <span className="text-[13px] font-bold text-sky-400">{t("som.ivTitle")}</span>
-        {value !== 0 && (
-          <button
-            onClick={() => onChange(0)}
-            className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-300 hover:border-slate-500"
-          >
-            {t("som.ivReset")}
-          </button>
-        )}
-      </div>
-      <div className="flex items-center gap-3">
-        <span className="w-28 shrink-0 text-[10px] text-slate-400">
-          {t(baseIsToday ? "som.ivBaseToday" : "som.ivBase")} <span className="font-bold tabular-nums text-slate-200">{basePct !== null ? `${basePct.toFixed(1)}%` : "—"}</span>
-        </span>
-        <input
-          type="range"
-          min={-100}
-          max={100}
-          step={1}
-          value={value}
-          onChange={(e) => onChange(parseFloat(e.target.value))}
-          className="slider-range w-full"
-          style={{ background: `linear-gradient(to right, #a78bfa ${pct}%, rgb(51 65 85) ${pct}%)` }}
-        />
-        <span className="w-36 shrink-0 text-right text-[10px] tabular-nums text-slate-400">
-          {nowPct !== null && <span className="font-bold text-violet-300">{nowPct.toFixed(1)}%</span>}
-          <span className="ml-1">({`${value >= 0 ? "+" : ""}${value.toFixed(0)}`})</span>
-        </span>
-      </div>
-      <div className="mt-0.5 text-[10px] text-slate-500">{t("som.ivHint")}</div>
     </div>
   );
 }

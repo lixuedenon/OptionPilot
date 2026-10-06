@@ -21,3 +21,5 @@ dist-ssr
 *.sln
 *.sw?
 .env
+record-iv-now.ps1
+supabase/cron/record-iv-schedule.sql

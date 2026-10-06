@@ -13,7 +13,7 @@ import type { FutureRequest, FutureResponse, Sample, RetroDay } from "@/lib/futu
 import { buildMapModel, comboBaseIv, type PnlParts, type SegmentAttribution } from "@/lib/stockOptionMap";
 import { priceStance, journeyRows, keyLevels } from "@/lib/retroStory";
 import { NowCells, JourneyBlock } from "@/components/ValueJourney";
-import { fetchHistoricalSeries, realizedVolSince } from "@/lib/historicalVolatility";
+import { fetchHistoricalSeries, realizedVolSince, rangeSince } from "@/lib/historicalVolatility";
 import { useSimSettings } from "@/lib/simSettings";
 import CanvasBox from "@/components/simCharts";
 import SimSurface3D from "@/components/SimSurface3D";
@@ -92,7 +92,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
     if (!symbol) return;
     let alive = true;
     setSince({ status: "loading" });
-    fetchHistoricalSeries(symbol)
+    fetchHistoricalSeries(symbol, rangeSince(openingAt))
       .then((s) => {
         if (!alive) return;
         const r = realizedVolSince(s, openingAt);
@@ -341,7 +341,12 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
     hint: t("future.hint3d"),
     intro: t("future.intro3d"),
     time: `${t("future.axisRetro")} →`,
-    legend: [t("future.lg3dZ"), t("future.lg3dX", { a: t("future.axOpen"), b: t("future.axToday", { d: days }) }), t("future.lg3dY", { lo: model.sMin.toFixed(0), hi: model.sMax.toFixed(0) })],
+    floor: t("future.floorTagRetro"),
+    curtain: t("future.curtainTagRetro"),
+    zero: t("future.zeroTag"),
+    band: t("future.bandTag3d", { n: PATHS.toLocaleString() }),
+    dayTick: (d: number) => t("future.dayTick", { d }),
+    scen: () => "",
   };
 
   // ── 卡片：先说"现在跟开仓时比"（就是左边滑块的位置），再说组合的价值一路经历了什么、正不正常、现在的处境 ──
@@ -645,20 +650,15 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
           <SimSurface3D
             model={model}
             days={days}
-            rows={ROWS}
-            density={shown?.holding ?? null}
-            forkDensity={null}
-            forkStartDay={0}
-            samples={shown?.samples ?? []}
-            forkSamples={[]}
-            exits={exitShown ? [{ day: exitShown.day, price: exitShown.price, reason: exitShown.kind }] : []}
+            path={actual.length > 1 ? { points: actual.map((a) => ({ day: a.day, price: a.price })), exitDay: days, color: "#fbbf24", label: t("future.actualTag3d", { v: money(pnlNow) }) } : null}
+            bands={shown?.bands}
+            marks={exitShown ? [{ day: exitShown.day, price: exitShown.price, reason: exitShown.kind }] : []}
             scenario={null}
             endDay={days}
             labels={labels3d}
             money={(v) => `${v < -0.005 ? "−" : ""}$${Math.abs(v).toFixed(2)}`}
             notes={notes3d}
             slices={[{ day: days, label: t("future.sliceToday", { d: days }), color: "#fde68a" }]}
-            actual={actual.map((a) => ({ day: a.day, price: a.price }))}
             todayDay={days}
           />
         ) : (

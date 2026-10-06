@@ -85,6 +85,15 @@ async function readStaleCache(cacheKey: string): Promise<ChainResult | null> {
 // Defaults are deliberately conservative for a just-launched, low-traffic
 // app; tune via env vars (Supabase project → Edge Functions → Secrets)
 // once real usage patterns are known, without a code change.
+// 用户查过期权链的代码，自动加进每天记录IV的名单（record-iv函数按名单记）。已在名单里的不动。
+async function addToIvWatchlist(symbol: string): Promise<void> {
+  try {
+    await getSupabaseClient().from("iv_watchlist").upsert({ symbol, source: "user" }, { onConflict: "symbol", ignoreDuplicates: true });
+  } catch {
+    // 名单只是附带的，失败不影响返回期权链
+  }
+}
+
 const RATE_LIMIT_WINDOW_SECONDS = Number(Deno.env.get("YAHOO_RATE_LIMIT_WINDOW_SECONDS") ?? "60");
 const RATE_LIMIT_MAX_CALLS = Number(Deno.env.get("YAHOO_RATE_LIMIT_MAX_CALLS") ?? "20");
 
@@ -353,6 +362,7 @@ Deno.serve(async (req: Request) => {
       // function doesn't get torn down mid-write — Edge Functions don't keep
       // running background work after the response is sent.
       await writeCache(cacheKey, symbol.toUpperCase(), out);
+      await addToIvWatchlist(symbol.toUpperCase());
       return out;
     })();
 

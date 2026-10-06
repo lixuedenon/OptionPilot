@@ -280,10 +280,11 @@ export async function backfillTrackedSnapshots(id: string): Promise<SavedStrateg
     for (const a of anchors) if (a.dateISO <= bar.dateISO) base = a;
     if (!(base.spot > 0)) continue;
     const daysElapsed = daysBetweenLocalDates(base.dateISO, bar.dateISO);
+    // 用收盘价：今昔对比地形图上的股价线画的是每日收盘，估算快照的点才落在线上。
     regenerated.push({
       id: `snap-${bar.dateISO}-backfill`,
-      legs: repriceLegsAtDate(base.legs, base.spot, bar.avgPrice, daysElapsed),
-      spot: bar.avgPrice,
+      legs: repriceLegsAtDate(base.legs, base.spot, bar.close, daysElapsed),
+      spot: bar.close,
       savedAt: parseDateInput(bar.dateISO) ?? Date.now(),
       estimated: true,
     });

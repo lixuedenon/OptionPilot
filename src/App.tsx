@@ -35,19 +35,19 @@ import AppHeader from "@/components/AppHeader";
 import LockedOverlay, { type LockReason } from "@/components/LockedOverlay";
 import StepBadge from "@/components/StepBadge";
 import PnlHeadline from "@/components/PnlHeadline";
-import StockOptionMap, { IvShiftSlider } from "@/components/StockOptionMap";
+import StockOptionMap from "@/components/StockOptionMap";
 import RetroSim from "@/components/RetroSim";
 import FutureSim from "@/components/FutureSim";
 import { useSimSettings } from "@/lib/simSettings";
 import { openingBasis, isCreditCombo, prepareSim } from "@/lib/winRateSim";
 import { replayRules } from "@/lib/futureSim";
-import { comboBaseIv, buildTrackedHistory, buildAttributionTimeline, trackedTotalPnl, type TrackedState } from "@/lib/stockOptionMap";
+import { buildTrackedHistory, buildAttributionTimeline, trackedTotalPnl, type TrackedState } from "@/lib/stockOptionMap";
 import { STEP_GUIDE_ENABLED } from "@/lib/featureFlags";
 import LegPanelTitleRow from "@/components/LegPanelTitleRow";
 import TrackedComboSection from "@/components/TrackedComboSection";
 import LegActionDialogs from "@/components/LegActionDialogs";
 import StrategyPersistenceDialogs from "@/components/StrategyPersistenceDialogs";
-import { ConfirmLockRollDialog, ConfirmPremiumCheckDialog, HelpPanel, isGuideDismissed, ExpiredStrategyDialog, ExpiredTrackPromptDialog } from "@/components/dialogs";
+import { ConfirmLockRollDialog, ConfirmPremiumCheckDialog, HelpPanel, isGuideDismissed, ExpiredStrategyDialog, ExpiredTrackPromptDialog, ConfirmReplacePresetDialog, ConfirmSnapshotDialog } from "@/components/dialogs";
 import ErrorBoundary from "@/components/ErrorBoundary";
 
 interface AppProps {
@@ -246,6 +246,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const pendingPresetAction = useRef<{ name: string; rawLegs: Leg[] } | null>(null);
   const [confirmPresetOpen, setConfirmPresetOpen] = useState(false);
   const pendingPresetReplace = useRef<Leg[] | null>(null);
+  // 策略库里打开/跟踪一条策略会替换当前组合：当前组合有未保存改动时先问（跟选预设同一个确认框）。
+  // strategy=分析模式（先保存策略组合），snapshot=对比模式（先存追踪快照）。
+  const pendingLibraryAction = useRef<(() => void) | null>(null);
+  const [confirmLibrary, setConfirmLibrary] = useState<"strategy" | "snapshot" | null>(null);
   const [confirmReplaceOpen, setConfirmReplaceOpen] = useState(false);
   // Guards handleSwitchToAnalysis: switching to "baseline" or a snapshot
   // discards whatever unsaved edits are sitting in trackedLegs (switching
@@ -494,7 +498,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // 地形图上鼠标指向（或钉住）的点临时代替股价/时间滑块，只喂给图表头部盈亏/归因/持仓建议这些显示（波动率仍按滑块）；
   // 不写进shifts——保存策略时存的是真实shifts，绝不能用mapPoint。滑块一动，地形图会清掉这个点（见StockOptionMap的scenario）。
   const [chartView, setChartView] = useState<"payoff" | "stockVsOption" | "winRate">("payoff");
-  const [somDV, setSomDV] = useState(0);
   const [mapPoint, setMapPoint] = useState<{ day: number; price: number } | null>(null);
   const mapActive = chartView === "stockVsOption" && !isCompareModeNow && !isMobile;
   const analyticsShifts: Shifts = useMemo(
@@ -709,6 +712,25 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     if (isExploring) setGuideSlid(true);
   }, [isExploring]);
 
+  const runPendingLibrary = () => {
+    const a = pendingLibraryAction.current;
+    pendingLibraryAction.current = null;
+    a?.();
+  };
+  // 有未保存改动就先关策略库、弹确认框；没有就直接执行。
+  const guardLibrary = (action: () => void) => {
+    const slot = activeComboIndex > 0 ? compareSlots[activeComboIndex - 1] : undefined;
+    const kind: "strategy" | "snapshot" | null = isCompareMode
+      ? (trackedDirty ? "snapshot" : null)
+      : slot ? (isSlotDirty(slot) ? "strategy" : null) : (canSaveStrategy ? "strategy" : null);
+    if (!kind) {
+      action();
+      return;
+    }
+    pendingLibraryAction.current = action;
+    setManageStrategyOpen(false);
+    setConfirmLibrary(kind);
+  };
   const handleSaveStrategyForActive = async (filename: string) => {
     if (activeSlot) {
       const updated = await saveStrategy({ filename, symbol, spot, legs: activeSlot.legs, shifts: { dS: 0, dT: 0, dV: 0 }, openingAt: Date.now() });
@@ -717,11 +739,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       // 保存后刷新该槽位baseline；如果是退出流程里的"先保存"，推进确认队列。
       markSlotSaved(activeSlot.id);
       if (leaveQueue.length > 0) advanceLeaveQueue();
+      runPendingLibrary();
       return;
     }
     await handleSaveStrategy(filename);
     setGuideSaved(true);
     if (leaveQueue.length > 0) advanceLeaveQueue();
+    runPendingLibrary();
   };
   const handleOverwriteStrategyForActive = async (id: string, filename: string) => {
     if (activeSlot) {
@@ -730,11 +754,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       setSaveStrategyOpen(false);
       markSlotSaved(activeSlot.id);
       if (leaveQueue.length > 0) advanceLeaveQueue();
+      runPendingLibrary();
       return;
     }
     await handleOverwriteStrategy(id, filename);
     setGuideSaved(true);
     if (leaveQueue.length > 0) advanceLeaveQueue();
+    runPendingLibrary();
   };
 
   // 只包装"保存追踪快照"按钮本身，原因见confirmLockRollOpen的注释。
@@ -852,10 +878,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     () => (isCompareMode ? weightedAvgIV(openingDayLegs, spot) : weightedAvgIV(mapLegs, analyticsSpot)),
     [isCompareMode, openingDayLegs, spot, mapLegs, analyticsSpot],
   );
-  const somBaseIv = useMemo(
-    () => (!showStockOptionMap ? null : isCompareMode ? comboBaseIv(activeTrackedLegs ?? [], effectiveTrackedSpot) : comboBaseIv(mapLegs, analyticsSpot)),
-    [showStockOptionMap, isCompareMode, activeTrackedLegs, effectiveTrackedSpot, mapLegs, analyticsSpot],
-  );
+
   // 今昔对比：真实走过的路（开仓点→各快照→今天），地形图和万次推演回看共用。
   const trackedHistory = useMemo(() => {
     if (!isCompareMode || !trackedResult) return null;
@@ -900,8 +923,11 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const trackedMap = useMemo(() => {
     if (!showStockOptionMap || !trackedHistory || !trackedTimeline) return undefined;
     const { segments, totals } = trackedTimeline;
-    return { todayDay: trackedHistory.todayDay, pnlOffset: trackedHistory.pnlNow, history: trackedHistory.points, markers: trackedHistory.markers, segments, totals, ruleExit };
-  }, [showStockOptionMap, trackedHistory, trackedTimeline, ruleExit]);
+    return {
+      todayDay: trackedHistory.todayDay, pnlOffset: trackedHistory.pnlNow, opening: { legs: openingDayLegs, spot },
+      history: trackedHistory.points, markers: trackedHistory.markers, segments, totals, ruleExit,
+    };
+  }, [showStockOptionMap, trackedHistory, trackedTimeline, ruleExit, openingDayLegs, spot]);
 
   const legToolbar = (
     <>
@@ -1281,7 +1307,9 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                         : "border-transparent text-slate-500 hover:bg-slate-800/50 hover:text-slate-300"
                     }`}
                   >
-                    {t(v === "payoff" ? "chart.tabPayoff" : v === "stockVsOption" ? "chart.tabStockVsOption" : "chart.tabWinRate")}
+                    {t(isCompareMode
+                      ? (v === "payoff" ? "chart.tabPayoffCompare" : v === "stockVsOption" ? "chart.tabPathCompare" : "chart.tabReview")
+                      : (v === "payoff" ? "chart.tabPayoff" : v === "stockVsOption" ? "chart.tabStockVsOption" : "chart.tabWinRate"))}
                   </button>
                 ))}
                 {/* 右端：分析模式的盈亏头部 + 分析↔对比模式切换（两种模式、三个标签下都在这里）。 */}
@@ -1342,7 +1370,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   onPointChange={setMapPoint}
                   tracked={trackedMap}
                   spot={isCompareMode ? effectiveTrackedSpot : analyticsSpot}
-                  dV={isCompareMode ? somDV : shifts.dV}
+                  dV={isCompareMode ? 0 : shifts.dV}
                   scenario={!isCompareMode && (shifts.dS !== 0 || shifts.dT !== 0) ? { day: shifts.dT, price: analyticsSpot + shifts.dS } : null}
                   zoneCtx={isCompareMode ? null : mapZoneCtx}
                   openingAt={openingAt}
@@ -1383,9 +1411,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           {/* 胜率模拟：推演未来时保留滑块（拖动只移动走势图上的情景点，不重新模拟）；今昔对比的滑块是冻结的，这个标签下不显示 */}
           {!(isMobile && isCompareMode) && !(showWinRate && isCompareMode) && (
           <div className="shrink-0 border-t border-slate-800 px-3 py-1.5">
-            {showStockOptionMap && isCompareMode ? (
-              <IvShiftSlider value={somDV} onChange={setSomDV} baseIv={somBaseIv} baseIsToday={isCompareMode} />
-            ) : (
             <ShiftSliders
               shifts={shifts}
               spot={spot}
@@ -1405,7 +1430,6 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               guideBadge={showGuide5 && !showChartTabs ? <StepBadge n={5} title={t("guide.step5")} /> : undefined}
               hideTitle={showChartTabs}
             />
-            )}
           </div>
           )}
         </div>
@@ -1610,6 +1634,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         onCloseSaveStrategy={() => {
           setSaveStrategyOpen(false);
           pendingPresetReplace.current = null;
+          pendingLibraryAction.current = null;
           pendingLeaveAfterSave.current = false;
           pendingSaveTrackedAfterStrategy.current = false;
           // 退出流程中"先保存"后又取消：整体放弃退出。
@@ -1629,7 +1654,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         onCloseManage={() => setManageStrategyOpen(false)}
         manageMode={manageMode}
         // 打开策略时激活B/C则用applyStrategyToSlot（按s.spot→当前现价缩放），不碰A的策略生命周期state；激活A时不变。
-        onOpenStrategy={(s) => {
+        onOpenStrategy={(s) => guardLibrary(() => {
           if (activeComboIndex > 0) {
             const slot = compareSlots[activeComboIndex - 1];
             if (slot) applyStrategyToSlot(slot.id, s.legs, s.spot, spot, symbol);
@@ -1638,13 +1663,28 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           }
           handleOpenStrategy(s);
           setGuideSaved(true);
-        }}
+        })}
         onReorderStrategies={handleReorderStrategies}
         onRenameStrategy={handleRenameStrategy}
         onDeleteStrategy={handleDeleteStrategy}
         onToggleStarStrategy={handleToggleStar}
-        onTrackStrategy={handleTrack}
+        onTrackStrategy={(s) => guardLibrary(() => void handleTrack(s))}
       />
+      {confirmLibrary === "strategy" && (
+        <ConfirmReplacePresetDialog
+          descKey="confirm.replaceDescLibrary"
+          onCancel={() => { setConfirmLibrary(null); pendingLibraryAction.current = null; }}
+          onDontSave={() => { setConfirmLibrary(null); runPendingLibrary(); }}
+          onSaveFirst={() => { setConfirmLibrary(null); setSaveStrategyOpen(true); }}
+        />
+      )}
+      {confirmLibrary === "snapshot" && (
+        <ConfirmSnapshotDialog
+          onCancel={() => { setConfirmLibrary(null); pendingLibraryAction.current = null; }}
+          onDontSave={() => { setConfirmLibrary(null); runPendingLibrary(); }}
+          onSaveSnapshot={async () => { setConfirmLibrary(null); await handleSaveTracked(); runPendingLibrary(); }}
+        />
+      )}
     </div>
   );
 }

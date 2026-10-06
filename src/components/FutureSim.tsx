@@ -9,7 +9,7 @@ import { useI18n } from "@/i18n/I18nContext";
 import type { Leg } from "@/lib/types";
 import {
   openingBasis, isCreditCombo, prepareSim, simPnlAt, probPriceBeyond, batchStability, driftCushion,
-  type SimRules, type SimStats, type Histogram, type CurvePoint, type Breakeven, type DriftPoint, type ExitReason,
+  type SimRules, type SimStats, type Histogram, type CurvePoint, type Breakeven, type DriftPoint,
 } from "@/lib/winRateSim";
 import type { ExitPoint, GridSpec, RuleSuggestion, Band, Story } from "@/lib/futureSim";
 import { drawZones, drawBands, labelBands, tagBox, type PlaneFrame, type Placed } from "@/lib/planeChart";
@@ -49,7 +49,6 @@ const SL_OPTIONS: Record<Side, number[]> = { credit: [0.5, 1, 1.5, 2, 3], debit:
 const CLOSE_FRACS = [0.25, 1 / 3, 0.5];
 // 隐含波动率是最近20天实际波动的1.4倍以上才提醒（平时两者差两三成很常见）。
 const IV_HV_WARN = 1.4;
-const REASON_COLOR: Record<ExitReason, string> = { tp: "#34d399", sl: "#fb7185", time: "#fbbf24", expiry: "#38bdf8" };
 
 function loadNumber(key: string, fallback: number): number {
   try {
@@ -99,6 +98,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
   const [run, setRun] = useState<MainRun>(EMPTY_RUN);
   const [forkRun, setForkRun] = useState<{ key: string; stats: SimStats; holding: Float32Array; samples: Sample[] } | null>(null);
   const [runNonce, setRunNonce] = useState(0);
+  const [storyIdx, setStoryIdx] = useState(0); // 立体图里看哪一种典型结局
   const workerRef = useRef<Worker | null>(null);
   const forkWorkerRef = useRef<Worker | null>(null);
   const queueRef = useRef<FutureResponse[]>([]);
@@ -609,8 +609,23 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
     hint: t("future.hint3d"),
     intro: t("future.intro3d"),
     time: `${t("winRate.axisTimeOpen")} →`,
-    legend: [t("future.lg3dZ"), t("future.lg3dX", { a: t("future.axOpen"), b: t("future.axExpiry", { d: days }) }), t("future.lg3dY", { lo: model.sMin.toFixed(0), hi: model.sMax.toFixed(0) }), t("future.lg3dCliff")],
+    floor: t("future.floorTag"),
+    curtain: t("future.curtainTag"),
+    zero: t("future.zeroTag"),
+    band: t("future.bandTag3d", { n: (BATCHES * PER_BATCH).toLocaleString() }),
+    dayTick: (d: number) => t("future.dayTick", { d }),
+    scen: (d: number, price: string, v: string) => t("future.scenTag3d", { d, p: price, v }),
   };
+  const story3d = stories.length ? stories[Math.min(storyIdx, stories.length - 1)] : null;
+  const money3d = (v: number) => `${v < -0.005 ? "−" : ""}$${Math.abs(v).toFixed(2)}`;
+  const path3d = story3d
+    ? {
+        points: story3d.prices.map((price, d) => ({ day: d, price })),
+        exitDay: story3d.day,
+        color: STORY_COLOR[story3d.kind],
+        label: `${t(`future.story_${story3d.kind}`)}${shareText(story3d.share)} ${story3d.pnl >= 0 ? "+" : ""}${money3d(story3d.pnl)}`,
+      }
+    : null;
 
   // ── 结论卡片 ──
   const s = run.done?.stats ?? null;
@@ -890,9 +905,9 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
       </span>
       {view === "3d" ? (
         <>
-          <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-slate-100/80" />{t("future.lgHold")}</span>
-          {rules.takeProfitPct != null && <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: REASON_COLOR.tp }} />{t("winRate.lg_tp")}</span>}
-          {rules.stopMult != null && <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: REASON_COLOR.sl }} />{t("winRate.lg_sl")}</span>}
+          <span className="flex items-center gap-1"><span className="inline-block h-0.5 w-4 rounded" style={{ background: path3d?.color ?? "#fde68a" }} />{t("future.lgPath3d")}</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm" style={{ background: `${path3d?.color ?? "#fde68a"}55` }} />{t("future.lgCurtain3d")}</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-0.5 w-4 rounded bg-amber-100" />{t("future.lgTop3d")}</span>
         </>
       ) : (
         <>
@@ -910,22 +925,32 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, ivBa
     <div className="flex h-full flex-col gap-2 overflow-y-auto pr-1 text-[11px] text-slate-300">
       {controls}
       {/* 图的高度跟着窗口走（窗口高度的70%，至少420、最多760像素）：立体图太矮看不清；下面的卡片在右栏里往下滚 */}
+      {view === "3d" && stories.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+          <span className="text-slate-400">{t("future.pickStory")}</span>
+          {stories.map((st, i) => (
+            <button
+              key={st.kind}
+              onClick={() => setStoryIdx(i)}
+              className={`rounded border px-2 py-0.5 ${i === Math.min(storyIdx, stories.length - 1) ? "font-semibold text-slate-100" : "border-slate-700 text-slate-400 hover:text-slate-200"}`}
+              style={i === Math.min(storyIdx, stories.length - 1) ? { borderColor: STORY_COLOR[st.kind], background: `${STORY_COLOR[st.kind]}22` } : undefined}
+            >
+              {t(`future.story_${st.kind}`)}{shareText(st.share)}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="h-[clamp(420px,70vh,760px)] shrink-0 overflow-hidden rounded-md border border-slate-800">
         {view === "3d" ? (
           <SimSurface3D
             model={model}
             days={days}
-            rows={ROWS}
-            density={run.holding}
-            forkDensity={forkShown?.holding ?? null}
-            forkStartDay={fork ? Math.round(fork.day) : 0}
-            samples={run.samples}
-            forkSamples={forkShown?.samples ?? []}
-            exits={run.exits}
+            path={path3d}
+            bands={run.bands}
             scenario={scen}
             endDay={p.endDay}
             labels={labels3d}
-            money={(v) => `${v < -0.005 ? "−" : ""}$${Math.abs(v).toFixed(2)}`}
+            money={money3d}
             notes={notes3d}
             slices={[
               ...(scen && scen.day > 0.5 && scen.day < days - 0.5 ? [{ day: scen.day, label: t("future.sliceDay", { d: Math.round(scen.day) }), color: "#38bdf8" }] : []),

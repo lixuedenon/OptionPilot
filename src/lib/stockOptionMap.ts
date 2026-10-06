@@ -87,6 +87,9 @@ export interface MapOptions {
   pnlOffset?: number;
   // 需要包进价格区间的额外价格（比如真实走过的历史股价）
   extraPrices?: number[];
+  // 跟踪对比模式：今天之前的日子铺"开仓那天看到的地形"——开仓组合、开仓时各腿隐含波动率、不做调整。
+  // legs的dte按开仓那天；不传则今天之前没有底色（pnlAt返回NaN）。
+  opening?: { legs: Leg[]; spot: number };
 }
 
 export function buildMapModel(legs: Leg[], spot: number, dV: number, opts: MapOptions = {}, cols = 120, rows = 80): MapModel | null {
@@ -123,7 +126,7 @@ export function buildMapModel(legs: Leg[], spot: number, dV: number, opts: MapOp
     if (k < sMin && k > spot * 0.4) sMin = k - 0.15 * move;
     if (k > sMax && k < spot * 1.6) sMax = k + 0.15 * move;
   }
-  for (const p of opts.extraPrices ?? []) {
+  for (const p of [...(opts.extraPrices ?? []), opts.opening?.spot ?? 0]) {
     if (!(p > 0)) continue;
     if (p < sMin) sMin = p - 0.1 * move;
     if (p > sMax) sMax = p + 0.1 * move;
@@ -135,8 +138,9 @@ export function buildMapModel(legs: Leg[], spot: number, dV: number, opts: MapOp
     const s = { dS: price - spot, dT: day - t0, dV };
     return legs.map((l, i) => legShiftedPrice(l, s, spot, ivs[i]));
   };
+  const openingAt = openingTerrain(opts.opening);
   const pnlAt = (day: number, price: number) => {
-    if (day < t0 - 1e-9) return NaN;
+    if (day < t0 - 1e-9) return openingAt ? openingAt(day, price) : NaN;
     const s = { dS: price - spot, dT: day - t0, dV };
     let v = 0;
     for (let i = 0; i < legs.length; i++) v += legShiftedPrice(legs[i], s, spot, ivs[i]);
@@ -172,6 +176,22 @@ export function buildMapModel(legs: Leg[], spot: number, dV: number, opts: MapOp
     horizon, sMin, sMax, move: pathMove, baseIv, cols, rows, grid,
     maxAbs: maxAbs || 1, maxProfit: maxProfit || 1, maxLoss: maxLoss || 1,
     start, strikes, pnlAt, legValuesAt, path, cone,
+  };
+}
+
+// 开仓那天看到的地形：第day天（从开仓算）、股价price时开仓组合的盈亏（每股），隐含波动率按开仓时各腿的值不变。
+// 跟这一天的真实总账之差，就是隐含波动率变化和调整造成的。
+export function openingTerrain(opening: { legs: Leg[]; spot: number } | undefined): ((day: number, price: number) => number) | null {
+  if (!opening || !(opening.spot > 0)) return null;
+  const legs = opening.legs.filter((l) => !l.disabled);
+  if (legs.length === 0) return null;
+  const ivs = legs.map((l) => (l.kind === "stock" ? undefined : impliedVol(opening.spot, l.strike, l.dte, l.premium, l.type)));
+  const net = legs.reduce((sum, l, i) => sum + legShiftedPrice(l, { dS: 0, dT: 0, dV: 0 }, opening.spot, ivs[i]), 0);
+  return (day, price) => {
+    const s = { dS: price - opening.spot, dT: day, dV: 0 };
+    let v = 0;
+    for (let i = 0; i < legs.length; i++) v += legShiftedPrice(legs[i], s, opening.spot, ivs[i]);
+    return v - net;
   };
 }
 

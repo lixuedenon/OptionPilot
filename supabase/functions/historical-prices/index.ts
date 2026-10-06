@@ -20,9 +20,11 @@ interface HistoricalPricesResult {
   source: string;
 }
 
+const ALLOWED_RANGES = new Set(["1mo", "2mo", "3mo", "6mo", "1y", "2y"]);
+
 // Separate from stock-quote (which only ever needs today's price) because
 // this needs a multi-month RANGE of daily closes to compute historical
-// volatility — a different Yahoo Finance chart query (range=2mo instead of
+// volatility — a different Yahoo Finance chart query (a multi-month range instead of
 // range=1d), not just a different parameter on the same call.
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -39,10 +41,9 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // 2 months of daily bars is enough for a 30-trading-day HV lookback
-    // with room to spare (~42 trading days in 2 calendar months), without
-    // pulling more history than this feature actually needs.
-    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=2mo`;
+    // 默认2个月（历史波动率和回填够用）；今昔对比画开仓以来的真实走势时按开仓距今多久传更长的range。
+    const range = ALLOWED_RANGES.has(url.searchParams.get("range") ?? "") ? url.searchParams.get("range")! : "2mo";
+    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=${range}`;
     const resp = await fetch(yahooUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",

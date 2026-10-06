@@ -16,15 +16,17 @@ export interface HistoricalSeries {
   timestamps: number[]; // unix seconds, index-aligned with closes
 }
 
-// 同一个代码10分钟内不重复请求（胜率模拟标签来回切换时会反复用到）。只在内存里，不落盘。
+// 同一个代码（和区间）10分钟内不重复请求（标签来回切换时会反复用到）。只在内存里，不落盘。
 const seriesCache = new Map<string, { at: number; p: Promise<HistoricalSeries> }>();
 
-export function fetchHistoricalSeries(symbol: string): Promise<HistoricalSeries> {
-  const key = symbol.toUpperCase();
+export type HistoryRange = "2mo" | "6mo" | "1y" | "2y";
+
+export function fetchHistoricalSeries(symbol: string, range: HistoryRange = "2mo"): Promise<HistoricalSeries> {
+  const key = `${symbol.toUpperCase()}|${range}`;
   const hit = seriesCache.get(key);
   if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.p;
   const p = (async () => {
-    const url = `${SUPABASE_URL}/functions/v1/historical-prices?symbol=${encodeURIComponent(symbol)}`;
+    const url = `${SUPABASE_URL}/functions/v1/historical-prices?symbol=${encodeURIComponent(symbol)}&range=${range}`;
     const resp = await fetch(url, {
       headers: {
         Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
@@ -46,6 +48,12 @@ export function fetchHistoricalSeries(symbol: string): Promise<HistoricalSeries>
   seriesCache.set(key, { at: Date.now(), p });
   p.catch(() => seriesCache.delete(key));
   return p;
+}
+
+// 覆盖从sinceMs到今天的最短区间。Edge Function没重新部署时会忽略range、照旧返回2个月，调用方要能接受数据从中途开始。
+export function rangeSince(sinceMs: number): HistoryRange {
+  const days = (Date.now() - sinceMs) / 86400000;
+  return days <= 55 ? "2mo" : days <= 175 ? "6mo" : days <= 360 ? "1y" : "2y";
 }
 
 // 开仓以来的实际波动：只用开仓日之后的收盘价。开仓早于数据窗口（约2个月）时只能用整个窗口，limited=true。
