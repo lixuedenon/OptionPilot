@@ -31,13 +31,23 @@ interface Props {
   basis: number;
   horizon: number;
   sec: (key: string, title: string, body: ReactNode) => ReactNode;
+  // 复盘结论框（RetroSim图上方）要用的几样：⑦①这段行情罕不罕见、⑦②当初的价格占不占便宜、⑦③调整在当时合不合理
+  onSummary?: (s: RetroHistSummary | null) => void;
+}
+
+export interface RetroHistSummary {
+  regPct: number | null; // 跟你这段同一类的时段里比你更极端的比例（0..100），null=数据不够
+  edgeGood: boolean | null; // 当初的价格占便宜（按开仓前2年真实走法的理论值），null=数据不够
+  fair: number | null; // 理论上值多少（每股）
+  edgePct: number | null; // 多收/少付了百分之几（负=吃亏）
+  adjOdds: { pBeyond: number; day: number; via: "roll" | "protect" | "hedge" } | null; // 调整那天过去2年同样起点继续越过卖出腿的比例
 }
 
 const sameRules = (a: SimRules, b: SimRules) =>
   a.takeProfitPct === b.takeProfitPct && a.stopMult === b.stopMult && Math.abs(a.closeFrac - b.closeFrac) < 1e-9 && (a.deltaExit ?? null) === (b.deltaExit ?? null);
 
 export default function RetroHistoryPanel(props: Props) {
-  const { symbol, legs, spot, openingAt, todayDay, nowSpot, pnlNow, history, markers, adjusted, rules, credit, basis, horizon, sec } = props;
+  const { symbol, legs, spot, openingAt, todayDay, nowSpot, pnlNow, history, markers, adjusted, rules, credit, basis, horizon, sec, onSummary } = props;
   const { t } = useI18n();
   const [series, setSeries] = useState<{ key: string; s: Series | null; status: "loading" | "ok" | "error" }>({ key: "", s: null, status: "loading" });
   const [view, setView] = useState<"once" | "hist">("once");
@@ -82,6 +92,24 @@ export default function RetroHistoryPanel(props: Props) {
     const r = adjustOdds(s, openSec + firstAdj.day * 86400, price, leg, horizon - firstAdj.day);
     return r ? { ...r, price, leg } : null;
   }, [s, firstAdj, history, nowSpot, legs, openSec, horizon]);
+
+  // 把结论框要用的几样报给上层（RetroSim）
+  useEffect(() => {
+    if (!onSummary) return;
+    if (!s) {
+      onSummary(null);
+      return;
+    }
+    const edge = eq ? (credit ? eq.basis - eq.fair : eq.fair - eq.basis) : null;
+    onSummary({
+      regPct: reg ? regPct : null,
+      edgeGood: edge == null ? null : edge > 0.01,
+      fair: eq ? eq.fair : null,
+      edgePct: eq && edge != null && eq.fair > 0.005 ? (edge / (credit ? eq.fair : eq.basis)) * 100 : null,
+      adjOdds: adj && firstAdj ? { pBeyond: adj.pBeyond, day: firstAdj.day, via: firstAdj.via } : null,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s, reg, regPct, eq, adj, credit]);
 
   const candidates = useMemo(() => {
     // Delta规则的线要高过开仓时卖出腿的Delta才有意义（跟万次推演"比一比"同一个判断）

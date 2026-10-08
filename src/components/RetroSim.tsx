@@ -20,7 +20,8 @@ import SimSurface3D from "@/components/SimSurface3D";
 import HowToRead from "@/components/HowToRead";
 import { getOptionChain, premiumFromQuote } from "@/lib/optionChain";
 import { holdLegPrice, holdPnl, priceNearDay } from "@/lib/adjustReview";
-import RetroHistoryPanel from "@/components/RetroHistoryPanel";
+import RetroHistoryPanel, { type RetroHistSummary } from "@/components/RetroHistoryPanel";
+import InfoTip from "@/components/InfoTip";
 
 interface Props {
   symbol: string;
@@ -85,6 +86,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
   const [error, setError] = useState(false);
   const workerRef = useRef<Worker | null>(null);
   // 第5组：开仓那组原封不动拿到今天——各腿今天的期权链中间价（查不到为null）
+  const [histSum, setHistSum] = useState<RetroHistSummary | null>(null); // ⑦的几样结论，给图上方的复盘结论框
   const [holdMids, setHoldMids] = useState<{ key: string; mids: (number | null)[] } | null>(null);
   const holdKey = adjusted ? `${symbol}|${todayDay}|${legs.map((l) => `${l.type}:${l.strike}:${l.dte}`).join(",")}` : "";
   useEffect(() => {
@@ -382,12 +384,18 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
   };
 
   // ── 卡片：先说"现在跟开仓时比"（就是左边滑块的位置），再说组合的价值一路经历了什么、正不正常、现在的处境 ──
+  // 每一节标题旁边一个ⓘ（悬停说明：这一节回答什么、举个例子），内容在 rtip.<key>.t/b/e
+  const tip = (id: string) => ({ title: t(`rtip.${id}.t`), body: t(`rtip.${id}.b`), example: t(`rtip.${id}.e`) });
+  const SEC_TIPS = new Set(["now", "sim", "journey", "path", "replay", "adj", "rh", "rh8", "levels"]);
   const sec = (key: string, title: string, body: ReactNode) => (
     <div key={key} className="border-t border-slate-800 pt-2 first:border-t-0 first:pt-0">
-      <div className="mb-1 text-[12px] font-bold text-slate-100">{title}</div>
+      <div className="mb-1 text-[12px] font-bold text-slate-100">{SEC_TIPS.has(key) ? <InfoTip {...tip(key)}>{title}</InfoTip> : title}</div>
       {body}
     </div>
   );
+  // 复盘结论框要用的数：在下面各节里算出来时顺手记下
+  let rankPct: number | null = null; // 你现在的盈亏在5000次里比百分之几好
+  let adjInfo: { diff: number; via: string; day: number } | null = null; // 调整让你多/少了多少
   const sections: ReactNode[] = [];
   const signed = (v: number) => `${v >= 0 ? "+" : "−"}$${Math.abs(v).toFixed(2)}`;
 
@@ -476,6 +484,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
   });
   if (sorted && sorted.length && shown) {
     const pctile = percentileOf(sorted, pnlNow);
+    rankPct = pctile;
     const pctFair = percentileOf(sorted, pnlFair);
     const z = moveInSigma(spot, nowSpot, openIv, days);
     const ratio = since.status === "ok" && since.vol ? since.vol / openIv : null;
@@ -560,6 +569,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
       key="rh"
       symbol={symbol} legs={legs} spot={spot} openingAt={openingAt} todayDay={todayDay} nowSpot={nowSpot} pnlNow={pnlNow}
       history={history} markers={markers} adjusted={adjusted} rules={rules} credit={credit} basis={basis} horizon={horizon} sec={sec}
+      onSummary={setHistSum}
     />,
   );
 
@@ -602,6 +612,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
         </div>
       );
       const via = firstAdj ? t(`future.adjVia_${firstAdj.via}`) : t("future.adjVia_generic");
+      adjInfo = { diff, via, day: firstAdj?.day ?? 0 };
       sections.push(
         sec("adj", t("future.adjTitle"), (
           <div className="flex flex-col gap-1.5">
@@ -684,6 +695,91 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
     (a, b) => ORDER.indexOf(String((a as { key?: string }).key)) - ORDER.indexOf(String((b as { key?: string }).key)),
   );
 
+  // ── 复盘结论框（图上方，2026-10-08）：把下面各节的结论提到最前面——是运气还是这笔本身、亏/赚在哪、你做的决定、接下来怎么做 ──
+  let conclBox: ReactNode = null;
+  {
+    const cell = (key: string, label: string, tipId: string, body: ReactNode, cls = "") => (
+      <div key={key} className={`min-w-0 border-t border-slate-800 px-3 py-1.5 first:border-t-0 sm:border-l sm:border-t-0 sm:first:border-l-0 ${cls}`}>
+        <InfoTip {...tip(tipId)}><span className="text-[10.5px] text-slate-400">{label}</span></InfoTip>
+        <div className="mt-0.5 text-[11.5px] leading-snug text-slate-100">{body}</div>
+      </div>
+    );
+    if (rankPct == null || !totals) {
+      conclBox = (
+        <div className="grid shrink-0 grid-cols-1 overflow-hidden rounded-md border border-slate-700 bg-slate-900/70">
+          {cell("v", t("rconcl.title"), "verdict", <span className="text-slate-400">{t("future.concl.pending")}</span>)}
+        </div>
+      );
+    } else {
+      // 运气：⑦①这段行情在过去2年同类时段里罕不罕见（<15%算少见）；拿不到时按开仓时市场预期，股价走了1.5个标准差以上算少见
+      const z = moveInSigma(spot, nowSpot, openIv, days);
+      const rare = histSum && histSum.regPct != null ? histSum.regPct < 15 : Math.abs(z) >= 1.5;
+      // 这笔本身：⑦②开仓前2年真实走法下这组期权值不值你收/付的价；拿不到时按实际波动vs开仓隐含波动率
+      const ratio = since.status === "ok" && since.vol ? since.vol / openIv : null;
+      const edgeGood = histSum && histSum.edgeGood != null ? histSum.edgeGood : ratio == null ? true : credit ? ratio <= 1.1 : ratio >= 0.9;
+      const losing = pnlNow < -0.005;
+      const kind = losing
+        ? rare ? (edgeGood ? "luck" : "both") : edgeGood ? "normal" : "edge"
+        : rare ? "lucky" : edgeGood ? "good" : "luckyEdge";
+      const tone: Record<string, string> = { luck: "border-sky-600", both: "border-rose-600", normal: "border-slate-600", edge: "border-amber-600", lucky: "border-amber-600", good: "border-emerald-600", luckyEdge: "border-amber-600" };
+      const color: Record<string, string> = { luck: "text-sky-300", both: "text-rose-300", normal: "text-slate-200", edge: "text-amber-300", lucky: "text-amber-300", good: "text-emerald-300", luckyEdge: "text-amber-200" };
+      const sub = t("rconcl.sub", {
+        luck: t(rare ? "rconcl.subRare" : "rconcl.subCommon"),
+        edge: t(edgeGood ? "rconcl.subEdgeGood" : "rconcl.subEdgeBad"),
+      });
+      // 亏/赚在哪：跟总结果同方向最大的一项
+      const PK = ["price", "time", "iv", "adjust"] as const;
+      const partsTxt = PK.filter((k) => Math.abs(totals[k]) >= 0.005).map((k) => `${t(`som.attr_${k}`)} ${signed(totals[k])}`).join(t("future.sep"));
+      const better = Math.max(0, Math.min(100, 100 - Math.round(rankPct)));
+      // 你做的决定：当初的价格、调整、条件该下车没下车
+      const decisions: string[] = [];
+      if (histSum && histSum.fair != null && histSum.edgePct != null) {
+        decisions.push(t(credit ? "rconcl.decEntryCredit" : "rconcl.decEntryDebit", {
+          b: usd(basis ?? 0), f: usd(histSum.fair), p: Math.abs(histSum.edgePct).toFixed(0),
+          gl: t(histSum.edgePct >= 0 ? (credit ? "rconcl.more" : "rconcl.less") : credit ? "rconcl.less" : "rconcl.more"),
+        }));
+      }
+      if (adjInfo && Math.abs(adjInfo.diff) >= 0.005) {
+        const odds = histSum?.adjOdds;
+        decisions.push(
+          t(adjInfo.diff >= 0 ? "rconcl.decAdjHelped" : "rconcl.decAdjHurt", { day: adjInfo.day, via: adjInfo.via, d: usd(adjInfo.diff) }) +
+            (odds ? t(odds.pBeyond >= 50 ? "rconcl.decAdjOk" : "rconcl.decAdjMaybe", { p: Math.round(odds.pBeyond) }) : ""),
+        );
+      }
+      if (exitShown && exitShown.day < days) {
+        const diff = pnlNow - exitShown.pnl;
+        decisions.push(t("rconcl.decRule", { d: exitShown.day, kind: t(`rconcl.kind_${exitShown.kind}`), v: money(exitShown.pnl), gl: t(diff >= 0 ? "rconcl.nowMore" : "rconcl.nowLess"), x: usd(diff) }));
+      }
+      // 接下来怎么做：现在的关键价位 + 以后
+      let levelTxt = "";
+      if (levels) {
+        const be = levels.breakevens;
+        if (levels.profitSide === "below") levelTxt = t("future.lvBelow", { a: be[0].toFixed(2) });
+        else if (levels.profitSide === "above") levelTxt = t("future.lvAbove", { a: be[0].toFixed(2) });
+        else if (levels.profitSide === "between") levelTxt = t("future.lvBetween", { a: be[0].toFixed(2), b: be[1].toFixed(2) });
+        else if (levels.profitSide === "outside") levelTxt = t("future.lvOutside", { a: be[0].toFixed(2), b: be[1].toFixed(2) });
+      }
+      conclBox = (
+        <div className={`grid shrink-0 grid-cols-1 overflow-hidden rounded-md border bg-slate-900/70 sm:grid-cols-[minmax(120px,0.85fr)_1fr_1.15fr_1.15fr] ${tone[kind]}`}>
+          {cell("v", t("rconcl.title"), "verdict", (
+            <>
+              <span className={`block text-[16px] font-bold leading-tight ${color[kind]}`}>{t(`rconcl.k_${kind}`)}</span>
+              <span className="text-[10.5px] text-slate-400">{sub}</span>
+            </>
+          ), "bg-slate-950/40")}
+          {cell("w", t(losing ? "rconcl.whereLoss" : "rconcl.whereGain"), "where", t("rconcl.whereBody", { v: money(pnlNow), parts: partsTxt || "—", b: better, w: 100 - better }))}
+          {cell("d", t("rconcl.decisions"), "decisions", decisions.length ? decisions.join(" ") : <span className="text-slate-400">{t("rconcl.decNone")}</span>)}
+          {cell("n", t("future.concl.next"), "next", (
+            <>
+              {levelTxt && <>{t("rconcl.nowLevel", { lv: levelTxt })} </>}
+              {t("rconcl.nowAdvice")} {t(`rconcl.lesson_${kind}`)}
+            </>
+          ))}
+        </div>
+      );
+    }
+  }
+
   const viewBtn = (v: "plane" | "3d", label: string) => (
     <button
       onClick={() => setView(v)}
@@ -696,20 +792,20 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
     <div className="flex flex-wrap items-center gap-3 text-[10px] text-slate-500">
       <span>{shown ? t("future.retroDone", { n: PATHS.toLocaleString(), iv: (openIv * 100).toFixed(1) }) : t("winRate.retroPending")}</span>
       {view === "3d" ? (
-        <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-slate-100/80" />{t("future.lgRetroCloud")}</span>
+        <InfoTip {...tip("cloud3d")}><span className="inline-block h-2 w-3 rounded-sm bg-slate-100/80" />{t("future.lgRetroCloud")}</InfoTip>
       ) : (
         <>
-          <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-emerald-500/40" />{t("future.lgZoneGain")}</span>
-          <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-rose-500/50" />{t("future.lgZoneLoss")}</span>
-          <span>{t("future.lgBeWhite")}</span>
+          <InfoTip {...tip("zones")}><span className="inline-block h-2 w-3 rounded-sm bg-emerald-500/40" />{t("future.lgZoneGain")}<span className="inline-block h-2 w-3 rounded-sm bg-rose-500/50" />{t("future.lgZoneLoss")}</InfoTip>
+          <InfoTip {...tip("be")}>{t("future.lgBeWhite")}</InfoTip>
+          <InfoTip {...tip("bands")}><span className="inline-block h-2 w-3 rounded-sm bg-slate-400/50" />{t("future.lgBands")}</InfoTip>
         </>
       )}
-      <span className="flex items-center gap-1"><span className="inline-block h-1 w-4 rounded-sm bg-amber-400" />{t("future.lgActual")}</span>
+      <InfoTip {...tip("actual")}><span className="inline-block h-1 w-4 rounded-sm bg-amber-400" />{t("future.lgActual")}</InfoTip>
       {exitShown && (
-        <span className="flex items-center gap-1">
+        <InfoTip {...tip("ruleExit")}>
           <span className="inline-block h-2.5 w-2.5 rounded-full border-2" style={{ borderColor: EXIT_RGB[exitShown.kind] }} />
           {t("future.lgRuleExit")}
-        </span>
+        </InfoTip>
       )}
     </div>
   );
@@ -721,8 +817,9 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
           {viewBtn("3d", t("future.view3d"))}
           {viewBtn("plane", t("future.viewPlane"))}
         </span>
-        <span>{t("future.retroIntro")}</span>
+        <InfoTip {...tip("view")}>{t("future.retroIntro")}</InfoTip>
       </div>
+      {conclBox}
       {/* 图的高度跟着窗口走（窗口高度的70%，至少420、最多760像素）：立体图太矮看不清；下面的卡片在右栏里往下滚 */}
       <div className="h-[clamp(420px,70vh,760px)] shrink-0 overflow-hidden rounded-md border border-slate-800">
         {view === "3d" ? (
