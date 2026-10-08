@@ -2,7 +2,7 @@
 import type { Leg, OptionType } from "./types";
 import { PRESET_GROUPS, type PresetMeta } from "./presets";
 import { blackScholes } from "./bs";
-import { maxProfitLoss, probabilityOfProfit, impliedVol } from "./pricing";
+import { maxProfitLoss, probabilityOfProfit } from "./pricing";
 
 export type Bucket = "strongDown" | "mildDown" | "flat" | "mildUp" | "strongUp";
 export const ALL_BUCKETS: Bucket[] = ["strongDown", "mildDown", "flat", "mildUp", "strongUp"];

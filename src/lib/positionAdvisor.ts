@@ -40,6 +40,9 @@ export interface AdviceInput {
   totalTerm: number; // 开仓时（最早到期）总期限天数
   rules: SimRules;
   vol: number; // 假设的未来实际波动
+  skew?: number; // 第3组：下跌时IV上升的斜率（见SimSetup.skew）
+  halfSpread?: (number | undefined)[]; // 第3组：各腿半个买卖价差的比例（见SimSetup.halfSpread）
+  earnings?: { day: number; jump: number } | null; // 财报这一组：从现在算第几天有财报、跳空多大（见SimSetup.earnings）
   iv?: number; // 市场预期波动（小数，推演未来=最近到期日平值IV，见lib/atmIv.ts），用来量"离盈亏平衡几个标准差"；不传按各腿平均
   drift?: number;
   n?: number;
@@ -73,6 +76,7 @@ export interface AdviceSignals {
   remainingDays: number;
   pTp: number;
   pSl: number;
+  pDelta: number; // 卖出腿Delta碰到你设的线出场
   pTime: number; // 到你设的"到期前平仓"时间才出场
   pExpiry: number; // 拿到最早到期日
   pWin: number; // 按规则继续拿，最后（出场时）盈利的概率
@@ -139,7 +143,8 @@ export function expiryScan(p: Prepared, spot: number) {
 export function adviseCombo(input: AdviceInput): Advice | null {
   const th = input.thresholds ?? ADVICE_THRESHOLDS;
   const legs = input.legs.filter((l) => !l.disabled);
-  const p = prepareSim({ legs, spot: input.spot, basis: input.basis, pnlOffset: input.pnl, rules: input.rules, totalTerm: input.totalTerm, drift: input.drift });
+  const halfSpread = input.halfSpread ? input.legs.map((l, i) => (l.disabled ? null : input.halfSpread![i])).filter((h, i) => !input.legs[i].disabled) as (number | undefined)[] : undefined;
+  const p = prepareSim({ legs, spot: input.spot, basis: input.basis, pnlOffset: input.pnl, rules: input.rules, totalTerm: input.totalTerm, drift: input.drift, skew: input.skew, halfSpread, earnings: input.earnings });
   if (!p) return null;
   const S = input.spot;
   const status = startStatus(p);
@@ -183,6 +188,7 @@ export function adviseCombo(input: AdviceInput): Advice | null {
   const pTp = outcomes.filter((o) => o.reason === "tp").length / n;
   const pSl = outcomes.filter((o) => o.reason === "sl").length / n;
   const pWin = outcomes.filter((o) => o.pnl > 0).length / n;
+  const pDelta = outcomes.filter((o) => o.reason === "delta").length / n;
   const pTime = outcomes.filter((o) => o.reason === "time").length / n;
   const pExpiry = outcomes.filter((o) => o.reason === "expiry").length / n;
 
@@ -196,7 +202,7 @@ export function adviseCombo(input: AdviceInput): Advice | null {
 
   const signals: AdviceSignals = {
     pnl, pnlPct: pnl / input.basis, maxProfit: scan.maxProfit, maxLoss: scan.maxLoss, capture, remainingGain, remainingRisk, rr, rrRel,
-    breakevens, inProfitZone, sigmaToEdge, nearestBe, sigmaIv: iv, sigmaMove: Math.exp(sig) - 1, elapsed, remainingDays: p.horizon, pTp, pSl, pTime, pExpiry, pWin,
+    breakevens, inProfitZone, sigmaToEdge, nearestBe, sigmaIv: iv, sigmaMove: Math.exp(sig) - 1, elapsed, remainingDays: p.horizon, pTp, pSl, pDelta, pTime, pExpiry, pWin,
     tpLine: p.tpLine, slLine: p.slLine, flags, status,
   };
   const out = (action: AdviceAction, rule: AdviceRule): Advice => ({ action, rule, signals });

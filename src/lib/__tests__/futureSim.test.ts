@@ -29,7 +29,11 @@ describe("万次推演", () => {
     const stories = pickStories(run.outcomes, store, 4, p);
     for (const st of stories) {
       expect(st.pnls!.length).toBe(p.horizon + 1);
-      if (st.day < p.horizon) expect(st.pnls![st.day]).toBeCloseTo(st.pnl, 3);
+      // 提前下车的pnl已扣成交损耗：比当天中间价的盈亏低一点
+      if (st.day < p.horizon) {
+        expect(st.pnls![st.day] - st.pnl).toBeGreaterThanOrEqual(-1e-3);
+        expect(st.pnls![st.day] - st.pnl).toBeLessThan(0.5);
+      }
     }
   });
 
@@ -136,7 +140,10 @@ describe("地形图风险分区（不用模拟的快速版建议）", async () =
     const cur = { takeProfitPct: 0.5, stopMult: 2, closeFrac: 0.25 };
     const a = suggestRules(setup({ rules: cur }), 0.5, 800, 77, "credit")!;
     const b = suggestRules(setup({ rules: cur }), 0.5, 800, 77, "credit")!;
-    expect(a.tried).toBe(5);
+    expect(a.tried).toBe(7);
+    expect(a.rows.length).toBe(8);
+    expect(a.rows[0].current).toBe(true);
+    for (const r of a.rows) expect(r.per30).toBeCloseTo((r.avg / Math.max(1, r.avgDays)) * 30, 10);
     expect(a).toEqual(b);
     // 现在的成绩 = 同一个种子直接跑一遍的成绩
     const p = prepareSim(setup({ rules: cur }))!;

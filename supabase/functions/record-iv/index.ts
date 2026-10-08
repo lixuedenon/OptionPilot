@@ -194,13 +194,15 @@ async function recordOne(symbol: string, nowMs: number, quality: string, today: 
   }
 
   const srcs = [a1, a2, af, ae].filter(Boolean).map((x) => x!.src);
+  // 跨式价格存4位小数（原来存的是插值算出来的长小数，看着乱；到美分以下足够）
+  const r4 = (v: number | null | undefined) => (v == null ? null : Math.round(v * 1e4) / 1e4);
   return {
     row: {
       symbol, trade_date: today, spot, iv30,
       e1: a1?.exp ?? null, dte1: a1?.dte ?? null, iv1: a1?.iv ?? null,
       e2: a2?.exp ?? null, dte2: a2?.dte ?? null, iv2: a2?.iv ?? null,
-      front_exp: af?.exp ?? null, front_dte: af?.dte ?? null, front_strike: af?.strike ?? null, front_straddle: af?.straddle ?? null,
-      earn_date: earnDate, earn_exp: ae?.exp ?? null, earn_dte: ae?.dte ?? null, earn_strike: ae?.strike ?? null, earn_straddle: ae?.straddle ?? null, earn_iv: ae?.iv ?? null,
+      front_exp: af?.exp ?? null, front_dte: af?.dte ?? null, front_strike: af?.strike ?? null, front_straddle: r4(af?.straddle),
+      earn_date: earnDate, earn_exp: ae?.exp ?? null, earn_dte: ae?.dte ?? null, earn_strike: ae?.strike ?? null, earn_straddle: r4(ae?.straddle), earn_iv: ae?.iv ?? null,
       yahoo_iv1: a1?.yahooIv ?? null,
       price_source: srcs.includes("last") ? "last" : "mid",
       quality,

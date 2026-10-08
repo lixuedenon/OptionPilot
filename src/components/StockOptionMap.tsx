@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Leg } from "@/lib/types";
 import { useI18n } from "@/i18n/I18nContext";
-import { PATH_GROUPS, buildMapModel, summarizePath, openingTerrain, type MapModel, type PathId, type HistoryPoint, type AdjustMarker, type SegmentAttribution, type PnlParts } from "@/lib/stockOptionMap";
+import { PATH_GROUPS, buildMapModel, summarizePath, pathOdds, openingTerrain, type MapModel, type PathId, type HistoryPoint, type AdjustMarker, type SegmentAttribution, type PnlParts } from "@/lib/stockOptionMap";
 import { quickAdvice, quickAdviceWhy, type QuickAdviceCtx, type AdviceAction } from "@/lib/positionAdvisor";
 import { simPnlAt } from "@/lib/winRateSim";
 import { priceCombo } from "@/lib/pricing";
@@ -29,13 +29,15 @@ interface Props {
   // 所有盈亏都是开仓至今的总账（pnlOffset）。
   // segments/totals：今昔对比——开仓至今的盈亏逐段拆成股价/时间/波动率/调整，画在左半边底部，读数和图下方的总结都用它。
   // ruleExit：按你的止盈止损规则，真实走过的路上第一次碰到线的那一天（今昔对比，标"这里本该下车"）。
-  tracked?: { todayDay: number; pnlOffset: number; opening?: { legs: Leg[]; spot: number }; history: HistoryPoint[]; markers: AdjustMarker[]; segments?: SegmentAttribution[]; totals?: PnlParts & { total: number }; ruleExit?: { day: number; price: number; pnl: number; kind: "tp" | "sl" | "time" } | null };
+  tracked?: { todayDay: number; pnlOffset: number; opening?: { legs: Leg[]; spot: number }; history: HistoryPoint[]; markers: AdjustMarker[]; segments?: SegmentAttribution[]; totals?: PnlParts & { total: number }; ruleExit?: { day: number; price: number; pnl: number; kind: "tp" | "sl" | "delta" | "time" } | null };
   // 推演未来：底部股价/时间滑块定的情景点（画蓝色菱形）；滑块一动，鼠标钉住的点就让位给滑块。
   scenario?: { day: number; price: number } | null;
   // 推演未来：风险分区和走势上的节点用的快速版持仓建议（跟左边持仓建议同一套规则）。
   zoneCtx?: QuickAdviceCtx | null;
   // 推演未来：市场预期波动（最近到期日平值IV，见lib/atmIv.ts），走势幅度和±σ喇叭口按它；不传按各腿平均。
   marketIv?: number | null;
+  // 第4组：从今天、现价出发时用今天的市场预期波动（今天的期权链平值IV）；不传就用marketIv
+  todayIv?: number | null;
 }
 
 type MapPoint = { day: number; price: number };
@@ -89,7 +91,7 @@ function cellColor(v: number, maxProfit: number, maxLoss: number): [number, numb
   return [0, 1, 2].map((i) => Math.round(base[i] + (to[i] - base[i]) * k)) as [number, number, number];
 }
 
-export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, daysSinceOpen, emptyText, onPointChange, liveSpot, tracked, scenario, zoneCtx, marketIv }: Props) {
+export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, daysSinceOpen, emptyText, onPointChange, liveSpot, tracked, scenario, zoneCtx, marketIv, todayIv }: Props) {
   const { t } = useI18n();
   const [colorMode, setColorMode] = useState<"pnl" | "zone">(() => {
     try {
@@ -191,11 +193,11 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
         tracked
           ? { timeOffset: tracked.todayDay, pnlOffset: tracked.pnlOffset, opening: tracked.opening, extraPrices: [...tracked.history.map((h) => h.price), ...pricePath.map((p) => p.price)] }
           : useToday
-            ? { start: { day: daysSinceOpen!, price: liveSpot! }, extraPrices: scenario ? [scenario.price] : [], baseIv: marketIv ?? undefined }
+            ? { start: { day: daysSinceOpen!, price: liveSpot! }, extraPrices: scenario ? [scenario.price] : [], baseIv: todayIv ?? marketIv ?? undefined }
             : { extraPrices: scenario ? [scenario.price] : [], baseIv: marketIv ?? undefined },
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [legs, spot, dV, useToday, daysSinceOpen, liveSpot, tracked, pricePath, scenario?.price, marketIv],
+    [legs, spot, dV, useToday, daysSinceOpen, liveSpot, tracked, pricePath, scenario?.price, marketIv, todayIv],
   );
   const zoneOn = colorMode === "zone" && !!zoneCtx && !tracked;
   // 风险分区：每一格换成左边持仓建议在那一点会给的建议（快速版，不跑模拟）。
@@ -234,7 +236,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
   }, [model, zoneCtx, tracked, groupId]);
   const group = PATH_GROUPS.find((g) => g.id === groupId) ?? PATH_GROUPS[0];
   const summaries = useMemo(
-    () => (model && !tracked ? group.paths.map((id) => ({ id, ...summarizePath(model, id) })) : []),
+    () => (model && !tracked ? group.paths.map((id) => ({ id, ...summarizePath(model, id), odds: pathOdds(model, id) })) : []),
     [model, group, tracked],
   );
   // 图下方的"发现"（推演未来）：都从数字直接算，不靠模型生成文字。
@@ -653,18 +655,18 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     if (tracked?.ruleExit) {
       const re = tracked.ruleExit;
       const x = tx(re.day), y = ty(re.price);
-      g.strokeStyle = re.kind === "tp" ? "#34d399" : re.kind === "sl" ? "#fb7185" : "#fbbf24";
+      g.strokeStyle = re.kind === "tp" ? "#34d399" : re.kind === "sl" ? "#fb7185" : re.kind === "delta" ? "#a78bfa" : "#fbbf24";
       g.lineWidth = 2;
       g.beginPath();
       g.arc(x, y, 7, 0, Math.PI * 2);
       g.stroke();
-      const lbl = t(re.kind === "tp" ? "som.ruleExitTp" : re.kind === "sl" ? "som.ruleExitSl" : "som.ruleExitTime", { d: re.day, v: fmtPnl(re.pnl) });
+      const lbl = t(re.kind === "tp" ? "som.ruleExitTp" : re.kind === "sl" ? "som.ruleExitSl" : re.kind === "delta" ? "som.ruleExitDelta" : "som.ruleExitTime", { d: re.day, v: fmtPnl(re.pnl) });
       g.font = "bold 10px ui-sans-serif, system-ui, sans-serif";
       const lw = g.measureText(lbl).width;
       const lx = Math.min(M.l + pw - lw - 6, Math.max(M.l + 2, x - lw / 2));
       g.fillStyle = "rgba(2,6,23,0.88)";
       g.fillRect(lx - 3, y - 26, lw + 6, 14);
-      g.fillStyle = re.kind === "tp" ? "#6ee7b7" : re.kind === "sl" ? "#fda4af" : "#fcd34d";
+      g.fillStyle = re.kind === "tp" ? "#6ee7b7" : re.kind === "sl" ? "#fda4af" : re.kind === "delta" ? "#c4b5fd" : "#fcd34d";
       g.textAlign = "left";
       g.fillText(lbl, lx, y - 16);
       g.font = "10px ui-sans-serif, system-ui, sans-serif";
@@ -976,9 +978,21 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
               · {t("som.best")} <span className="tabular-nums" style={{ color: pnlColor(s.best) }}>{fmtPnl(s.best)}</span>
               {" "}· {t("som.worst")} <span className="tabular-nums" style={{ color: pnlColor(s.worst) }}>{fmtPnl(s.worst)}</span>
             </span>
+            <span className="text-sky-300/90">
+              · {s.odds.kind === "flat"
+                ? t("som.oddsFlat", { p: Math.round(s.odds.pct), b: ((s.odds.band ?? 0) * 100).toFixed(1).replace(/\.0$/, "") })
+                : t(s.odds.kind === "up" ? "som.oddsUp" : "som.oddsDown", { p: Math.round(s.odds.pct) })}
+            </span>
           </span>
         ))}
       </div>
+      {model && !tracked && summaries.length > 0 && (
+        <div className="text-[10px] text-slate-500">
+          {useToday
+            ? t("som.todayNote", { d: daysSinceOpen ?? 0, s: (liveSpot ?? 0).toFixed(2), r: Math.max(0, Math.round(model.horizon - model.start.day)), iv: (model.baseIv * 100).toFixed(1) })
+            : t("som.openNote", { iv: (model.baseIv * 100).toFixed(1) })}
+        </div>
+      )}
       {findings.length > 0 && (
         <div className="rounded-md border border-slate-800 bg-slate-900/50 px-2 py-1 text-[11px] leading-relaxed text-slate-300">
           <span className="mr-1 font-semibold text-sky-300">{t("som.findTitle")}</span>

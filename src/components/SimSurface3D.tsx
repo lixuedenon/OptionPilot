@@ -56,7 +56,7 @@ export interface SurfaceNotes {
   outside: (a: string, b: string) => string;
 }
 
-const REASON_RGB: Record<ExitReason, string> = { tp: "52,211,153", sl: "251,113,133", time: "251,191,36", expiry: "56,189,248" };
+const REASON_RGB: Record<ExitReason, string> = { tp: "52,211,153", sl: "251,113,133", delta: "167,139,250", time: "251,191,36", expiry: "56,189,248" };
 const DEFAULT_VIEW = { yaw: -0.72, pitch: 0.55 };
 const NY = 46;
 

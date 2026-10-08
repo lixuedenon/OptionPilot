@@ -1,6 +1,6 @@
 // src/components/LegListSection.tsx
 import { Clock, Ban, Trash2, Plus, Save, Hash, Crosshair, CalendarClock, Pencil, RotateCcw, AlertTriangle } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Leg } from "@/lib/types";
 import type { SavedStrategy } from "@/lib/savedStrategies";
 import type { CustomPreset } from "@/lib/customPresets";
@@ -11,6 +11,7 @@ import LegRow from "@/components/LegRow";
 import StrategyBadge from "@/components/StrategyBadge";
 import PopBreakevenBadge from "@/components/PopBreakevenBadge";
 import StepBadge from "@/components/StepBadge";
+import { LegOrderHint, ComboOrderHint } from "@/components/OrderHintBox";
 import { clickGuideTarget } from "@/lib/guide";
 import { useI18n } from "@/i18n/I18nContext";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -92,6 +93,8 @@ interface Props {
   contractsExpired?: boolean;
 }
 
+const STRIKE_MODE_KEY = "optionpilot.strikeMode";
+
 export default function LegListSection({
   isCompareMode,
   strategyName,
@@ -164,6 +167,28 @@ export default function LegListSection({
   const [editingOpeningDate, setEditingOpeningDate] = useState(false);
   const [openingDateDraft, setOpeningDateDraft] = useState("");
   const effectiveOpeningAt = openingAtSimOverride ?? openingAt;
+
+  // 选行权价：自己选 / 按Delta（2026-10-06，开关在"全选"旁策略名称后面；只在分析模式出现，记在本机）。
+  const [strikeMode, setStrikeMode] = useState<"manual" | "delta">(() => {
+    try {
+      return localStorage.getItem(STRIKE_MODE_KEY) === "delta" ? "delta" : "manual";
+    } catch {
+      return "manual";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(STRIKE_MODE_KEY, strikeMode);
+    } catch {
+      /* 不能存就不记住 */
+    }
+  }, [strikeMode]);
+  // 挂单提示"不用提示"：按腿+价格记（改了价格会再出现）；整单按净价记
+  const [dismissedOrders, setDismissedOrders] = useState<Set<string>>(() => new Set());
+  const dismissKey = (l: Leg) => `${l.id}|${l.premium}`;
+  const comboKey = `combo|${activeLegs.map((l) => `${l.id}:${l.premium}`).join(",")}`;
+  const dismissOrder = (k: string) => setDismissedOrders((s) => new Set(s).add(k));
+  const showOrderHints = !isCompareMode && !isMobile && !simOrigin;
 
   return (
     <>
@@ -258,6 +283,22 @@ export default function LegListSection({
             {inlinePopBreakeven && (
               <PopBreakevenBadge pop={inlinePopBreakeven.pop} breakevens={inlinePopBreakeven.breakevens} />
             )}
+            {!isCompareMode && (
+              <span className="flex shrink-0 items-center gap-1 text-[10px] text-slate-500" title={t("leg.strikeModeHint")}>
+                <span className="flex overflow-hidden rounded border border-slate-700">
+                  {(["manual", "delta"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setStrikeMode(m)}
+                      className={`px-1.5 py-0.5 text-[10px] font-semibold transition ${strikeMode === m ? "bg-sky-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
+                    >
+                      {t(m === "manual" ? "leg.strikeModeManual" : "leg.strikeModeDelta")}
+                    </button>
+                  ))}
+                </span>
+              </span>
+            )}
             {/* 批量按钮全部纯图标（文字在title里），保证左侧面板放得下、不被挤成竖排文字。 */}
             <div className="ml-auto flex shrink-0 items-center gap-1.5">
               {selectedCount > 0 && !isMobile && (
@@ -345,8 +386,8 @@ export default function LegListSection({
           </div>
         ) : (
           legs.map((leg, i) => (
+            <Fragment key={leg.id}>
             <LegRow
-              key={leg.id}
               leg={leg}
               index={i}
               scenarioPrice={isCompareMode ? undefined : scenarioPriceById.get(leg.id)}
@@ -379,8 +420,17 @@ export default function LegListSection({
               selected={selectedLegIds.has(leg.id)}
               onToggleSelect={() => onToggleLegSelection(leg.id)}
               locked={locked}
+              strikeMode={isCompareMode ? "manual" : strikeMode}
+              showDelta={!isCompareMode}
             />
+            {showOrderHints && leg.kind !== "stock" && !dismissedOrders.has(dismissKey(leg)) && (
+              <LegOrderHint leg={leg} symbol={symbol} spot={spot} onDismiss={() => dismissOrder(dismissKey(leg))} />
+            )}
+            </Fragment>
           ))
+        )}
+        {showOrderHints && activeLegs.filter((l) => l.kind !== "stock").length >= 2 && !dismissedOrders.has(comboKey) && (
+          <ComboOrderHint legs={activeLegs} symbol={symbol} spot={spot} onDismiss={() => dismissOrder(comboKey)} />
         )}
       </div>
 

@@ -4,16 +4,19 @@
 // 盈亏口径跟priceCombo/地形图一致（legShiftedPrice之和 − 起点净权利金，每股计），另加pnlOffset（对比模式的开仓至今总盈亏）。
 import { ncdf } from "@/lib/bs";
 import type { Leg } from "@/lib/types";
-import { impliedVol, legShiftedPrice } from "@/lib/pricing";
+import { bsPrice } from "@/lib/bs";
+import { impliedVol, legShiftedPrice, RATE } from "@/lib/pricing";
 
 export interface SimRules {
   takeProfitPct: number | null; // 0.5 = 赚到基准的50%就平仓；null=不设
   stopMult: number | null; // 1 = 亏到基准的1倍就平仓；null=不设
   // 剩下开仓总期限的多少比例时平仓（0.25=剩1/4时间）；0=持有到期。按比例而不是固定天数：30天和1年期的组合"提前7天"意义完全不同。
   closeFrac: number;
+  // 卖出腿的Delta（绝对值）碰到这个数就平仓（第3组，卖方常用的管理规则，比如0.30）；null/不传=不用。买方组合不用。
+  deltaExit?: number | null;
 }
 
-export type ExitReason = "tp" | "sl" | "time" | "expiry";
+export type ExitReason = "tp" | "sl" | "delta" | "time" | "expiry";
 
 export interface SimSetup {
   legs: Leg[]; // 模拟起点的腿位（分析模式=开仓腿位；对比模式=今日组合），已去掉屏蔽的腿
@@ -24,6 +27,17 @@ export interface SimSetup {
   totalTerm?: number; // 开仓时（最早到期的）总期限天数；不传=起点剩余天数（分析模式从开仓日出发时两者相同）
   drift?: number; // 假设的年化涨跌（小数），默认0=不预测方向；买方方向性组合用
   dV?: number; // 持有期间隐含波动率加减的百分点（波动率滑块）：只影响期权定价，不影响股价怎么走
+  // 第3组：股价下跌时隐含波动率跟着上升（波动率微笑）。skew = 每条腿的IV随 ln(起点股价/股价) 增加多少（小数/单位对数涨跌），
+  // 比如0.4=跌10%时各腿IV大约+4个点、涨10%时−4个点。从期权链的微笑斜率估（lib/atmIv.ts的skewFromChain）；不传=0（IV不随股价变）。
+  skew?: number;
+  // 第3组：提前平仓的成交损耗——每条期权腿按"买卖价差的一半占价格的比例"（开仓时期权链的实时报价）算，下标跟legs一致；
+  // 没有报价的腿按默认 0.01+1%×价格（美元/股）。拿到期（自然到期）不付。
+  halfSpread?: (number | undefined)[];
+  // 财报这一组（2026-10-07）：第day天（从起点算的日历天，股价在那天收盘时反应）有财报。
+  // jump=跳空大小（对数涨跌的标准差，lib/earnings.ts按"市场押多少"算）。随机走势在那天多跳一下；
+  // 定价上，跨过财报的腿开仓时的隐含波动率里含着这次跳空，财报前按"平常波动+跳空摊到剩余天数"、财报后只剩平常波动（IV回落）。
+  // 历史真实走法不传（真实走势里本来就有过去的财报跳空）。不传=没有财报（跟以前一样）。
+  earnings?: { day: number; jump: number } | null;
 }
 
 export interface Prepared {
@@ -41,6 +55,15 @@ export interface Prepared {
   slLine: number;
   optionLegCount: number;
   dV: number;
+  skew: number;
+  halfSpread: (number | undefined)[];
+  deltaExit: number | null;
+  earnDay: number | null; // 财报反应在第几天（1..horizon），没有=null
+  earnJump: number; // 跳空大小（对数标准差），没有=0
+  // 各腿扣掉财报跳空后的"平常"隐含波动率（只有跨过财报的腿有；没跨过/没有财报=undefined，照用ivs）
+  baseIvs: (number | undefined)[];
+  // 各腿IV里属于这次跳空的那部分方差（年化方差×年数，= (开仓IV² − 平常IV²)×dte/365），保证第0天正好等于开仓IV
+  earnVar: number[];
 }
 
 export type StartStatus = "normal" | "atTakeProfit" | "atStop" | "inCloseWindow";
@@ -56,6 +79,19 @@ export function prepareSim(setup: SimSetup): Prepared | null {
   const term = Math.max(horizon, Math.round(setup.totalTerm ?? horizon));
   const closeAtRemaining = closeFrac > 0 ? Math.max(1, Math.round(term * closeFrac)) : 0;
   const endDay = closeAtRemaining > 0 ? Math.max(0, horizon - closeAtRemaining) : horizon;
+  const e = setup.earnings;
+  const earnDay = e && e.jump > 0 && e.day >= 1 && e.day <= horizon ? Math.round(e.day) : null;
+  const earnJump = earnDay != null ? e!.jump : 0;
+  // 平常波动² = 开仓IV² − 跳空²/剩余年数（至少留开仓IV的一半）；到期在财报之前（或当天之前）的腿不受影响
+  const baseIvs = legs.map((l, i) => {
+    const iv = ivs[i];
+    if (earnDay == null || iv === undefined || !(l.dte > earnDay)) return undefined;
+    return Math.sqrt(Math.max((0.5 * iv) ** 2, iv * iv - (earnJump * earnJump * 365) / l.dte));
+  });
+  const earnVar = legs.map((l, i) => {
+    const iv = ivs[i], b = baseIvs[i];
+    return iv !== undefined && b !== undefined ? ((iv * iv - b * b) * l.dte) / 365 : 0;
+  });
   return {
     legs,
     spot: setup.spot,
@@ -71,7 +107,81 @@ export function prepareSim(setup: SimSetup): Prepared | null {
     slLine: stopMult != null ? -stopMult * setup.basis : -Infinity,
     optionLegCount: options.length,
     dV: setup.dV ?? 0,
+    skew: Math.max(0, Math.min(2, setup.skew ?? 0)),
+    // legs去掉了屏蔽的腿，halfSpread下标跟着setup.legs：按id对回去
+    halfSpread: legs.map((l) => setup.halfSpread?.[setup.legs.indexOf(l)]),
+    deltaExit: setup.rules.deltaExit != null && setup.rules.deltaExit > 0 ? setup.rules.deltaExit : null,
+    earnDay,
+    earnJump,
+    baseIvs,
+    earnVar,
   };
+}
+
+// 第i条腿在第day天、股价price时用的隐含波动率：起点IV（跨财报的腿按财报前/后，见prepareSim的baseIvs）
+// + 微笑带来的变化（跌了往上、涨了往下）。波动率滑块dV在legShiftedPrice里另加。
+function legIvAt(p: Prepared, i: number, day: number, price: number): number | undefined {
+  const iv = legTermIv(p, i, day);
+  if (iv === undefined || p.skew === 0) return iv;
+  return Math.max(0.02, iv + p.skew * Math.log(p.spot / price));
+}
+
+// 只看财报前后（不含微笑）：财报前=平常波动 + 跳空摊到剩下的天数（第0天正好等于开仓IV，越靠近财报越高）；财报当天收盘以后=只剩平常波动
+function legTermIv(p: Prepared, i: number, day: number): number | undefined {
+  const iv = p.ivs[i];
+  const b = p.baseIvs[i];
+  if (iv === undefined || b === undefined || p.earnDay == null) return iv;
+  const left = p.legs[i].dte - day;
+  return day < p.earnDay && left > 0 ? Math.sqrt(b * b + (p.earnVar[i] * 365) / left) : b;
+}
+
+// 财报这一组：情景点（第day天、股价price）的腿位按财报前后隐含波动率的变化重新定价。
+// 盈亏图和滑块不含这个变化（隐含波动率按开仓时不变）；万次推演和持仓建议加了财报跳空时，从情景点出发要用这一份，
+// 不然主推演里财报后IV已经回落了、从情景点出发的那团云和建议却还按没回落的价格算。
+// p：开仓组合（带earnings）；nowLegs：情景点的腿位（App的scenarioLegs，跟p.legs同顺序同条数）。返回新腿位和盈亏要加多少（每股）。
+export function earningsShift(p: Prepared, day: number, price: number, nowLegs: Leg[]): { legs: Leg[]; dPnl: number } | null {
+  if (p.earnDay == null || nowLegs.length !== p.legs.length) return null;
+  let dPnl = 0;
+  const legs = nowLegs.map((l, i) => {
+    const iv0 = p.ivs[i];
+    const ivT = legTermIv(p, i, day);
+    if (l.kind === "stock" || iv0 === undefined || ivT === undefined || !(l.dte > 0) || Math.abs(ivT - iv0) < 1e-9) return l;
+    const ivNow = impliedVol(price, l.strike, l.dte, l.premium, l.type);
+    const premium = bsPrice(price, l.strike, l.dte, Math.max(0.01, ivNow + ivT - iv0), RATE, l.type);
+    dPnl += (l.action === "buy" ? 1 : -1) * (l.qty ?? 1) * (premium - l.premium);
+    return { ...l, premium };
+  });
+  return { legs, dPnl };
+}
+
+// 提前平仓的成交损耗（每股、正数）：各期权腿按半个买卖价差
+export function exitCost(p: Prepared, day: number, price: number): number {
+  let c = 0;
+  for (let i = 0; i < p.legs.length; i++) {
+    const l = p.legs[i];
+    if (l.kind === "stock") continue;
+    const px = Math.abs(legShiftedPrice(l, { dS: price - p.spot, dT: day, dV: day > 0 ? p.dV : 0 }, p.spot, legIvAt(p, i, day, price))) / (l.qty ?? 1);
+    const half = p.halfSpread[i] != null ? Math.max(0.01, p.halfSpread[i]! * px) : 0.01 + 0.01 * px;
+    c += half * (l.qty ?? 1);
+  }
+  return c;
+}
+
+// 卖出腿里Delta绝对值最大的那条（第day天、股价price，IV含微笑）
+export function maxShortDelta(p: Prepared, day: number, price: number): number {
+  let mx = 0;
+  for (let i = 0; i < p.legs.length; i++) {
+    const l = p.legs[i];
+    if (l.kind === "stock" || l.action !== "sell") continue;
+    const dte = l.dte - day;
+    if (dte <= 0) continue;
+    const iv = Math.max(0.01, (legIvAt(p, i, day, price) ?? 0.3) + p.dV / 100);
+    const T = dte / 365;
+    const d1 = (Math.log(price / l.strike) + (0.05 + iv * iv / 2) * T) / (iv * Math.sqrt(T));
+    const d = l.type === "call" ? ncdf(d1) : 1 - ncdf(d1);
+    if (d > mx) mx = d;
+  }
+  return mx;
 }
 
 export function startStatus(p: Prepared): StartStatus {
@@ -85,7 +195,7 @@ export function startStatus(p: Prepared): StartStatus {
 export function simPnlAt(p: Prepared, day: number, price: number): number {
   const s = { dS: price - p.spot, dT: day, dV: day > 0 ? p.dV ?? 0 : 0 };
   let v = 0;
-  for (let i = 0; i < p.legs.length; i++) v += legShiftedPrice(p.legs[i], s, p.spot, p.ivs[i]);
+  for (let i = 0; i < p.legs.length; i++) v += legShiftedPrice(p.legs[i], s, p.spot, legIvAt(p, i, day, price));
   return v - p.netNow + p.pnlOffset;
 }
 
@@ -124,6 +234,7 @@ export interface PathOutcome {
   pnl: number;
   price: number; // 出场那天的股价
   holdPnl: number; // 同一条走势不管规则、一直拿到最早到期日的盈亏——"规则在换什么"跟它比
+  cost?: number; // 这次平仓付的成交损耗（每股；拿到期=0）——pnl已经扣过
 }
 
 export interface SamplePath {
@@ -143,7 +254,9 @@ function runPath(p: Prepared, vol: number, z: () => number, keep: boolean, onSte
   const dt = 1 / 365;
   const drift = (p.drift - 0.5 * vol * vol) * dt;
   const diff = vol * Math.sqrt(dt);
-  return walkPath(p, () => Math.exp(drift + diff * z()), keep, onStep);
+  // 财报那天多跳一下（对数正态，均值修正后不改变期望）：多用一个随机数，只在有财报时，所以没有财报时走势跟以前完全一样
+  const J = p.earnJump;
+  return walkPath(p, (d) => Math.exp(drift + diff * z() + (d === p.earnDay ? -0.5 * J * J + J * z() : 0)), keep, onStep);
 }
 
 // 走一条路：next(d)给出第d天相对前一天的股价倍数（随机走势=对数正态一步；历史走势=那段真实走势当天的涨跌）。
@@ -152,7 +265,7 @@ function walkPath(p: Prepared, next: (d: number) => number, keep: boolean, onSte
   let S = p.spot;
   const prices = keep ? [S] : undefined;
   onStep?.(0, S, p.endDay > 0);
-  let out: PathOutcome | null = p.endDay === 0 ? { reason: "time", day: 0, pnl: p.pnlOffset, price: S, holdPnl: 0 } : null;
+  let out: PathOutcome | null = p.endDay === 0 ? { reason: "time", day: 0, pnl: p.pnlOffset - exitCost(p, 0, S), price: S, holdPnl: 0, cost: exitCost(p, 0, S) } : null;
   for (let d = 1; d <= p.horizon; d++) {
     S *= next(d);
     prices?.push(S);
@@ -160,9 +273,15 @@ function walkPath(p: Prepared, next: (d: number) => number, keep: boolean, onSte
       const pnl = simPnlAt(p, d, S);
       // 最后那天（到期/到点平仓）按"到期/到时间"算，不套止盈止损：到期那天股价只要还在卖出腿外侧，盈利自动就是全部权利金、
       // 一定够得着止盈线，原来会被算成"止盈"，止盈概率虚高、"拿到期"几乎为0（2026-10-06修）。盈亏数字不变，只是归类。
-      if (d === p.endDay) out = { reason: p.endDay < p.horizon ? "time" : "expiry", day: d, pnl, price: S, holdPnl: 0 };
-      else if (pnl >= p.tpLine) out = { reason: "tp", day: d, pnl, price: S, holdPnl: 0 };
-      else if (pnl <= p.slLine) out = { reason: "sl", day: d, pnl, price: S, holdPnl: 0 };
+      // 提前平仓（止盈/止损/Delta/到点平仓）扣成交损耗；规则线按中间价的盈亏判断，落袋的是扣掉损耗以后的。
+      const early = (reason: ExitReason): PathOutcome => {
+        const cost = exitCost(p, d, S);
+        return { reason, day: d, pnl: pnl - cost, price: S, holdPnl: 0, cost };
+      };
+      if (d === p.endDay) out = p.endDay < p.horizon ? early("time") : { reason: "expiry", day: d, pnl, price: S, holdPnl: 0, cost: 0 };
+      else if (pnl >= p.tpLine) out = early("tp");
+      else if (pnl <= p.slLine) out = early("sl");
+      else if (p.deltaExit != null && maxShortDelta(p, d, S) >= p.deltaExit) out = early("delta");
     }
     onStep?.(d, S, !out || out.day >= d);
   }
@@ -199,9 +318,9 @@ export function runBatchPaths(p: Prepared, hist: HistSource, sampleCount = 0, on
     const base = idx * w;
     const keep = k < sampleCount;
     const next = (d: number) => {
-      const dd = Math.min(d, hist.days);
-      const prev = hist.ratios[base + dd - 1];
-      return prev > 0 ? hist.ratios[base + dd] / prev : 1;
+      if (d > hist.days) return 1; // 超出这段真实走势的日子不再动（目前调用方都不会超）
+      const prev = hist.ratios[base + d - 1];
+      return prev > 0 ? hist.ratios[base + d] / prev : 1;
     };
     const { out, prices } = walkPath(p, next, keep, onStep);
     outcomes.push(out);
@@ -212,7 +331,7 @@ export function runBatchPaths(p: Prepared, hist: HistSource, sampleCount = 0, on
 
 // "一直拿到期"的结果（同一组走势、不管规则），用来跟按规则的结果对比。
 export function holdOutcomes(outcomes: PathOutcome[], horizon: number): PathOutcome[] {
-  return outcomes.map((o) => ({ reason: "expiry", day: horizon, pnl: o.holdPnl, price: o.price, holdPnl: o.holdPnl }));
+  return outcomes.map((o) => ({ reason: "expiry", day: horizon, pnl: o.holdPnl, price: o.price, holdPnl: o.holdPnl, cost: 0 }));
 }
 
 export interface ReasonStat {
@@ -231,12 +350,13 @@ export interface SimStats {
   min: number;
   max: number;
   avgDays: number;
+  avgCost: number; // 平均每笔付的成交损耗（拿到期的算0）
   percentiles: { p5: number; p25: number; p50: number; p75: number; p95: number };
 }
 
 export function computeStats(outcomes: PathOutcome[]): SimStats {
   const n = outcomes.length;
-  const reasons: ExitReason[] = ["tp", "sl", "time", "expiry"];
+  const reasons: ExitReason[] = ["tp", "sl", "delta", "time", "expiry"];
   const byReason = {} as Record<ExitReason, ReasonStat>;
   for (const r of reasons) {
     const sel = outcomes.filter((o) => o.reason === r);
@@ -260,6 +380,7 @@ export function computeStats(outcomes: PathOutcome[]): SimStats {
     min: n ? sorted[0] : 0,
     max: n ? sorted[n - 1] : 0,
     avgDays: n ? outcomes.reduce((a, o) => a + o.day, 0) / n : 0,
+    avgCost: n ? outcomes.reduce((a, o) => a + (o.cost ?? 0), 0) / n : 0,
     percentiles: { p5: q(0.05), p25: q(0.25), p50: q(0.5), p75: q(0.75), p95: q(0.95) },
   };
 }

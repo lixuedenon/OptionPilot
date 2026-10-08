@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@/i18n/I18nContext";
 import type { Leg } from "@/lib/types";
 import {
-  openingBasis, isCreditCombo, prepareSim, simPnlAt, probPriceBeyond, batchStability, driftCushion,
+  openingBasis, isCreditCombo, prepareSim, simPnlAt, earningsShift, exitCost, maxShortDelta, probPriceBeyond, batchStability, driftCushion,
   type SimRules, type SimStats, type Histogram, type CurvePoint, type Breakeven, type DriftPoint,
 } from "@/lib/winRateSim";
 import type { ExitPoint, GridSpec, RuleSuggestion, Band, Story } from "@/lib/futureSim";
@@ -18,12 +18,14 @@ import { buildMapModel, comboBaseIv, attributeSegment } from "@/lib/stockOptionM
 import { priceStance } from "@/lib/retroStory";
 import { NowCells, JourneyBlock } from "@/components/ValueJourney";
 import { expiryScan } from "@/lib/positionAdvisor";
-import { useSimSettings, setSideRules, setVolOverride as setVolOverrideFor, setDriftPct as setDriftPctFor, fracLabel, type Side } from "@/lib/simSettings";
+import { earningsDayFrom, exEarningsVol, type EarningsCtx } from "@/lib/earnings";
+import { useSimSettings, setEarnJumpOn, setIvSkewOn, setSideRules, setVolOverride as setVolOverrideFor, setDriftPct as setDriftPctFor, fracLabel, type Side } from "@/lib/simSettings";
 import { computeHV, fetchHistoricalSeries, type HistoryRange } from "@/lib/historicalVolatility";
 import { buildHistPaths, histProbBeyond, MIN_HIST_PATHS } from "@/lib/histPaths";
 import CanvasBox from "@/components/simCharts";
 import SimSurface3D from "@/components/SimSurface3D";
 import HowToRead from "@/components/HowToRead";
+import InfoTip from "@/components/InfoTip";
 import MoneyPanel from "@/components/MoneyPanel";
 import { drawVolCurve, drawDriftCurve, drawPnlHist } from "@/lib/simChartDraw";
 
@@ -39,6 +41,11 @@ interface Props {
   // 跟波动率滑块小字、地形图喇叭口、持仓建议同一个数。
   marketIv: number;
   ivSource: "atm" | "legs";
+  // 第3组：微笑斜率（下跌时IV上升）和各腿半个买卖价差（成交损耗），下标跟legs一致
+  skew?: number;
+  halfSpread?: (number | undefined)[];
+  // 财报这一组：下一次财报（lib/earnings.ts），持仓期间有财报时可以在那天加一次跳空
+  earnings?: EarningsCtx | null;
   emptyText: string | null;
 }
 
@@ -60,6 +67,8 @@ type HistYears = (typeof HIST_YEARS)[number];
 const TP_OPTIONS: Record<Side, number[]> = { credit: [0.25, 0.5, 0.75], debit: [0.5, 1, 2] };
 const SL_OPTIONS: Record<Side, number[]> = { credit: [0.5, 1, 1.5, 2, 3], debit: [0.25, 0.5, 0.75] };
 const CLOSE_FRACS = [0.25, 1 / 3, 0.5];
+// 第3组：卖出腿Delta到多少就平仓
+const DELTA_EXITS = [0.3, 0.4, 0.5];
 // 隐含波动率是最近20天实际波动的1.4倍以上才提醒（平时两者差两三成很常见）。
 const IV_HV_WARN = 1.4;
 
@@ -100,9 +109,12 @@ interface MainRun {
   done: Extract<FutureResponse, { type: "done" }> | null;
   curve: Extract<FutureResponse, { type: "curve" }> | null;
   alt: RuleSuggestion | null | undefined; // undefined=还没算完
+  earn: SimStats | null; // 加了财报跳空时，"不加跳空"那一组的结果
   error: string | null;
 }
-const EMPTY_RUN: MainRun = { batches: [], holding: null, after: null, exits: [], samples: [], bands: [], done: null, curve: null, alt: undefined, error: null };
+const EMPTY_RUN: MainRun = { batches: [], holding: null, after: null, exits: [], samples: [], bands: [], done: null, curve: null, alt: undefined, earn: null, error: null };
+
+const fmtYmd = (sec: number) => new Date(sec * 1000).toISOString().slice(0, 10);
 
 function niceStep(span: number, target: number) {
   const raw = span / target;
@@ -111,9 +123,13 @@ function niceStep(span: number, target: number) {
   return (n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10) * mag;
 }
 
-export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, marketIv: marketIvProp, ivSource, emptyText }: Props) {
+export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: forkProp, marketIv: marketIvProp, ivSource, skew = 0, halfSpread, earnings = null, emptyText }: Props) {
   const { t } = useI18n();
-  const { rules: rulesBySide, volOverride, driftPct } = useSimSettings(symbol);
+  const { rules: rulesBySide, volOverride, driftPct, ivSkewOn, earnJumpOn } = useSimSettings(symbol);
+  // 悬停说明（InfoTip）：标题/说明/例子都在 tip.<id>.t/b/e
+  const tip = (id: string) => ({ title: t(`tip.${id}.t`), body: t(`tip.${id}.b`), example: t(`tip.${id}.e`) });
+  const effSkew = ivSkewOn ? skew : 0;
+  const hsKey = (halfSpread ?? []).map((h) => (h == null ? "-" : h.toFixed(3))).join(",");
   const setVolOverride = (v: number | null) => setVolOverrideFor(symbol, v);
   const setDriftPct = (v: number) => setDriftPctFor(symbol, v);
   const [lossLimit, setLossLimit] = useState<number>(() => loadNumber(LIMIT_KEY, 1000));
@@ -123,6 +139,8 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
   const [forkRun, setForkRun] = useState<{ key: string; stats: SimStats; holding: Float32Array; samples: Sample[] } | null>(null);
   const [runNonce, setRunNonce] = useState(0);
   const [storyIdx, setStoryIdx] = useState(0); // 立体图里看哪一种典型结局
+  const [pathHelp, setPathHelp] = useState(false); // "两种走法有什么区别"对照表展开
+  const [ruleSort, setRuleSort] = useState<"trade" | "per30">("per30"); // 第3组：规则对比表按什么排
   const [pathMode, setPathMode] = useState<"random" | "hist">(loadPathMode);
   const [histYears, setHistYears] = useState<HistYears>(loadYears);
   const [histSeries, setHistSeries] = useState<{ key: string; status: "loading" | "ok" | "error"; series?: { closes: number[]; timestamps: number[] } }>({ key: "", status: "loading" });
@@ -181,6 +199,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
     [
       `${t("winRate.tp")} ${r.takeProfitPct == null ? t("winRate.none") : t("winRate.tpOpt", { n: r.takeProfitPct * 100 })}`,
       `${t("winRate.sl")} ${r.stopMult == null ? t("winRate.none") : credit ? t("winRate.slOpt", { n: r.stopMult }) : t("winRate.slOptDebit", { n: r.stopMult * 100 })}`,
+      ...(r.deltaExit != null ? [t("future.deltaRuleShort", { d: r.deltaExit.toFixed(2) })] : []),
       r.closeFrac > 0 ? t("winRate.closeOptFrac", { f: fracLabel(r.closeFrac), d: Math.max(1, Math.round(totalTerm * r.closeFrac)) }) : t("winRate.holdToExpiry"),
     ].join(" · ");
   const totalTerm = useMemo(() => {
@@ -195,11 +214,12 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
   const drift = credit ? 0 : driftPct / 100;
 
   const setup = useMemo(
-    () => (basis == null || hasStock ? null : { legs, spot, basis, pnlOffset: 0, rules, totalTerm, drift, dV }),
-    [basis, hasStock, legs, spot, rules, totalTerm, drift, dV],
+    () => (basis == null || hasStock ? null : { legs, spot, basis, pnlOffset: 0, rules, totalTerm, drift, dV, skew: effSkew, halfSpread: halfSpread && halfSpread.length === legs.length ? halfSpread : undefined }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [basis, hasStock, legs, spot, rules, totalTerm, drift, dV, effSkew, hsKey],
   );
-  const prepared = useMemo(() => (setup ? prepareSim(setup) : null), [setup]);
-  const days = prepared?.horizon ?? 1;
+  const preparedBase = useMemo(() => (setup ? prepareSim(setup) : null), [setup]);
+  const days = preparedBase?.horizon ?? 1;
   const histPaths = useMemo(
     () => (histKey && histSeries.key === histKey && histSeries.status === "ok" && histSeries.series ? buildHistPaths(histSeries.series, days) : null),
     [histKey, histSeries, days],
@@ -213,26 +233,45 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
     () => (histActive && histPaths ? { ratios: histPaths.ratios, days: histPaths.days, count: histPaths.count, starts: histPaths.starts, vols: histPaths.vols, to: histPaths.to } : undefined),
     [histActive, histPaths],
   );
+  // 财报这一组：财报落在推演期间里（第1天～最早到期日）时，打开开关就在那天加一次跳空（只在随机走法里加：历史真实走势本来就有过去的财报跳空）
+  const earnDay = earningsDayFrom(earnings, 0, days);
+  const earnJump = earnDay != null && earnings?.jump != null && earnings.jump > 0 ? earnings.jump : null;
+  const useJump = earnJumpOn && earnJump != null && !histActive && !histWaiting;
+  // 按隐含波动率推演时（没有手填、拿不到最近20天的实际波动），隐含波动率里已经含着这次财报，加跳空要先扣掉，不然算两遍
+  const volFromIv = volOverride == null && !(hv.status === "ok" && hv.hv20);
+  const runVol = useJump && volFromIv ? exEarningsVol(vol, earnJump!, days) : vol;
+  const runSetup = useMemo(() => (setup && useJump ? { ...setup, earnings: { day: earnDay!, jump: earnJump! } } : setup), [setup, useJump, earnDay, earnJump]);
+  const prepared = useMemo(() => (runSetup ? prepareSim(runSetup) : null), [runSetup]);
+  // 加了财报跳空时，情景点的腿位和盈亏按财报前后隐含波动率的变化重算（盈亏图/滑块不含这个变化，见winRateSim.earningsShift）
+  const fork = useMemo(() => {
+    if (!forkProp || !useJump || !prepared) return forkProp;
+    const sh = earningsShift(prepared, forkProp.day, forkProp.spot, forkProp.legs);
+    return sh ? { ...forkProp, legs: sh.legs, pnl: forkProp.pnl + sh.dPnl } : forkProp;
+  }, [forkProp, useJump, prepared]);
+  // 加了跳空时，"市场报价"里含着这次财报：跟实际波动比、画波动率曲线时用扣掉财报以后的
+  const ivCmp = useJump ? exEarningsVol(ivCenter, earnJump!, days) : ivCenter;
   const histAvgVol = useMemo(() => (histPaths && histPaths.vols.length ? histPaths.vols.reduce((a, b) => a + b, 0) / histPaths.vols.length : null), [histPaths]);
   const model = useMemo(
     () => (setup ? buildMapModel(legs, spot, dV, { extraPrices: scenario ? [scenario.price] : [], baseIv: ivCenter }, 120, ROWS) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [setup, legs, spot, dV, scenario?.price],
+    [setup, legs, spot, dV, scenario?.price, ivCenter],
   );
   const grid: GridSpec | null = useMemo(() => (model ? { sMin: model.sMin, sMax: model.sMax, rows: ROWS, days } : null), [model, days]);
   // 到期时最多赚/亏多少：用来判断止盈止损线碰不碰得到。
   const scan = useMemo(() => (prepared ? expiryScan(prepared, spot) : null), [prepared, spot]);
+  // 开仓时卖出腿里最大的Delta：Delta平仓线比它还低就等于开仓就该平
+  const startShortDelta = useMemo(() => (prepared ? maxShortDelta(prepared, 0, spot) : 0), [prepared, spot]);
 
   const runKey = useMemo(() => {
-    if (!setup || !grid) return "";
-    const lk = setup.legs.map((l) => [l.action, l.type, l.strike, l.dte, l.premium, l.qty ?? 1].join(":")).join("|");
-    return [lk, spot.toFixed(3), JSON.stringify(rules), vol.toFixed(4), ivCenter.toFixed(4), drift, dV, totalTerm, grid.sMin.toFixed(3), grid.sMax.toFixed(3), runNonce,
-      histInput ? `hist:${histKey}:${histInput.count}` : histWaiting ? "histWait" : "random"].join("#");
-  }, [setup, grid, spot, rules, vol, ivCenter, drift, dV, totalTerm, runNonce, histInput, histKey, histWaiting]);
+    if (!runSetup || !grid) return "";
+    const lk = runSetup.legs.map((l) => [l.action, l.type, l.strike, l.dte, l.premium, l.qty ?? 1].join(":")).join("|");
+    return [lk, spot.toFixed(3), JSON.stringify(rules), runVol.toFixed(4), ivCenter.toFixed(4), drift, dV, totalTerm, grid.sMin.toFixed(3), grid.sMax.toFixed(3), runNonce,
+      histInput ? `hist:${histKey}:${histInput.count}` : histWaiting ? "histWait" : "random", effSkew.toFixed(3), hsKey, useJump ? `earn:${earnDay}:${earnJump!.toFixed(4)}` : "noEarn"].join("#");
+  }, [runSetup, grid, spot, rules, runVol, ivCenter, drift, dV, totalTerm, runNonce, histInput, histKey, histWaiting, effSkew, hsKey, useJump, earnDay, earnJump]);
 
   // 主推演：输入变了（防抖400ms）就换一个后台线程从头算。
   useEffect(() => {
-    if (!setup || !prepared || !grid || !volReady || emptyText || histWaiting) return;
+    if (!runSetup || !prepared || !grid || !volReady || emptyText || histWaiting) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       workerRef.current?.terminate();
@@ -245,8 +284,8 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
         if (!cancelled && e.data.runId === runId) queueRef.current.push(e.data);
       };
       const req: FutureRequest = {
-        kind: "main", runId, setup, vol, ivCenter: Math.max(0.05, ivCenter + dV / 100), batches: BATCHES, perBatch: PER_BATCH, samples: SAMPLES,
-        seed: Math.floor(Math.random() * 1e9), grid, debit: !credit, hist: histInput,
+        kind: "main", runId, setup: runSetup, vol: runVol, ivCenter: Math.max(0.05, ivCmp + dV / 100), batches: BATCHES, perBatch: PER_BATCH, samples: SAMPLES,
+        seed: Math.floor(Math.random() * 1e9), grid, debit: !credit, hist: histInput, noEarnVol: useJump ? vol : undefined,
       };
       w.postMessage(req);
     }, 400);
@@ -270,7 +309,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
     return { kind: "ok" as const };
   }, [scenario, prepared]);
   const forkKey = useMemo(() => {
-    if (!fork || scenState?.kind !== "ok" || !grid || basis == null || !(scenario && (scenario.day > 0 || Math.abs(scenario.price - spot) > 0.005))) return "";
+    if (!fork || scenState?.kind !== "ok" || !grid || basis == null || !(scenario && (scenario.day >= 1 || Math.abs(scenario.price / spot - 1) >= 0.01))) return "";
     const lk = fork.legs.map((l) => [l.strike, l.dte.toFixed(2), l.premium.toFixed(4), l.qty ?? 1].join(":")).join("|");
     return [lk, fork.spot.toFixed(3), fork.pnl.toFixed(4), fork.day, runKey].join("#");
   }, [fork, scenState, grid, basis, scenario, spot, runKey]);
@@ -291,8 +330,12 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
         setForkRun({ key: forkKey, stats: m.stats, holding: m.holding, samples: m.samples });
       };
       const req: FutureRequest = {
-        kind: "fork", runId, vol, startDay: Math.round(fork.day), samples: 30, grid, hist: histInput,
-        setup: { legs: fork.legs, spot: fork.spot, basis, pnlOffset: fork.pnl, rules, totalTerm, drift },
+        kind: "fork", runId, vol: runVol, startDay: Math.round(fork.day), samples: 30, grid, hist: histInput,
+        setup: {
+          legs: fork.legs, spot: fork.spot, basis, pnlOffset: fork.pnl, rules, totalTerm, drift, skew: effSkew, halfSpread: halfSpread && halfSpread.length === fork.legs.length ? halfSpread : undefined,
+          // 从情景那天出发：财报还在后面才加（天数从情景那天算）
+          earnings: useJump && earnDay! > Math.round(fork.day) ? { day: earnDay! - Math.round(fork.day), jump: earnJump! } : null,
+        },
       };
       w.postMessage(req);
     }, 250);
@@ -321,7 +364,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
       }
       while (q.length && q[0].type !== "batch") {
         const m = q.shift()!;
-        setRun((r) => (m.type === "done" ? { ...r, done: m } : m.type === "alt" ? { ...r, alt: m.suggestion } : m.type === "curve" ? { ...r, curve: m } : m.type === "error" ? { ...r, error: m.message } : r));
+        setRun((r) => (m.type === "done" ? { ...r, done: m } : m.type === "earn" ? { ...r, earn: m.without } : m.type === "alt" ? { ...r, alt: m.suggestion } : m.type === "curve" ? { ...r, curve: m } : m.type === "error" ? { ...r, error: m.message } : r));
       }
     }, REVEAL_MS);
     return () => window.clearInterval(id);
@@ -406,6 +449,30 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
           ))}
         </select>
       </label>
+      {credit && (
+        <label className="flex items-center gap-1" title={t("future.deltaRuleHint")}>
+          {t("future.deltaRuleLabel")}
+          <select className={sel} value={String(rules.deltaExit ?? "null")} onChange={(e) => setRules({ ...rules, deltaExit: e.target.value === "null" ? null : Number(e.target.value) })}>
+            <option value="null">{t("winRate.none")}</option>
+            {DELTA_EXITS.map((d) => <option key={d} value={String(d)}>{d.toFixed(2)}{d <= startShortDelta + 0.02 ? t("future.deltaAlreadyOpt") : ""}</option>)}
+          </select>
+        </label>
+      )}
+      <label className={`flex items-center gap-1 ${skew > 0 ? "" : "opacity-40"}`} title={skew > 0 ? t("future.skewHint", { k: (skew * 10).toFixed(1) }) : t("future.skewNone")}>
+        <input type="checkbox" className="accent-sky-500" checked={ivSkewOn && skew > 0} disabled={!(skew > 0)} onChange={(e) => setIvSkewOn(e.target.checked)} />
+        {t("future.skewLabel")}
+      </label>
+      {earnDay != null && (
+        <label
+          className={`flex items-center gap-1 rounded border border-amber-600/70 px-1.5 py-0.5 text-amber-300 ${earnJump != null && !histActive ? "" : "opacity-50"}`}
+          title={histActive ? t("future.earnHistHint") : earnJump == null ? t("future.earnNoMove") : t("future.earnHint")}
+        >
+          <input type="checkbox" className="accent-amber-500" checked={earnJumpOn && earnJump != null && !histActive} disabled={earnJump == null || histActive} onChange={(e) => setEarnJumpOn(e.target.checked)} />
+          {earnings?.move != null
+            ? t(earnings.moveSource === "past" ? "future.earnLabelPast" : "future.earnLabel", { m: (earnings.move * 100).toFixed(1) })
+            : t("future.earnLabelNoMove")}
+        </label>
+      )}
       {!credit && (
         <label className="flex items-center gap-1" title={t("winRate.driftHint")}>
           {t("winRate.drift")}
@@ -426,7 +493,10 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
         </label>
       )}
       <span className="flex flex-wrap items-center gap-1">
-        {t("future.pathLabel")}
+        <InfoTip {...tip("path")}>{t("future.pathLabel")}</InfoTip>
+        <button type="button" onClick={() => setPathHelp((v) => !v)} className="text-[10.5px] text-sky-400 underline-offset-2 hover:underline">
+          {t(pathHelp ? "future.pathCmpClose" : "future.pathCmpOpen")}
+        </button>
         <span className="flex overflow-hidden rounded border border-slate-600">
           {(["random", "hist"] as const).map((m) => (
             <button
@@ -485,7 +555,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
   );
 
   // ── 平面视图：赚/亏两区做底色，上面是全部走势的股价范围带、几种典型结局、上方每天下车多少、右侧全拿到期停在哪 ──
-  const STORY_COLOR: Record<Story["kind"], string> = { tp: "#34d399", sl: "#f43f5e", time: "#fbbf24", win: "#fde68a", loss: "#fb7185" };
+  const STORY_COLOR: Record<Story["kind"], string> = { tp: "#34d399", sl: "#f43f5e", delta: "#a78bfa", time: "#fbbf24", win: "#fde68a", loss: "#fb7185" };
   const shareText = (v: number) => (v > 0 && v < 1 ? t("future.shareLt1") : t("future.shareAbout", { p: Math.round(v) }));
   const stories = run.done?.stories ?? [];
   const drawPlane = (g: CanvasRenderingContext2D, W: number, H: number) => {
@@ -568,6 +638,21 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
       g.stroke();
       g.setLineDash([]);
     }
+    // 财报那天：竖线+标签（不管开没开跳空都画，让人知道持仓期间有财报）
+    if (earnDay != null && earnings) {
+      // 橙色（2026-10-08：黄色留给盈亏平衡线，紫色是Delta下车）
+      g.strokeStyle = "rgba(251,146,60,0.9)";
+      g.lineWidth = 1.5;
+      g.beginPath();
+      g.moveTo(X(earnDay), M.t);
+      g.lineTo(X(earnDay), M.t + ph);
+      g.stroke();
+      g.lineWidth = 1;
+      g.font = "bold 10px sans-serif";
+      g.fillStyle = "#fb923c";
+      g.textAlign = earnDay > days * 0.75 ? "right" : "left";
+      g.fillText(t("future.earnTag", { date: earnings.next.slice(5).replace("-", "/"), d: earnDay }), X(earnDay) + (earnDay > days * 0.75 ? -4 : 4), M.t + 12);
+    }
     labelBands(g, run.bands, f, { mid: t("future.bandMid"), dark: t("future.bandDark"), light: t("future.bandLight") });
     // 纵轴刻度
     const step = niceStep(model.sMax - model.sMin, 6);
@@ -579,23 +664,28 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
     if (ed && run.done) {
       const n = run.done.stats.n || 1;
       const top = 4, hh = 24;
-      const tot = ed.tp.map((v, d) => v + ed.sl[d] + ed.time[d]);
+      const tot = ed.tp.map((v, d) => v + ed.sl[d] + ed.delta[d] + ed.time[d]);
       const mx = Math.max(1, ...tot);
       const bw = Math.max(1, pw / days - 1);
+      // 跟"看哪一种结局"联动：选中的那种颜色亮，其它淡（选的是拿到期的结局时，全部淡一些——拿到期的不在这些柱子里）
+      const selKind = stories.length ? stories[Math.min(storyIdx, stories.length - 1)].kind : null;
       for (let d = 1; d <= days && d < tot.length; d++) {
         let y = top + 32 + hh;
-        for (const [k, col] of [["tp", "rgba(52,211,153,0.8)"], ["sl", "rgba(244,63,94,0.85)"], ["time", "rgba(251,191,36,0.8)"]] as const) {
+        for (const [k, col] of [["tp", "rgba(52,211,153,0.85)"], ["sl", "rgba(244,63,94,0.9)"], ["delta", "rgba(167,139,250,0.9)"], ["time", "rgba(251,191,36,0.85)"]] as const) {
           const hgt = (ed[k][d] / mx) * hh;
           if (hgt <= 0) continue;
+          g.globalAlpha = selKind == null || selKind === k ? 1 : selKind === "win" || selKind === "loss" ? 0.45 : 0.2;
           g.fillStyle = col;
           g.fillRect(X(d) - bw / 2, y - hgt, bw, hgt);
           y -= hgt;
         }
       }
+      g.globalAlpha = 1;
       g.font = "10px sans-serif";
       g.fillStyle = "#94a3b8";
       g.textAlign = "left";
-      g.fillText(t("future.exitBarTitle"), M.l, top + 9);
+      // 左边让出位置给图上的"小柱子是什么ⓘ"（HTML叠在画布上）
+      g.fillText(t("future.exitBarTitle"), M.l + 92, top + 9);
       let cum = 0;
       const marks = [Math.max(1, Math.round(days * 0.15)), Math.round(days * 0.5), days];
       for (let d = 0; d <= days && d < tot.length; d++) {
@@ -622,13 +712,39 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
       g.font = "10px sans-serif";
       g.fillStyle = "#94a3b8";
       g.textAlign = "left";
-      g.fillText(t("future.endAllTitle"), x0, M.t - 4);
       const win = run.done.hold.winPct;
+      // 上面：一直拿到期赚的比例 vs 按条件赚的比例（规则帮了还是拖了）
+      const ruleWin = run.done.stats.winPct;
+      const dw = Math.round(ruleWin) - Math.round(win);
+      g.fillText(t("future.endAllTitle"), x0, M.t - (ed ? 30 : 4));
+      if (ed) {
+        g.font = "bold 10px sans-serif";
+        g.fillStyle = "#6ee7b7";
+        g.fillText(t("future.endAllWin", { p: Math.round(win) }), x0, M.t - 17);
+        g.fillStyle = "#fbbf24";
+        g.fillText(`${t("future.endRule", { p: Math.round(ruleWin) })}${dw !== 0 ? `（${dw > 0 ? "+" : "−"}${Math.abs(dw)}）` : ""}`, x0, M.t - 4);
+      }
       g.font = "bold 10px sans-serif";
       g.fillStyle = "#6ee7b7";
       g.fillText(t("future.endAllWin", { p: Math.round(win) }), x0, M.t + ph + 12);
       g.fillStyle = "#fda4af";
       g.fillText(t("future.endAllLoss", { p: Math.round(100 - win) }), x0, M.t + ph + 24);
+      // 选中那条走势到期停在哪：三角
+      const sel = stories.length ? stories[Math.min(storyIdx, stories.length - 1)] : null;
+      const endP = sel ? sel.prices[sel.prices.length - 1] : null;
+      if (endP != null && endP >= model.sMin && endP <= model.sMax) {
+        const yy = Y(endP);
+        g.fillStyle = STORY_COLOR[sel!.kind];
+        g.beginPath();
+        g.moveTo(x0 - 1, yy);
+        g.lineTo(x0 - 7, yy - 5);
+        g.lineTo(x0 - 7, yy + 5);
+        g.closePath();
+        g.fill();
+        g.font = "9px sans-serif";
+        g.fillStyle = "#e2e8f0";
+        g.fillText(t("future.endPick"), x0 + 2, yy - 7);
+      }
     }
     // 典型结局的故事：只给选中的那条贴说明（贴在下车或到期的那一点）
     const placed: Placed[] = [];
@@ -642,6 +758,8 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
         [
           { text: `${i === 0 && st.share >= Math.max(...stories.map((x) => x.share)) ? t("future.storyFirst") : ""}${t(`future.story_${st.kind}`)}${shareText(st.share)}`, color: c, bold: true },
           { text: t(`future.story_${st.kind}D`, { d: st.day, v: `${st.pnl >= 0 ? "+" : "−"}$${Math.abs(st.pnl).toFixed(2)}` }), color: "#e2e8f0" },
+          // 历史真实走法：这条是哪一段真实走势
+          ...(st.start != null ? [{ text: t("future.storyFrom", { date: fmtYmd(st.start), d: days }), color: "#94a3b8" }] : []),
         ],
         c, placed, { left: M.l + 2, right: M.l + pw - 2, top: M.t + 2, bottom: M.t + ph - 2 }, st.day >= days * 0.6,
       );
@@ -767,7 +885,8 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
     // 卖方（以及买入跨式这类靠波动的买方）：开仓时市场定价的隐含波动率 vs 实际波动，差10%以内算差不多。
     // ⚠️ 必须跟开仓时的隐含波动率比（权利金是按它收/付的）；波动率滑块是开仓后隐含波动率的变化，另外单独说。
     const openIv = ivCenter;
-    const ratio = effVol / openIv;
+    // 加了财报跳空时：跳空单独算了，实际波动要跟扣掉财报以后的市场报价比（不然财报前隐含波动率偏高，会把卖方优势看大）
+    const ratio = effVol / ivCmp;
     const cmpKey = ratio < 0.9 ? (credit ? "future.cmpCalmSeller" : "future.cmpCalmBuyer") : ratio > 1.1 ? (credit ? "future.cmpWildSeller" : "future.cmpWildBuyer") : "future.cmpEven";
     const mx = Math.max(openIv, effVol) * 1.1;
     const bar = (label: string, v: number, color: string) => (
@@ -779,10 +898,13 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
     );
     why = (
       <>
-        {t(ivSource === "atm" ? "future.whyVolAtm" : "future.whyVol", { iv: (openIv * 100).toFixed(1) })} {srcLabel} {(effVol * 100).toFixed(1)}%{t("future.comma")}{t(cmpKey)}
+        {t(ivSource === "atm" ? "future.whyVolAtm" : "future.whyVol", { iv: (openIv * 100).toFixed(1) })}
+        {useJump && ivCmp < openIv - 1e-4 && <>{t("future.whyExEarn", { v: (ivCmp * 100).toFixed(1) })}</>} {srcLabel} {(effVol * 100).toFixed(1)}%{t("future.comma")}{t(cmpKey)}
         {dV !== 0 && <> {t(`future.dv${dV < 0 ? "Crush" : "Spike"}${credit ? "Seller" : "Buyer"}`, { n: Math.abs(dV) })}</>}
+        {effSkew > 0 && <> {t(credit ? "future.whySkewSeller" : "future.whySkewBuyer", { k: (effSkew * 10).toFixed(1) })}</>}
         <div className="mt-1 flex flex-col gap-0.5">
           {bar(t("future.barMarket"), openIv, "#a78bfa")}
+          {useJump && ivCmp < openIv - 1e-4 && bar(t("future.barExEarn"), ivCmp, "#c4b5fd")}
           {dV !== 0 && bar(t("future.barAfterDv"), marketIv, "#c4b5fd")}
           {bar(srcBar, effVol, "#fbbf24")}
         </div>
@@ -833,6 +955,32 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
         row("ivhv", t("future.ivhvLabel"), t(credit ? "future.ivhvSeller" : "future.ivhvBuyer", { iv: (ivCenter * 100).toFixed(1), hv: (hv.hv20 * 100).toFixed(1), k: (ivCenter / hv.hv20).toFixed(1) }), "text-amber-300"),
       );
     }
+    // 财报这一组：持仓期间有财报时，说清楚算没算跳空、算了差多少
+    if (earnings) {
+      const date = earnings.next.slice(5).replace("-", "/");
+      let body: ReactNode;
+      if (earnDay == null) body = <span className="text-slate-400">{t(earnings.dayFromOpen <= 0 ? "future.earnPassed" : "future.earnNone", { date })}</span>;
+      else if (histActive) body = t("future.earnHistRow", { d: earnDay, date });
+      else if (earnJump == null) body = t("future.earnNoMoveRow", { d: earnDay, date });
+      else if (!earnJumpOn) body = t("future.earnOffRow", { d: earnDay, date });
+      else {
+        const w = run.earn;
+        body = (
+          <>
+            {w
+              ? t("future.earnOnRow", {
+                  d: earnDay, date, a: Math.round(w.winPct), b: Math.round(s.winPct),
+                  wa: w.worst5 < 0 ? `−$${Math.abs(w.worst5).toFixed(2)}` : `$${w.worst5.toFixed(2)}`,
+                  wb: s.worst5 < 0 ? `−$${Math.abs(s.worst5).toFixed(2)}` : `$${s.worst5.toFixed(2)}`,
+                })
+              : t("future.earnOnRowPending", { d: earnDay, date })}{" "}
+            <span className="text-slate-400">{t(credit ? "future.earnWhySeller" : "future.earnWhyBuyer")}</span>
+            {volFromIv && runVol < vol - 1e-4 && <span className="text-slate-400"> {t("future.earnVolNote", { a: (vol * 100).toFixed(1), b: (runVol * 100).toFixed(1) })}</span>}
+          </>
+        );
+      }
+      card.push(row("earn", t("future.earnRowLabel"), body, earnDay != null ? "text-amber-100" : ""));
+    }
     if (why) card.push(row("why", t("future.whyLabel"), <>{why}{verdict === "flat" && <> {t("future.noEdgeNote")}</>}</>));
     const { avgWin, avgLoss } = run.done;
     const truth: string[] = [t("future.truth", { w: usd(avgWin), l: usd(avgLoss) })];
@@ -869,7 +1017,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
       card.push(row("worst", t("future.worstLabel"), histActive ? t("future.worstPositiveHist", { k: Math.max(1, Math.round(s.n * 0.05)), v: usd(s.worst5) }) : t("winRate.worstPositive", { v: usd(s.worst5) })));
     }
     // 你的规则：只说打开了的规则；跟同一组走势"一直拿到期"比，看规则在换什么。
-    const ruleOn = rules.takeProfitPct != null || rules.stopMult != null || rules.closeFrac > 0;
+    const ruleOn = rules.takeProfitPct != null || rules.stopMult != null || rules.closeFrac > 0 || rules.deltaExit != null;
     const ruleBits: ReactNode[] = [];
     if (!ruleOn) {
       ruleBits.push(t("future.rulesNone"));
@@ -877,9 +1025,11 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
       const parts: string[] = [];
       if (rules.takeProfitPct != null) parts.push(t("future.partTp", { p: s.byReason.tp.pct.toFixed(0) }));
       if (rules.stopMult != null) parts.push(t("future.partSl", { p: s.byReason.sl.pct.toFixed(0) }));
+      if (rules.deltaExit != null) parts.push(t("future.partDelta", { p: s.byReason.delta.pct.toFixed(0), d: rules.deltaExit.toFixed(2) }));
       if (rules.closeFrac > 0) parts.push(t("future.partTime", { p: s.byReason.time.pct.toFixed(0) }));
       if (s.byReason.expiry.pct > 0) parts.push(t("future.partExpiry", { p: s.byReason.expiry.pct.toFixed(0) }));
       ruleBits.push(`${parts.join(t("future.sep"))}${t("future.period")}`);
+      if (s.avgCost > 0.0005) ruleBits.push(` ${t("future.rulesCost", { c: usd(s.avgCost) })}`);
       ruleBits.push(
         ` ${t("future.rulesVsHold", {
           h: Math.round(hold.winPct / 10), n: n10, ha: money(hold.avg), a: money(s.avg), hw: money(hold.worst5), w: money(s.worst5),
@@ -887,6 +1037,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
       );
     }
     const warn: string[] = [];
+    if (rules.deltaExit != null && rules.deltaExit <= startShortDelta + 0.02) warn.push(t("future.deltaAlready", { d: rules.deltaExit.toFixed(2), s: startShortDelta.toFixed(2) }));
     if (rules.stopMult != null && scan?.maxLoss != null && slUnreachable(rules.stopMult)) warn.push(t("future.slUnreach", { m: usd(scan.maxLoss), s: usd(p.slLine) }));
     else if (s.byReason.sl.pct > 35) warn.push(t("winRate.ruleSlTight", { p: s.byReason.sl.pct.toFixed(0) }));
     if (rules.takeProfitPct != null && scan?.maxProfit != null && scan.maxProfit < p.tpLine - 1e-9) warn.push(t("future.tpUnreach", { m: usd(scan.maxProfit), s: usd(p.tpLine) }));
@@ -962,6 +1113,86 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
       );
     }
     if (altBody) card.push(row("alt", t("future.altLabel"), altBody));
+    // 第3组：规则对比表——同一组走势、扣掉成交损耗；可以按"每笔"或"折算每30天"排
+    if (alt && alt.rows.length > 1) {
+      const sorted = [...alt.rows].sort((a, b) => (ruleSort === "trade" ? b.avg - a.avg : b.per30 - a.per30));
+      const top = sorted[0];
+      const cur = alt.rows.find((r) => r.current)!;
+      const noise = (r: typeof top) => Math.abs(r.diff) < Math.max(2 * r.se, 0.01 * p.basis);
+      let verdict: string;
+      if (top.avg < 0) verdict = t("future.rtAllLose");
+      else if (top.current) verdict = t(ruleSort === "trade" ? "future.rtTopCurrentTrade" : "future.rtTopCurrentPer30");
+      else if (ruleSort === "trade" && noise(top)) verdict = t("future.rtNoise", { r: describeRules(top.rules) });
+      else {
+        verdict = t(ruleSort === "trade" ? "future.rtTopTrade" : "future.rtTopPer30", {
+          r: describeRules(top.rules), a: money(top.avg), p30: money(top.per30), d: top.avgDays.toFixed(0), a0: money(cur.avg), p0: money(cur.per30),
+        });
+        if (top.worst5 < cur.worst5 * 1.1 && cur.worst5 < 0) verdict += t("future.rtWorseTail", { w: money(top.worst5), w0: money(cur.worst5) });
+        if (top.avg > 0 && top.avgCost > top.avg * 0.3) verdict += t("future.rtCostEats", { c: money(top.avgCost), k: Math.round((top.avgCost / (top.avg + top.avgCost)) * 100) });
+        if (ruleSort === "per30") verdict += t("future.rtPer30Caveat");
+      }
+      const th = "px-1.5 py-1 text-left font-normal text-slate-500";
+      const td = "px-1.5 py-1 tabular-nums";
+      card.push(
+        row("rtable", t("future.rtLabel"), (
+          <div className="flex flex-col gap-1">
+            <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
+              <span>{t("future.rtSortBy")}</span>
+              <span className="flex overflow-hidden rounded border border-slate-700">
+                {(["trade", "per30"] as const).map((k) => (
+                  <button key={k} type="button" onClick={() => setRuleSort(k)}
+                    className={`px-1.5 py-0.5 font-semibold ${ruleSort === k ? "bg-sky-600 text-white" : "text-slate-400 hover:text-slate-200"}`}>
+                    {t(k === "trade" ? "future.rtSortTrade" : "future.rtSortPer30")}
+                  </button>
+                ))}
+              </span>
+              <span>{t("future.rtNote", { n: alt.rows.length })}</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[560px] border-collapse text-[10.5px]">
+                <thead>
+                  <tr className="border-b border-slate-800">
+                    <th className={th}>{t("future.rtRule")}</th>
+                    <th className={th}>{t("future.rtWin")}</th>
+                    <th className={th}>{t("future.rtDays")}</th>
+                    <th className={th}>{t("future.rtCost")}</th>
+                    <th className={th}>{t("future.rtAvg")}</th>
+                    <th className={th}>{t("future.rtPer30")}</th>
+                    <th className={th}>{t("future.rtWorst")}</th>
+                    <th className={th} />
+                  </tr>
+                </thead>
+                <tbody>
+                  {sorted.map((r, i) => (
+                    <tr key={i} className={`border-b border-slate-800/60 ${i === 0 ? "bg-sky-950/40" : ""}`}>
+                      <td className={`px-1.5 py-1 ${r.current ? "font-semibold text-slate-100" : "text-slate-300"}`}>
+                        {r.current && <span className="mr-1 text-sky-300">{t("future.rtCurrent")}</span>}
+                        {describeRules(r.rules)}
+                      </td>
+                      <td className={td}>{r.winPct.toFixed(0)}%</td>
+                      <td className={td}>{t("future.rtDaysVal", { d: r.avgDays.toFixed(0) })}</td>
+                      <td className={td}>{usd(r.avgCost)}</td>
+                      <td className={`${td} ${ruleSort === "trade" ? "font-bold" : ""} ${r.avg >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{money(r.avg)}</td>
+                      <td className={`${td} ${ruleSort === "per30" ? "font-bold" : ""} ${r.per30 >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{money(r.per30)}</td>
+                      <td className={`${td} text-rose-300`}>{money(r.worst5)}</td>
+                      <td className="px-1.5 py-1">
+                        {!r.current && (
+                          <button onClick={() => setRules(r.rules)} className="rounded border border-sky-600 px-1 py-0 text-[10px] text-sky-300 hover:bg-sky-500/20">
+                            {t("future.altApply")}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="text-slate-200">{verdict}</div>
+            <div className="text-[10px] text-slate-500">{t("future.rtCostNote")}</div>
+          </div>
+        )),
+      );
+    }
   }
   // 情景点（不用等主推演算完）
   const scenLines: string[] = [];
@@ -987,10 +1218,10 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
       if (ed && d > 0) {
         const n = run.done!.stats.n || 1;
         const before = (arr: number[]) => (arr.slice(0, Math.min(arr.length, d)).reduce((a, b) => a + b, 0) / n) * 100;
-        const tp = before(ed.tp), sl = before(ed.sl), tm = before(ed.time);
+        const tp = before(ed.tp), sl = before(ed.sl), dl = before(ed.delta), tm = before(ed.time);
         scenLines.push(
           t("future.scenBefore", {
-            d, tp: tp.toFixed(0), sl: sl.toFixed(0), time: tm >= 0.5 ? t("future.scenBeforeTime", { p: tm.toFixed(0) }) : "", hold: Math.max(0, 100 - tp - sl - tm).toFixed(0),
+            d, tp: tp.toFixed(0), sl: sl.toFixed(0), time: `${dl >= 0.5 ? t("future.scenBeforeDelta", { p: dl.toFixed(0) }) : ""}${tm >= 0.5 ? t("future.scenBeforeTime", { p: tm.toFixed(0) }) : ""}`, hold: Math.max(0, 100 - tp - sl - dl - tm).toFixed(0),
           }),
         );
       }
@@ -1043,6 +1274,109 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
     scenTop = <div className="flex flex-col gap-2">{parts}</div>;
   }
 
+  // ── 结论框（图上方，2026-10-08 xue：先给结论和接下来怎么做）──
+  // 没拖滑块（或拖得很小）：开仓建议，依据就是这张图同一批走势；拖了滑块：情景建议，从那一点接着按条件走 vs 现在平仓。
+  const scenActive = !!(scenario && scenState && scenState.kind !== "expired" && (scenario.day >= 1 || Math.abs(scenario.price / spot - 1) >= 0.01));
+  let conclBox: ReactNode = null;
+  {
+    const cell = (key: string, label: string, tipId: string, body: ReactNode, cls = "") => (
+      <div key={key} className={`min-w-0 border-t border-slate-800 px-3 py-1.5 first:border-t-0 sm:border-l sm:border-t-0 sm:first:border-l-0 ${cls}`}>
+        <InfoTip {...tip(tipId)}><span className="text-[10.5px] text-slate-400">{label}</span></InfoTip>
+        <div className="mt-0.5 text-[11.5px] leading-snug text-slate-100">{body}</div>
+      </div>
+    );
+    const VCLS: Record<string, string> = { good: "text-emerald-300", slight: "text-emerald-200", flat: "text-amber-200", bad: "text-rose-300", hold: "text-emerald-300", close: "text-amber-200", even: "text-slate-200", tp: "text-emerald-300", sl: "text-rose-300", time: "text-amber-200" };
+    const BORDER: Record<string, string> = { good: "border-emerald-600", slight: "border-emerald-700", flat: "border-amber-600", bad: "border-rose-600" };
+    const box = (tone: string, cells: ReactNode[]) => (
+      <div className={`grid shrink-0 grid-cols-1 overflow-hidden rounded-md border bg-slate-900/70 sm:grid-cols-[minmax(110px,0.8fr)_1fr_1fr_1.2fr] ${BORDER[tone] ?? "border-slate-700"}`}>{cells}</div>
+    );
+    const sm = run.done?.stats;
+    if (!scenActive) {
+      if (!sm || !run.done || !verdict) {
+        conclBox = box("", [cell("v", t("future.concl.open"), "verdict", <span className="text-slate-400">{t("future.concl.pending")}</span>)]);
+      } else {
+        const hd = run.done.hold;
+        const fair = credit ? p.basis - hd.avg : p.basis + hd.avg;
+        const edgePct = credit ? (fair > 0.005 ? (hd.avg / fair) * 100 : 0) : p.basis > 0 ? (hd.avg / p.basis) * 100 : 0;
+        const sl = sm.byReason.sl;
+        const alt = run.alt;
+        const altBest = alt && alt.best ? alt.best : null;
+        conclBox = box(verdict, [
+          cell("v", t("future.concl.open"), "verdict", (
+            <>
+              <span className={`block text-[17px] font-bold leading-tight ${VCLS[verdict]}`}>{t(`future.concl.v_${verdict}`)}</span>
+              <span className="text-[10.5px] text-slate-400">{t("future.concl.avg", { v: money(sm.avg) })}</span>
+            </>
+          ), "bg-slate-950/40"),
+          cell("w", t("future.concl.why"), "why", t("future.concl.whyOpen", {
+            n: sm.n.toLocaleString(), unit: t(histActive ? "future.concl.unitHist" : "future.concl.unitRand"), w: Math.round(sm.winPct),
+            f: usd(Math.max(0, fair)), side: t(credit ? "future.concl.sideCredit" : "future.concl.sideDebit"), b: usd(p.basis),
+            cmp: t(`future.concl.cmp${hd.avg >= 0 ? "Good" : "Bad"}${credit ? "Credit" : "Debit"}`, { p: Math.abs(edgePct).toFixed(0) }),
+          })),
+          cell("r", t("future.concl.risk"), "risk", (
+            <>
+              {rules.stopMult != null && sl.pct > 0
+                ? t("future.concl.riskOpen", { k: Math.max(0, Math.round(sl.pct / 10)), l: usd(sl.avgPnl), w: money(sm.worst5) })
+                : t("future.concl.riskNoSl", { w: money(sm.worst5) })}
+              {earnDay != null && <> {t("future.concl.riskEarn", { d: earnDay })}</>}
+            </>
+          )),
+          cell("n", t("future.concl.next"), "next", (
+            <>
+              {t(`future.concl.next_${verdict}`)}
+              {altBest && (
+                <>
+                  {" "}
+                  {t("future.concl.alt", {
+                    r: describeRules(altBest.rules),
+                    d: altBest.why === "avg" ? t("future.concl.altMore", { v: usd(altBest.avg - alt!.current.avg) }) : t("future.concl.altLessRisk", { v: usd(altBest.worst5 - alt!.current.worst5) }),
+                  })}{" "}
+                  <button onClick={() => setRules(altBest.rules)} className="rounded border border-emerald-500 bg-emerald-600/20 px-1.5 py-0 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-600/40">
+                    {t("future.concl.apply")}
+                  </button>
+                </>
+              )}
+            </>
+          )),
+        ]);
+      }
+    } else if (scenario && scenState) {
+      const title = t("future.concl.scen", { d: Math.round(scenario.day), s: scenario.price.toFixed(2) });
+      const nowPnl = fork ? fork.pnl : scenState.kind === "hitTp" || scenState.kind === "hitSl" ? scenState.pnl : 0;
+      if (scenState.kind === "hitTp" || scenState.kind === "hitSl" || scenState.kind === "afterClose") {
+        const k = scenState.kind === "hitTp" ? "tp" : scenState.kind === "hitSl" ? "sl" : "time";
+        conclBox = box(k === "sl" ? "bad" : "good", [
+          cell("v", title, "verdict", <span className={`block text-[17px] font-bold ${VCLS[k]}`}>{t(`future.concl.s_${k}`)}</span>, "bg-slate-950/40"),
+          cell("w", t("future.concl.why"), "why", t("future.concl.whyScenHit", { now: money(nowPnl), line: t(k === "tp" ? "future.concl.lineTp" : k === "sl" ? "future.concl.lineSl" : "future.concl.lineTime") })),
+          cell("r", t("future.concl.risk"), "risk", <span className="text-slate-400">—</span>),
+          cell("n", t("future.concl.next"), "next", t("future.concl.next_s_hit")),
+        ]);
+      } else if (forkShown && fork) {
+        const fs = forkShown.stats;
+        const cost = exitCost(p, fork.day, fork.spot);
+        const closeNow = fork.pnl - cost;
+        const noise = Math.max((2 * fs.sd) / Math.sqrt(Math.max(1, fs.n)), 0.03 * p.basis);
+        const k = fs.avg > closeNow + noise ? "hold" : fs.avg < closeNow - noise ? "close" : "even";
+        conclBox = box(k === "close" ? "flat" : k === "hold" ? "good" : "", [
+          cell("v", title, "verdict", <span className={`block text-[17px] font-bold ${VCLS[k]}`}>{t(`future.concl.s_${k}`)}</span>, "bg-slate-950/40"),
+          cell("w", t("future.concl.why"), "why", t("future.concl.whyScen", { now: money(fork.pnl), c: usd(cost), avg: money(fs.avg), w: Math.round(fs.winPct) })),
+          cell("r", t("future.concl.risk"), "risk", t("future.concl.riskScen", { sl: Math.round(fs.byReason.sl.pct), w: money(fs.worst5) })),
+          cell("n", t("future.concl.next"), "next", t(`future.concl.next_s_${k}`)),
+        ]);
+      } else {
+        conclBox = box("", [cell("v", title, "verdict", <span className="text-slate-400">{t("future.concl.pending")}</span>)]);
+      }
+    }
+  }
+
+  // 彩色线举个例子：选中的那条是什么（历史真实走法=哪一段真实行情；随机=那一类里排在正中间的一条），为什么有的线很短
+  const selStory = stories.length ? stories[Math.min(storyIdx, stories.length - 1)] : null;
+  const storyExample = selStory
+    ? t(selStory.start != null ? "future.howPlaneEgHist" : "future.howPlaneEgRand", {
+        name: t(`future.story_${selStory.kind}`), date: fmtYmd(selStory.start ?? 0), d: days, s: spot.toFixed(2), e: selStory.day,
+        v: `${selStory.pnl >= 0 ? "+" : "−"}$${Math.abs(selStory.pnl).toFixed(2)}`, n: totalN.toLocaleString(),
+      })
+    : null;
   // "怎么看这张图"：平面图的几条带上这一次推演的真实数字（典型结局占比、全拿到期赚亏），立体图是固定说明
   const howLines =
     view === "3d"
@@ -1053,6 +1387,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
           stories.length
             ? t("future.howPlane3", { list: stories.map((st) => `${t(`future.story_${st.kind}`)}${shareText(st.share)}`).join(t("future.sep")) })
             : t("future.howPlane3Pending"),
+          ...(storyExample ? [storyExample] : []),
           t("future.howPlane4"),
           run.done ? t("future.howPlane5", { w: Math.round(run.done.hold.winPct), l: Math.round(100 - run.done.hold.winPct) }) : t("future.howPlane5Pending"),
           t("future.howPlane6"),
@@ -1065,7 +1400,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
           ? t("future.running")
           : !finished
             ? t("future.batch", { i: revealed, n: BATCHES, per: (histInput ? Math.round(histInput.count / BATCHES) : PER_BATCH).toLocaleString() })
-            : t(stability?.similar ? "future.stableYes" : "future.stableNo")}
+            : t(stability?.similar ? "future.stableYes" : "future.stableNo", { n: totalN.toLocaleString() })}
       </span>
       {view === "3d" ? (
         <>
@@ -1075,13 +1410,17 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
         </>
       ) : (
         <>
-          <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-emerald-500/40" />{t("future.lgZoneGain")}</span>
-          <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-rose-500/50" />{t("future.lgZoneLoss")}</span>
-          <span>{t("future.lgBe")}</span>
-          <span>{t("future.lgStories")}</span>
+          <InfoTip {...tip("zones")}><span className="inline-block h-2 w-3 rounded-sm bg-emerald-500/40" />{t("future.lgZoneGain")}<span className="inline-block h-2 w-3 rounded-sm bg-rose-500/50" />{t("future.lgZoneLoss")}</InfoTip>
+          <InfoTip {...tip("be")}><span className="inline-block w-4 border-t-2 border-dashed border-amber-400" />{t("future.lgBeY")}</InfoTip>
+          <InfoTip {...tip("median")}><span className="inline-block w-4 border-t-2 border-slate-100" />{t("future.lgMedian")}</InfoTip>
+          <InfoTip {...tip("bands")}><span className="inline-block h-2 w-3 rounded-sm bg-slate-400/50" />{t("future.lgBands")}</InfoTip>
+          <InfoTip {...tip("story")}><span className="inline-block w-4 border-t-2 border-emerald-400" />{t("future.lgStory")}</InfoTip>
+          <InfoTip {...tip("after")}><span className="inline-block w-4 border-t-2 border-dotted border-emerald-400" />{t("future.lgAfter")}</InfoTip>
+          <InfoTip {...tip("strikes")}><span className="inline-block w-4 border-t border-dotted border-slate-300" />{t("future.lgStrikes")}</InfoTip>
+          {earnDay != null && <InfoTip {...tip("earn")}><span className="inline-block h-3 w-0.5 bg-orange-400" />{t("future.lgEarn")}</InfoTip>}
         </>
       )}
-      {forkKey && <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-sky-400/80" />{t("future.lgFork")}</span>}
+      {forkKey && <InfoTip {...tip("scen")}><span className="inline-block h-2 w-3 rounded-sm bg-sky-400/80" />{t("future.lgFork")}</InfoTip>}
     </div>
   );
 
@@ -1089,9 +1428,35 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
     <div className="flex h-full flex-col gap-2 overflow-y-auto pr-1 text-[11px] text-slate-300">
       {controls}
       {/* 图的高度跟着窗口走（窗口高度的70%，至少420、最多760像素）：立体图太矮看不清；下面的卡片在右栏里往下滚 */}
+      {/* 随机 vs 历史真实走法：对图里每样东西的影响（2026-10-08 xue要的对照表） */}
+      {pathHelp && (
+        <div className="shrink-0 overflow-x-auto rounded-md border border-slate-700 bg-slate-900/70 px-3 py-2">
+          <div className="mb-1 text-[12px] font-bold text-slate-100">{t("future.pathCmpTitle")}</div>
+          <table className="w-full min-w-[560px] border-collapse text-[11px]">
+            <thead>
+              <tr className="text-left text-slate-400">
+                <th className="w-[26%] border-b border-slate-700 py-1 pr-2 font-normal">{t("future.pathCmpH0")}</th>
+                <th className="border-b border-slate-700 py-1 pr-2 font-normal">{t("future.pathRandom")}</th>
+                <th className="border-b border-slate-700 py-1 font-normal">{t("future.pathHist")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[1, 2, 3, 4, 5, 6, 7].map((i) => (
+                <tr key={i} className="align-top">
+                  <td className="border-b border-slate-800 py-1 pr-2 font-semibold text-slate-200">{t(`future.pathCmp${i}a`)}</td>
+                  <td className="border-b border-slate-800 py-1 pr-2 text-slate-300">{t(`future.pathCmp${i}b`)}</td>
+                  <td className="border-b border-slate-800 py-1 text-slate-300">{t(`future.pathCmp${i}c`)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="mt-1 text-[11px] text-sky-100">{t("future.pathCmpSum")}</div>
+        </div>
+      )}
+      {conclBox}
       {stories.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-          <span className="text-slate-400">{t("future.pickStory")}</span>
+          <InfoTip {...tip("pick")}><span className="text-slate-400">{t("future.pickStory")}</span></InfoTip>
           {stories.map((st, i) => (
             <button
               key={st.kind}
@@ -1104,7 +1469,15 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
           ))}
         </div>
       )}
-      <div className="h-[clamp(420px,70vh,760px)] shrink-0 overflow-hidden rounded-md border border-slate-800">
+      {/* 平面图矮一些（窗口高度的55%，340～560像素）：整张图连同上下的小柱子能一屏看全；立体图还是高一点才看得清 */}
+      <div className={`relative ${view === "3d" ? "h-[clamp(420px,70vh,760px)]" : "h-[clamp(340px,55vh,560px)]"} shrink-0 overflow-hidden rounded-md border border-slate-800`}>
+        {/* 平面图上两处不好在图例里说的：上面的小柱子、右边的横条，直接在图上放ⓘ */}
+        {view === "plane" && run.done && (
+          <>
+            <span className="absolute z-10" style={{ left: PLANE_ML, top: 3 }}><InfoTip {...tip("exits")}><span className="text-[10px] text-sky-300/80">{t("future.tipExitsLbl")}</span></InfoTip></span>
+            <span className="absolute right-1 z-10" style={{ top: 2 }}><InfoTip {...tip("endAll")}><span className="text-[10px] text-sky-300/80">{t("future.tipEndLbl")}</span></InfoTip></span>
+          </>
+        )}
         {view === "3d" ? (
           <SimSurface3D
             model={model}
@@ -1131,6 +1504,8 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
         )}
       </div>
       {legend}
+      {/* 怎么看这张图：紧跟在图下面（2026-10-07 xue：原来隔着"你的钱会怎么变"，找不到） */}
+      <HowToRead lines={howLines} />
       {/* ⑤ 你的钱会怎么变：平面图正下方，同一批走势、同一条时间轴（左右边距跟平面图一样） */}
       {view === "plane" && run.done?.money && run.done.money.length > 0 && (
         <MoneyPanel
@@ -1151,7 +1526,6 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
           n={run.done.stats.n}
         />
       )}
-      <HowToRead lines={howLines} />
       <div className="shrink-0 rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 leading-relaxed">
         {scenTop}
         {moved && <div className="mb-1 mt-2 border-t border-slate-800 pt-2 text-[12px] font-bold text-slate-100">{t("future.tradeTitle", { n: totalN.toLocaleString() })}</div>}
@@ -1164,7 +1538,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
         )}
         {!moved && <div className="mt-1.5 border-t border-slate-800 pt-1.5 text-sky-100">{t("future.scenNone")}</div>}
         <div className="mt-1.5 text-[10px] text-slate-500">
-          {t(credit ? "winRate.basisCredit" : "winRate.basisDebit", { v: usd(p.basis) })} {t(histActive ? "future.modelHist" : "future.model")}
+          {t(credit ? "winRate.basisCredit" : "winRate.basisDebit", { v: usd(p.basis) })} {t(histActive ? "future.modelHist" : "future.model")}{effSkew > 0 && ` ${t("future.modelSkew", { k: (effSkew * 10).toFixed(1) })}`}
         </div>
       </div>
       <details className="shrink-0 rounded-md border border-slate-800 px-3 py-1.5">
@@ -1175,7 +1549,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork, mark
             {curve ? (
               <CanvasBox
                 className="h-[170px]"
-                draw={(g, W, H) => drawVolCurve(g, W, H, { curve: curve.curve as CurvePoint[], ivCenter: marketIv, vol, breakevenVol: be?.vol ?? null, money, t })}
+                draw={(g, W, H) => drawVolCurve(g, W, H, { curve: curve.curve as CurvePoint[], ivCenter: Math.max(0.01, ivCmp + dV / 100), vol: runVol, breakevenVol: be?.vol ?? null, money, t })}
                 deps={[curve, vol, marketIv, t]}
                 label={t("winRate.curveTitle")}
               />

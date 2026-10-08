@@ -12,9 +12,12 @@ import { matchStrategy } from "@/lib/matchStrategy";
 import { addCalendarDays } from "@/lib/dateUtils";
 import { comboBaseIv } from "@/lib/stockOptionMap";
 import { ncdf } from "@/lib/bs";
-import { openingBasis, isCreditCombo } from "@/lib/winRateSim";
+import { openingBasis, isCreditCombo, prepareSim, earningsShift } from "@/lib/winRateSim";
+import { comboDelta } from "@/lib/legDelta";
 import { adviseCombo, ADVICE_DRIVER, type Advice, type AdviceAction, type AdviceDriver } from "@/lib/positionAdvisor";
 import { useSimSettings, useHv20, fracLabel } from "@/lib/simSettings";
+import { exEarningsVol, type EarningsCtx } from "@/lib/earnings";
+import EarningsRow from "@/components/EarningsRow";
 
 interface Props {
   mode: "analysis" | "tracked";
@@ -32,6 +35,12 @@ interface Props {
   // 推演未来：市场预期波动（最近到期日平值IV，见lib/atmIv.ts），跟地形图喇叭口、万次推演、波动率滑块小字同一个数；
   // 不传或null就按各腿隐含波动率平均（今昔对比一直按各腿平均：拿不到开仓那天的期权链）。
   marketIv?: number | null;
+  // 第3组：微笑斜率（下跌时IV上升，设定里可关）和各腿半个买卖价差（提前平仓的成交损耗），下标跟openingLegs一致
+  skew?: number;
+  halfSpread?: (number | undefined)[];
+  // 财报这一组：下一次财报（App的useEarningsContext）；liveSpot=今天的股价（市场押的幅度按今天的期权价算）
+  earnings?: EarningsCtx | null;
+  liveSpot?: number;
 }
 
 const ACTION_CLS: Record<AdviceAction, string> = {
@@ -52,9 +61,10 @@ const pct0 = (v: number) => String(Math.round(v * 100));
 const pctSmall = (v: number) => (Math.abs(v) < 0.01 ? (v * 100).toFixed(1) : String(Math.round(v * 100)));
 const fmtStrike = (k: number) => (Number.isInteger(k) ? String(k) : k.toFixed(2));
 
-export default function PositionAdviceCard({ mode, symbol, openingLegs, openingSpot, openingAt, nowLegs, nowSpot, nowDay, pnl, adjusted, customPresets, onOpenSettings, marketIv }: Props) {
+export default function PositionAdviceCard({ mode, symbol, openingLegs, openingSpot, openingAt, nowLegs, nowSpot, nowDay, pnl, adjusted, customPresets, onOpenSettings, marketIv, skew = 0, halfSpread, earnings = null, liveSpot }: Props) {
   const { t, lang } = useI18n();
-  const { rules: rulesBySide, volOverride, driftPct } = useSimSettings(symbol);
+  const { rules: rulesBySide, volOverride, driftPct, ivSkewOn, earnJumpOn } = useSimSettings(symbol);
+  const effSkew = ivSkewOn ? skew : 0;
   const hv = useHv20(symbol);
 
   const basis = useMemo(() => openingBasis(openingLegs), [openingLegs]);
@@ -73,6 +83,23 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
   const ivForDefault = (mode === "analysis" ? openingIv : nowIv) ?? 0.3;
   const vol = volOverride != null ? volOverride / 100 : hv.status === "ok" && hv.hv20 ? hv.hv20 : ivForDefault;
   const volReady = volOverride != null || hv.status !== "loading";
+  // 财报这一组：从此刻算第几天有财报（此刻=情景点/今天；剩余天数=此刻腿位的最早到期）。开关打开、有跳空大小时，建议里的推演也加跳空（跟万次推演一样）
+  const remaining = nowLegs ? Math.max(0, Math.round(Math.min(...nowLegs.filter((l) => l.kind !== "stock" && !l.disabled).map((l) => l.dte), Infinity))) : 0;
+  const earnRel = earnings ? earnings.dayFromOpen - Math.round(nowDay) : null;
+  const earnIn = earnRel != null && earnRel >= 1 && earnRel <= remaining ? earnRel : null;
+  const earnSim = earnJumpOn && earnIn != null && earnings?.jump != null && earnings.jump > 0 ? { day: earnIn, jump: earnings.jump } : null;
+  const volFromIv = volOverride == null && !(hv.status === "ok" && hv.hv20);
+  const simVol = earnSim && volFromIv ? exEarningsVol(vol, earnSim.jump, remaining) : vol;
+  // 推演未来：开了财报跳空时，情景点的腿位和盈亏按财报前后隐含波动率的变化重算（跟万次推演从情景点出发那团云同一份，见winRateSim.earningsShift）
+  const shift = useMemo(() => {
+    if (mode !== "analysis" || !earnJumpOn || !earnings || earnings.jump == null || !(earnings.jump > 0) || !nowLegs || basis == null) return null;
+    if (earnings.dayFromOpen < 1 || earnings.dayFromOpen > totalTerm) return null;
+    const pe = prepareSim({ legs: openingLegs, spot: openingSpot, basis, pnlOffset: 0, rules, totalTerm, earnings: { day: earnings.dayFromOpen, jump: earnings.jump } });
+    return pe ? earningsShift(pe, nowDay, nowSpot, nowLegs) : null;
+  }, [mode, earnJumpOn, earnings, nowLegs, basis, totalTerm, openingLegs, openingSpot, rules, nowDay, nowSpot]);
+  const advLegs = shift ? shift.legs : nowLegs;
+  const advPnl = pnl + (shift?.dPnl ?? 0);
+  const earnKey = earnSim ? `${earnSim.day}:${earnSim.jump.toFixed(4)}` : "";
 
   const descLegs = mode === "tracked" && nowLegs ? nowLegs : openingLegs;
   const name = useMemo(() => {
@@ -85,12 +112,12 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
   const [advice, setAdvice] = useState<Advice | null>(null);
   const [sdOpen, setSdOpen] = useState(false);
   const runKey = useMemo(() => {
-    if (!nowLegs || basis == null || hasStock || !volReady) return "";
-    const lk = nowLegs.map((l) => [l.action, l.type, l.strike, l.dte.toFixed(2), l.premium.toFixed(4), l.qty ?? 1].join(":")).join("|");
-    return [lk, nowSpot.toFixed(3), pnl.toFixed(4), basis.toFixed(4), JSON.stringify(rules), vol.toFixed(4), driftPct, totalTerm, credit, useMarket && nowIv != null ? nowIv.toFixed(4) : ""].join("#");
-  }, [nowLegs, nowSpot, pnl, basis, hasStock, volReady, rules, vol, driftPct, totalTerm, credit, useMarket, nowIv]);
+    if (!advLegs || basis == null || hasStock || !volReady) return "";
+    const lk = advLegs.map((l) => [l.action, l.type, l.strike, l.dte.toFixed(2), l.premium.toFixed(4), l.qty ?? 1].join(":")).join("|");
+    return [lk, nowSpot.toFixed(3), advPnl.toFixed(4), basis.toFixed(4), JSON.stringify(rules), simVol.toFixed(4), driftPct, totalTerm, credit, useMarket && nowIv != null ? nowIv.toFixed(4) : "", effSkew.toFixed(3), (halfSpread ?? []).map((h) => (h == null ? "-" : h.toFixed(3))).join(","), earnKey].join("#");
+  }, [advLegs, nowSpot, advPnl, basis, hasStock, volReady, rules, simVol, driftPct, totalTerm, credit, useMarket, nowIv, effSkew, halfSpread, earnKey]);
   useEffect(() => {
-    if (!runKey || !nowLegs || basis == null) {
+    if (!runKey || !advLegs || basis == null) {
       setAdvice(null);
       return;
     }
@@ -98,7 +125,7 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
       try {
         setAdvice(
           adviseCombo({
-            legs: nowLegs, spot: nowSpot, basis, credit, pnl, totalTerm, rules, vol, iv: useMarket && nowIv != null ? nowIv : undefined,
+            legs: advLegs, spot: nowSpot, basis, credit, pnl: advPnl, totalTerm, rules, vol: simVol, earnings: earnSim, iv: useMarket && nowIv != null ? nowIv : undefined, skew: effSkew, halfSpread: advLegs.length === (halfSpread ?? []).length ? halfSpread : undefined,
             drift: credit ? 0 : driftPct / 100, n: mode === "tracked" ? 3000 : 1500, seed: 20261001,
           }),
         );
@@ -217,12 +244,31 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
       </>
     );
     const timeTxt = t("advice.time", { p: pct0(s.elapsed), d: s.remainingDays });
+    // 方向（2026-10-06）：组合Delta——股价动$1钱动多少、相当于拿着多少股；再说到盈亏平衡点时会变成多少（IV按各腿不变）。
+    // 只说大小和变化，不用它判断看涨看跌（见lib/legDelta.ts开头）。
+    let dirTxt: string | null = null;
+    const dNow = nowLegs ? comboDelta(nowLegs, S) : null;
+    if (dNow != null) {
+      const sh = (d: number) => `${d >= 0 ? "+" : "−"}${Math.abs(d).toFixed(2)}`;
+      const shares = (d: number) => Math.round(d * 100);
+      dirTxt = Math.abs(dNow) < 0.005
+        ? t("advice.dirFlat")
+        : t("advice.dir", { d: sh(dNow), n: shares(dNow), v: usd(dNow), up: t(dNow > 0 ? "advice.dirGain" : "advice.dirLose"), dn: t(dNow > 0 ? "advice.dirLose" : "advice.dirGain") });
+      const be = s.nearestBe;
+      if (be != null && nowLegs && Math.abs(be / S - 1) > 0.003) {
+        const dBe = comboDelta(nowLegs, S, be);
+        if (dBe != null && Math.abs(dBe - dNow) >= 0.02) {
+          dirTxt += t(Math.abs(dBe) > Math.abs(dNow) ? "advice.dirAtBeMore" : "advice.dirAtBeLess", { be: be.toFixed(2), d: sh(dBe), n: shares(dBe) });
+        }
+      }
+    }
     const base = t(cr ? "advice.basePremium" : "advice.baseCost");
     const pnlTxt =
       Math.abs(s.pnl) < 0.005
         ? t("advice.pnlFlat")
         : t(s.pnl > 0 ? "advice.pnlUp" : "advice.pnlDown", { v: usd(s.pnl), base, p: pct0(Math.abs(s.pnlPct)) }) +
-          (s.pnl > 0 && s.capture != null ? t("advice.pnlCapture", { c: pct0(s.capture) }) : "");
+          (s.pnl > 0 && s.capture != null ? t("advice.pnlCapture", { c: pct0(s.capture) }) : "") +
+          (shift && Math.abs(shift.dPnl) >= 0.005 ? t("earn.scenShift", { v: usd(shift.dPnl), dir: t(shift.dPnl > 0 ? "earn.more" : "earn.less") }) : "");
     const tpTxt = r.takeProfitPct == null ? t("advice.tpNone") : t("advice.tpRule", { x: t("winRate.tpOpt", { n: Math.round(r.takeProfitPct * 100) }) });
     const slTxt = r.stopMult == null
       ? t("advice.slNone")
@@ -235,6 +281,7 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
     const exits = [
       r.takeProfitPct != null ? t("advice.exitTp", { p: pct0(s.pTp) }) : null,
       r.stopMult != null ? t("advice.exitSl", { p: pct0(s.pSl) }) : null,
+      r.deltaExit != null ? t("advice.exitDelta", { p: pct0(s.pDelta), d: r.deltaExit.toFixed(2) }) : null,
       r.closeFrac > 0 ? t("advice.exitTime", { p: pct0(s.pTime), d: Math.max(1, Math.round(term * r.closeFrac)) }) : null,
       r.closeFrac === 0 || s.pExpiry > 0.005 ? t("advice.exitExpiry", { p: pct0(s.pExpiry) }) : null,
     ].filter(Boolean).join(t("advice.listSep"));
@@ -269,6 +316,23 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
         </div>
         {row("price", t("advice.lblPrice"), [priceCell])}
         {row("time", t("advice.lblTime"), [timeTxt])}
+        {dirTxt && (
+          <div className="grid grid-cols-[14px_34px_1fr] gap-x-1 text-slate-400">
+            <span />
+            <span className="text-slate-500">{t("advice.lblDir")}</span>
+            <span className="min-w-0">{dirTxt}</span>
+          </div>
+        )}
+        {earnings && nowLegs && (
+          <EarningsRow
+            earnings={earnings}
+            day={earnIn}
+            legs={nowLegs}
+            spot={liveSpot && liveSpot > 0 ? liveSpot : nowSpot}
+            expiryDate={fmtDate(addCalendarDays(openingAt, totalTerm))}
+            afterNow={earnRel != null && earnRel < 1 && earnings.dayFromOpen <= totalTerm}
+          />
+        )}
         {row("pnl", t("advice.lblPnl"), [pnlTxt])}
         {row("forward", t("advice.lblForward"), [settingsTxt, fwdTxt, ...unreachable, roomTxt])}
         {s.flags.map((f) => (

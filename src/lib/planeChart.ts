@@ -16,7 +16,8 @@ export interface PlaneFrame {
 }
 
 // 赚/亏两区 + 分界线。days=横轴最后一天（推演未来=到期，今昔对比=今天）。
-export function drawZones(g: CanvasRenderingContext2D, model: MapModel, days: number, f: PlaneFrame) {
+// beColor：盈亏平衡分界线的颜色。万次推演用黄色（白色是中位数线）；今昔对比的真实走势是金色实线，那边仍用白色
+export function drawZones(g: CanvasRenderingContext2D, model: MapModel, days: number, f: PlaneFrame, beColor = "rgba(251,191,36,0.95)") {
   const NX = Math.min(120, Math.max(24, Math.round(days * 3)));
   const NY = 90;
   const cw = f.width / NX, ch = f.height / NY;
@@ -45,8 +46,9 @@ export function drawZones(g: CanvasRenderingContext2D, model: MapModel, days: nu
     cross.push(col);
   }
   // 分界线：相邻两列交点个数一样时按顺序连起来
-  g.strokeStyle = "rgba(248,250,252,0.85)";
-  g.lineWidth = 1.4;
+  // 黄色虚线（2026-10-08：原来白色，跟白色的中位数线分不清）
+  g.strokeStyle = beColor;
+  g.lineWidth = 1.6;
   g.setLineDash([5, 4]);
   for (let c = 1; c <= NX; c++) {
     const a = cross[c - 1], b = cross[c];

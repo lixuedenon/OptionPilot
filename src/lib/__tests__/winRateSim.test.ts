@@ -7,7 +7,7 @@ import { priceCombo } from "@/lib/pricing";
 import {
   prepareSim, simPnlAt, runBatch, computeStats, batchStability, breakevenCurve, findBreakeven,
   openingBasis, isCreditCombo, startStatus, volGrid, percentileOf, moveInSigma,
-  deltaPerContract, driftGrid, driftCurve, findDriftBreakeven, driftCushion, probPriceBeyond, mulberry32, type SimRules,
+  deltaPerContract, driftGrid, exitCost, driftCurve, findDriftBreakeven, driftCushion, probPriceBeyond, mulberry32, type SimRules,
 } from "@/lib/winRateSim";
 import { blackScholes } from "@/lib/bs";
 
@@ -28,6 +28,26 @@ const setup = (rules: SimRules = RULES, extra: Partial<{ pnlOffset: number }> = 
 });
 
 describe("winRateSim", () => {
+  it("第3组：提前平仓扣成交损耗、拿到期不扣；下跌时IV上升让Put更值钱；卖出腿Delta碰线就下车", () => {
+    const p = prepareSim(setup())!;
+    const { outcomes } = runBatch(p, 0.3, 1500, 3);
+    for (const o of outcomes) {
+      if (o.reason === "expiry") expect(o.cost ?? 0).toBe(0);
+      else expect(o.cost!).toBeGreaterThan(0);
+    }
+    // 实时报价的半个价差比例：用10%时损耗比默认的大
+    const wide = prepareSim({ ...setup(), halfSpread: condor.map(() => 0.1) })!;
+    expect(exitCost(wide, 5, 100)).toBeGreaterThan(exitCost(p, 5, 100));
+    // 微笑：股价跌到94时，卖Put那侧的组合更亏（IV上升）
+    const sk = prepareSim({ ...setup(), skew: 0.5 })!;
+    expect(simPnlAt(sk, 5, 94)).toBeLessThan(simPnlAt(p, 5, 94));
+    expect(simPnlAt(sk, 0, 100)).toBeCloseTo(simPnlAt(p, 0, 100), 10);
+    // Delta规则：卖出腿Delta 0.35碰线就走，出现"delta"出场
+    const pd = prepareSim(setup({ takeProfitPct: null, stopMult: null, closeFrac: 0, deltaExit: 0.35 }))!;
+    const od = runBatch(pd, 0.3, 1500, 3).outcomes;
+    expect(od.some((o) => o.reason === "delta")).toBe(true);
+  });
+
   it("hold-to-expiry: the last day is labelled expiry, never tp/sl (max profit at expiry is not a take-profit)", () => {
     const p = prepareSim(setup({ takeProfitPct: 0.5, stopMult: 2, closeFrac: 0 }))!;
     const { outcomes } = runBatch(p, 0.3, 2000, 7);
@@ -58,8 +78,8 @@ describe("winRateSim", () => {
     expect(p.endDay).toBe(22); // 30天×1/4≈8天时平仓
     const { outcomes } = runBatch(p, 0.3, 2000, 7);
     for (const o of outcomes) {
-      if (o.reason === "tp") expect(o.pnl).toBeGreaterThanOrEqual(0.5 * p.basis - 1e-9);
-      if (o.reason === "sl") expect(o.pnl).toBeLessThanOrEqual(-p.basis + 1e-9);
+      if (o.reason === "tp") expect(o.pnl + (o.cost ?? 0)).toBeGreaterThanOrEqual(0.5 * p.basis - 1e-9);
+      if (o.reason === "sl") expect(o.pnl + (o.cost ?? 0)).toBeLessThanOrEqual(-p.basis + 1e-9);
       if (o.reason === "time") expect(o.day).toBe(22);
       expect(o.reason).not.toBe("expiry");
     }

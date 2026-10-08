@@ -23,6 +23,7 @@ import { fetchLegPremium, getOptionChain, premiumFromQuote, type LegPremiumResul
 import { useI18n } from "@/i18n/I18nContext";
 import { NUMBER_RULES, blockInvalidNumberKey, useClampedNumberField, type NumberInputRule } from "@/lib/numberInput";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { optionDelta, strikeForDelta } from "@/lib/legDelta";
 
 interface Props {
   leg: Leg;
@@ -85,7 +86,14 @@ interface Props {
   locked?: boolean;
   // 今昔对比的持仓组合：方向/类型/张数/行权价/到期日锁住（换合约要走展期、平仓要走平仓，否则已实现盈亏会丢），权利金照常可改。
   contractLocked?: boolean;
+  // 选行权价的方式（LegListSection"全选"旁的开关，2026-10-06）："delta"时行权价格子换成Delta输入，按期权链挑最接近的行权价。
+  // 不传=自己选。showDelta：行权价标签旁显示这张期权的Delta（分析模式的开仓组合传true）。
+  strikeMode?: "manual" | "delta";
+  showDelta?: boolean;
 }
+
+// 按Delta选行权价的输入：填正数（0.30），Put的Delta显示成负的
+const DELTA_RULE: NumberInputRule = { min: 0.01, max: 0.99, decimals: 2 };
 
 const inp =
   "w-full rounded border border-slate-700 bg-slate-800 px-1.5 py-1 text-xs text-slate-100 focus:border-emerald-500 focus:outline-none tabular-nums";
@@ -446,6 +454,8 @@ export default function LegRow({
   onToggleSelect,
   selectable = true,
   locked = false,
+  strikeMode = "manual",
+  showDelta = false,
 }: Props) {
   const { t, lang } = useI18n();
   // 窄窗口收窄列宽，见useNarrowLegRow。
@@ -514,6 +524,27 @@ export default function LegRow({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canAutoPrice, sym, leg.dte]);
+
+  // 这张期权本身的Delta（按这条腿的权利金反推IV）；权利金没填好时为null
+  const legDeltaValue = useMemo(
+    () => (leg.kind === "stock" || !spot ? null : optionDelta(leg, spot)),
+    [leg, spot],
+  );
+  const deltaMode = strikeMode === "delta" && leg.kind !== "stock" && !fieldLocked;
+  const handleDeltaInput = (target: number) => {
+    setPriceNote(null);
+    if (!chain || !spot) {
+      setPriceError(t("leg.deltaNoChain"));
+      return;
+    }
+    const hit = strikeForDelta(chain, leg.type, spot, leg.dte, target);
+    if (!hit) {
+      setPriceError(t("leg.deltaNoChain"));
+      return;
+    }
+    setPriceError(null);
+    if (hit.strike !== leg.strike) handleSelectStrike(hit.strike);
+  };
 
   const strikeOptions = useMemo(() => {
     if (!chain) return [];
@@ -860,8 +891,30 @@ export default function LegRow({
       {isMobile && <div className="ml-auto">{menu}</div>}
       {isMobile && <div className="h-0 basis-full" aria-hidden />}
       <div ref={strikeMenuRef} className="relative flex shrink-0 items-end gap-0.5">
-        <NumField label={t("leg.strike")} value={leg.strike} step={0.5} width={isMobile ? "72px" : narrow ? "44px" : "52px"} onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ strike: v }); }} disabled={fieldLocked} title={lockTitle} rule={NUMBER_RULES.price} />
-        {!fieldLocked && (
+        {deltaMode ? (
+          // 按Delta：格子里填Delta（正数），标签上显示挑到的行权价；宽度跟行权价格子一样，整行不变宽
+          <NumField
+            label={`Δ→${leg.strike}`}
+            value={legDeltaValue != null ? Math.round(Math.abs(legDeltaValue) * 100) / 100 : 0.3}
+            step={0.05}
+            width={isMobile ? "72px" : narrow ? "44px" : "52px"}
+            onChange={handleDeltaInput}
+            title={t("leg.deltaInputHint", { k: leg.strike })}
+            rule={DELTA_RULE}
+          />
+        ) : (
+          <NumField
+            label={showDelta && legDeltaValue != null ? `${t("leg.strike")} Δ${legDeltaValue.toFixed(2)}` : t("leg.strike")}
+            value={leg.strike}
+            step={0.5}
+            width={isMobile ? "72px" : narrow ? "44px" : "52px"}
+            onChange={(v) => { setPriceError(null); setPriceNote(null); onChange({ strike: v }); }}
+            disabled={fieldLocked}
+            title={lockTitle ?? (showDelta && legDeltaValue != null ? t("leg.deltaHint", { d: legDeltaValue.toFixed(2), p: Math.round(Math.abs(legDeltaValue) * 100) }) : undefined)}
+            rule={NUMBER_RULES.price}
+          />
+        )}
+        {!fieldLocked && !deltaMode && (
           <button
             onClick={() => setStrikeMenuOpen((v) => !v)}
             disabled={strikeOptions.length === 0}

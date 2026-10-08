@@ -2,7 +2,7 @@
 // "万次推演"的后台线程。main：从开仓出发跑10批×1000条，逐批回传累计的密度云和下车点（动画），最后回传合计、
 // "一直拿到期"的对比、到期落点、换几种规则的对比和盈亏平衡波动率；fork：从情景点出发再跑一团（跟持仓建议卡片同一组走势）。
 import {
-  prepareSim, simPnlAt, mulberry32, computeStats, histogram, holdOutcomes, breakevenCurve, findBreakeven, curvePathCount, volGrid, deltaPerContract, driftGrid, driftCurve, findDriftBreakeven,
+  prepareSim, simPnlAt, mulberry32, runBatch, computeStats, histogram, holdOutcomes, breakevenCurve, findBreakeven, curvePathCount, volGrid, deltaPerContract, driftGrid, driftCurve, findDriftBreakeven,
   type SimSetup, type SimStats, type Histogram, type CurvePoint, type Breakeven, type DriftPoint, type PathOutcome,
 } from "./winRateSim";
 import { newDensity, runCloud, suggestRules, PriceStore, priceBands, pickStories, moneyBands, FORK_PATHS, FORK_SEED, type GridSpec, type ExitPoint, type EndDist, type RuleSuggestion, type Band, type Story } from "./futureSim";
@@ -26,7 +26,9 @@ export interface StabRow {
 }
 
 export type FutureRequest =
-  | { kind: "main"; runId: number; setup: SimSetup; vol: number; ivCenter: number; batches: number; perBatch: number; samples: number; seed: number; grid: GridSpec; debit: boolean; hist?: HistInput }
+  | { kind: "main"; runId: number; setup: SimSetup; vol: number; ivCenter: number; batches: number; perBatch: number; samples: number; seed: number; grid: GridSpec; debit: boolean; hist?: HistInput;
+      // 财报这一组：setup里带了财报跳空时，另外按"不加跳空"（波动用noEarnVol）跑一小批，结论卡片说"加了跳空后变了多少"
+      noEarnVol?: number }
   | { kind: "fork"; runId: number; setup: SimSetup; vol: number; startDay: number; samples: number; grid: GridSpec; hist?: HistInput }
   // 回看：站在开仓那天，按开仓时的隐含波动率（市场当时的预期），组合不动走到今天（grid.days=今天是第几天）。
   // checkDays：真实路径上存过快照的那几天，回传那几天5000条走势的股价和盈亏（排好序），用来说"那天你在第几位"。
@@ -48,17 +50,23 @@ export type FutureResponse =
   // bands：到这一批为止全部走势每天股价的范围（平面图的范围带）
   | { runId: number; type: "batch"; index: number; stats: SimStats; holding: Float32Array; after: Float32Array; exits: ExitPoint[]; samples: Sample[]; bands: Band[] }
   // exitDays：每天有多少条按各规则下车（下标=第几天），用来说"走到情景那天之前已经有多少下车了"
-  | { runId: number; type: "done"; stats: SimStats; hold: SimStats; first: SimStats; hist: Histogram; end: EndDist; avgWin: number; avgLoss: number; holdAvgWin: number; holdAvgLoss: number; exitDays: Record<"tp" | "sl" | "time", number[]>; stories: Story[]; endPrices: number[]; money: Band[];
+  | { runId: number; type: "done"; stats: SimStats; hold: SimStats; first: SimStats; hist: Histogram; end: EndDist; avgWin: number; avgLoss: number; holdAvgWin: number; holdAvgLoss: number; exitDays: Record<"tp" | "sl" | "delta" | "time", number[]>; stories: Story[]; endPrices: number[]; money: Band[];
       // 跟只买股票比：同一批走势、同样的天数，股价最后涨了的比例和平均涨跌（小数）
       stock: { win: number; avg: number };
       stab: StabRow[] | null }
   | { runId: number; type: "alt"; suggestion: RuleSuggestion | null }
+  | { runId: number; type: "earn"; without: SimStats }
   | { runId: number; type: "curve"; curve: CurvePoint[]; breakeven: Breakeven; delta: number; driftCurve: DriftPoint[] | null; driftBreakeven: number | null }
   | { runId: number; type: "fork"; stats: SimStats; holding: Float32Array; samples: Sample[]; end: EndDist }
   | { runId: number; type: "retro"; sorted: number[]; prices: number[]; days: RetroDay[]; holding: Float32Array; samples: Sample[]; end: EndDist; bands: Band[] }
   | { runId: number; type: "error"; message: string };
 
 const ALT_SEED = 20261003;
+// 历史走法的分叉云：段数超过FORK_PATHS时在全部段里等间隔挑（段是按日期排的，取前面的会只剩最早那几年的行情）
+function forkIndices(count: number): number[] {
+  const n = Math.min(count, FORK_PATHS);
+  return Array.from({ length: n }, (_, i) => Math.floor((i * count) / n));
+}
 const post = (msg: FutureResponse) => (self as unknown as Worker).postMessage(msg);
 
 function winLoss(os: PathOutcome[], key: "pnl" | "holdPnl") {
@@ -103,7 +111,7 @@ self.onmessage = (e: MessageEvent<FutureRequest>) => {
     }
     if (req.kind === "fork") {
       const density = newDensity(req.grid);
-      const hist = req.hist ? { ratios: req.hist.ratios, days: req.hist.days, indices: Array.from({ length: Math.min(req.hist.count, FORK_PATHS) }, (_, i) => i) } : undefined;
+      const hist = req.hist ? { ratios: req.hist.ratios, days: req.hist.days, indices: forkIndices(req.hist.count) } : undefined;
       const run = runCloud(p, req.vol, FORK_PATHS, FORK_SEED, req.grid, density, { samples: req.samples, exitSamples: 0, dayOffset: req.startDay, hist });
       post({ runId: req.runId, type: "fork", stats: computeStats(run.outcomes), holding: density.holding, samples: run.samples, end: run.end });
       return;
@@ -139,7 +147,7 @@ self.onmessage = (e: MessageEvent<FutureRequest>) => {
       post({ runId: req.runId, type: "batch", index: i, stats, holding: density.holding.slice(), after: density.after.slice(), exits: run.exits, samples: run.samples, bands: priceBands(store) });
     }
     const hold = holdOutcomes(all, p.horizon);
-    const exitDays = { tp: new Array(p.horizon + 1).fill(0), sl: new Array(p.horizon + 1).fill(0), time: new Array(p.horizon + 1).fill(0) };
+    const exitDays = { tp: new Array(p.horizon + 1).fill(0), sl: new Array(p.horizon + 1).fill(0), delta: new Array(p.horizon + 1).fill(0), time: new Array(p.horizon + 1).fill(0) };
     for (const o of all) if (o.reason !== "expiry") exitDays[o.reason][o.day] += 1;
     // 跟只买股票比（两种走法都算）：每条走势最后一天的股价 vs 开仓价
     let up = 0, chg = 0;
@@ -174,8 +182,15 @@ self.onmessage = (e: MessageEvent<FutureRequest>) => {
     post({
       runId: req.runId, type: "done", stats: computeStats(all), hold: computeStats(hold), first: first!, hist: histogram(all), end,
       avgWin: wl.win, avgLoss: wl.loss, holdAvgWin: hwl.win, holdAvgLoss: hwl.loss, exitDays,
-      stock, stab, stories: pickStories(all, store, 4, p), money: moneyBands(store, all, p), endPrices: Array.from({ length: store.filled }, (_, k) => store.data[k * (store.days + 1) + store.days]),
+      stock, stab,
+      // 历史真实走法：每条典型结局是哪一段真实走势（all[k]对应第order[k]段），界面上举例"某年某月某日起的那几天"
+      stories: pickStories(all, store, 4, p).map((st) => (H ? { ...st, start: H.starts[order[st.index]] } : st)), money: moneyBands(store, all, p), endPrices: Array.from({ length: store.filled }, (_, k) => store.data[k * (store.days + 1) + store.days]),
     });
+    // 不加财报跳空的对照（4000条；带跳空的那组是上面的1万条）
+    if (req.setup.earnings && req.noEarnVol != null && !H) {
+      const p0 = prepareSim({ ...req.setup, earnings: null });
+      if (p0) post({ runId: req.runId, type: "earn", without: computeStats(runBatch(p0, req.noEarnVol, 4000, req.seed + 3).outcomes) });
+    }
     // 换个规则试试，在曲线之前算：它直接出现在结论卡片里。用固定种子：点"换一组随机走势"时建议不该忽有忽无。
     const altN = curvePathCount(p, 7, 3000);
     const altHist = H ? { ratios: H.ratios, days: H.days, indices: Array.from({ length: H.count }, (_, i) => i) } : undefined;

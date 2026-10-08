@@ -18,6 +18,9 @@ import { useSimSettings } from "@/lib/simSettings";
 import CanvasBox from "@/components/simCharts";
 import SimSurface3D from "@/components/SimSurface3D";
 import HowToRead from "@/components/HowToRead";
+import { getOptionChain, premiumFromQuote } from "@/lib/optionChain";
+import { holdLegPrice, holdPnl, priceNearDay } from "@/lib/adjustReview";
+import RetroHistoryPanel from "@/components/RetroHistoryPanel";
 
 interface Props {
   symbol: string;
@@ -34,6 +37,8 @@ interface Props {
   journey: { states: { day: number; spot: number; pnl: number }[]; segments: SegmentAttribution[]; totals: PnlParts & { total: number } } | null;
   todayLegs: Leg[]; // 今日组合（算到期关键价位）
   adjusted: boolean; // 中途做过调整（换合约/平掉部分腿）
+  // 第5组：每次展期/保护/对冲第一次出现的那天（buildTrackedHistory的markers）
+  markers?: { day: number; via: "roll" | "protect" | "hedge" }[];
   emptyText: string | null;
 }
 
@@ -43,7 +48,7 @@ const RETRO_SEED = 20261002;
 const ROWS = 80;
 const SAMPLES = 40;
 const VIEW_KEY = "optionpilot.simView";
-const EXIT_RGB: Record<RuleExit["kind"], string> = { tp: "#34d399", sl: "#fb7185", time: "#fbbf24" };
+const EXIT_RGB: Record<RuleExit["kind"], string> = { tp: "#34d399", sl: "#fb7185", delta: "#a78bfa", time: "#fbbf24" };
 
 function loadView(): "plane" | "3d" {
   try {
@@ -71,7 +76,7 @@ interface RetroRun {
   bands: Band[]; // 平面图的股价范围带（开仓到今天，全部走势）
 }
 
-export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowSpot, pnlNow, history, ruleExit, ivChange, ivOpen, journey, todayLegs, adjusted, emptyText }: Props) {
+export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowSpot, pnlNow, history, ruleExit, ivChange, ivOpen, journey, todayLegs, adjusted, markers = [], emptyText }: Props) {
   const { t } = useI18n();
   const { rules: rulesBySide } = useSimSettings(symbol);
   const [view, setView] = useState<"plane" | "3d">(loadView);
@@ -79,6 +84,33 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
   const [run, setRun] = useState<RetroRun | null>(null);
   const [error, setError] = useState(false);
   const workerRef = useRef<Worker | null>(null);
+  // 第5组：开仓那组原封不动拿到今天——各腿今天的期权链中间价（查不到为null）
+  const [holdMids, setHoldMids] = useState<{ key: string; mids: (number | null)[] } | null>(null);
+  const holdKey = adjusted ? `${symbol}|${todayDay}|${legs.map((l) => `${l.type}:${l.strike}:${l.dte}`).join(",")}` : "";
+  useEffect(() => {
+    if (!holdKey || !symbol) return;
+    let alive = true;
+    Promise.all(
+      legs.map(async (l) => {
+        const dteNow = l.dte - todayDay;
+        if (l.kind === "stock" || dteNow < 1) return null;
+        try {
+          const c = await getOptionChain(symbol, dteNow);
+          // 只认同一张合约：到期日差1天以内、行权价相同
+          if (c.usedExpiryDate && Math.abs(new Date(c.usedExpiryDate + "T00:00:00").getTime() - (Date.now() + dteNow * 86400000)) > 1.5 * 86400000) return null;
+          const q = (l.type === "call" ? c.calls : c.puts).find((r) => r.strike === l.strike);
+          const m = q ? premiumFromQuote(q) : 0;
+          return m > 0 ? m : null;
+        } catch {
+          return null;
+        }
+      }),
+    ).then((mids) => alive && setHoldMids({ key: holdKey, mids }));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [holdKey]);
 
   useEffect(() => {
     try {
@@ -194,7 +226,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
     g.rect(M.l, M.t, pw, ph);
     g.clip();
     // 赚/亏两区（按开仓时的隐含波动率，那一天、那个股价平仓是赚是亏）+ 开仓那天看到今天的股价范围带
-    drawZones(g, model, days, f);
+    drawZones(g, model, days, f, "rgba(248,250,252,0.85)");
     if (shown) drawBands(g, shown.bands, f);
     // 真实的路
     if (actual.length > 1) {
@@ -513,7 +545,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
   }
 
   // ⑤ 按你的规则
-  const ruleOn = rules.takeProfitPct != null || rules.stopMult != null || rules.closeFrac > 0;
+  const ruleOn = rules.takeProfitPct != null || rules.stopMult != null || rules.closeFrac > 0 || rules.deltaExit != null;
   let ruleBody: string;
   if (!ruleOn) ruleBody = t("future.replayNone");
   else if (exitShown) {
@@ -522,6 +554,14 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
     if (exitShown.day < days) ruleBody += ` ${t(diff >= 0 ? "future.replayBetter" : "future.replayWorse", { v: usd(diff) })}`;
   } else ruleBody = t("future.replayNotYet");
   sections.push(sec("replay", t("future.replayLabel"), <>{ruleBody} <span className="text-slate-500">{t("future.replayNote")}</span></>));
+  // ⑦⑧：用过去2年评价这笔 + 规则复盘（这一次 vs 过去2年）
+  sections.push(
+    <RetroHistoryPanel
+      key="rh"
+      symbol={symbol} legs={legs} spot={spot} openingAt={openingAt} todayDay={todayDay} nowSpot={nowSpot} pnlNow={pnlNow}
+      history={history} markers={markers} adjusted={adjusted} rules={rules} credit={credit} basis={basis} horizon={horizon} sec={sec}
+    />,
+  );
 
   // ⑥ 现在的处境（按今天的组合，到期时的关键价位）
   if (levels) {
@@ -544,7 +584,45 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
   } else {
     sections.push(<div key="next" className="border-t border-slate-800 pt-2 text-sky-200">{t("future.retroNext")}</div>);
   }
-  if (adjusted) sections.push(<div key="adj" className="text-[10px] text-slate-500">{t("winRate.retroAdjusted")}</div>);
+  // 第5组：你的调整值不值——原组合不调整拿到今天 vs 真实总账
+  if (adjusted) {
+    const mids = holdMids && holdMids.key === holdKey ? holdMids.mids : null;
+    if (mids) {
+      const prices = legs.map((l, i) => holdLegPrice(l, spot, nowSpot, todayDay, mids[i], priceNearDay(history, l.dte, nowSpot)));
+      const hold = holdPnl(legs, prices);
+      const diff = pnlNow - hold.pnl;
+      const firstAdj = markers.length ? markers.reduce((a, b) => (a.day <= b.day ? a : b)) : null;
+      const adjPrice = firstAdj ? priceNearDay(history, firstAdj.day, nowSpot) : null;
+      const helped = diff >= 0.005;
+      const same = Math.abs(diff) < 0.005;
+      const box = (label: string, v: number, est = false, tone?: "good" | "bad") => (
+        <div className={`flex min-w-0 flex-col gap-0.5 rounded border px-2 py-1.5 ${tone === "good" ? "border-emerald-800 bg-emerald-950/30" : tone === "bad" ? "border-rose-800 bg-rose-950/30" : "border-slate-800 bg-slate-900/50"}`}>
+          <span className="text-[10px] text-slate-400">{label}</span>
+          <span className={`text-[16px] font-extrabold tabular-nums ${v >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{signed(v)}{est && <span className="ml-1 text-[10px] font-normal text-amber-300">{t("future.adjEst")}</span>}</span>
+        </div>
+      );
+      const via = firstAdj ? t(`future.adjVia_${firstAdj.via}`) : t("future.adjVia_generic");
+      sections.push(
+        sec("adj", t("future.adjTitle"), (
+          <div className="flex flex-col gap-1.5">
+            <div className="grid grid-cols-3 gap-2">
+              {box(t("future.adjReal"), pnlNow)}
+              {box(t("future.adjHold"), hold.pnl, hold.estimated)}
+              {box(same ? t("future.adjDiffSame") : helped ? t("future.adjDiffHelped") : t("future.adjDiffHurt"), diff, false, same ? undefined : helped ? "good" : "bad")}
+            </div>
+            <div><span className="text-[11px] font-bold text-sky-300">{t("future.adjWhatLbl")}</span> {t(same ? "future.adjWhatSame" : helped ? "future.adjWhatHelped" : "future.adjWhatHurt", { via, h: signed(hold.pnl), r: signed(pnlNow), d: `$${Math.abs(diff).toFixed(2)}`, day: firstAdj?.day ?? 0 })}</div>
+            {!same && adjPrice != null && (
+              <div><span className="text-[11px] font-bold text-sky-300">{t("future.adjWhyLbl")}</span> {t(helped ? "future.adjWhyHelped" : "future.adjWhyHurt", { a: adjPrice.toFixed(2), n: nowSpot.toFixed(2) })}</div>
+            )}
+            <div><span className="text-[11px] font-bold text-sky-300">{t("future.adjHowLbl")}</span> {t(helped || same ? "future.adjHowHelped" : "future.adjHowHurt")}</div>
+            <div className="text-[10px] text-slate-500">{t(hold.estimated ? "future.adjNoteEst" : "future.adjNote")}</div>
+          </div>
+        )),
+      );
+    } else {
+      sections.push(sec("adj", t("future.adjTitle"), <span className="text-slate-500">{t("future.adjLoading")}</span>));
+    }
+  }
 
   // 开仓那天看、到今天的所有可能盈亏，金线是你现在的位置
   function drawRetro(g: CanvasRenderingContext2D, W: number, H: number) {
@@ -600,7 +678,8 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
   }
 
   // 显示顺序：先说滑块位置，紧接着说万次推演（上面那张图）里你排在哪，再拆开讲为什么、一路怎么走过来的。
-  const ORDER = ["now", "sim", "journey", "path", "replay", "levels", "next", "adj"];
+  // 规则复盘之后：调整值不值（adj）→ 用过去2年评价这笔（rh，⑦）→ 规则复盘这一次vs过去2年（rh8，⑧），再说现在的处境
+  const ORDER = ["now", "sim", "journey", "path", "replay", "adj", "rh", "rh8", "levels", "next"];
   const ordered = [...sections].sort(
     (a, b) => ORDER.indexOf(String((a as { key?: string }).key)) - ORDER.indexOf(String((b as { key?: string }).key)),
   );
@@ -622,7 +701,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
         <>
           <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-emerald-500/40" />{t("future.lgZoneGain")}</span>
           <span className="flex items-center gap-1"><span className="inline-block h-2 w-3 rounded-sm bg-rose-500/50" />{t("future.lgZoneLoss")}</span>
-          <span>{t("future.lgBe")}</span>
+          <span>{t("future.lgBeWhite")}</span>
         </>
       )}
       <span className="flex items-center gap-1"><span className="inline-block h-1 w-4 rounded-sm bg-amber-400" />{t("future.lgActual")}</span>

@@ -65,6 +65,71 @@ export function atmIvFromChain(chain: Pick<OptionChainResponse, "calls" | "puts"
 export interface MarketIv {
   iv: number | null; // 小数；legs没有期权腿时为null
   source: "atm" | "legs"; // atm=最近到期日平值期权；legs=各腿隐含波动率平均（取不到期权链时的退路）
+  skew: number; // 第3组：微笑斜率（见skewFromChain）；取不到期权链时为0
+}
+
+// 第3组「下跌时IV上升」：最近到期日的波动率微笑有多斜。用虚值期权（行权价<现价的Put、>现价的Call，离现价−15%～+10%以内）
+// 的IV对 ln(行权价/现价) 做直线回归，斜率取负号（股票通常是左高右低，结果为正）。含义：股价跌10%，各行权价的IV大约上升 skew×0.1。
+// 这是"局部波动率"的经验做法：跌的时候不光是期权越来越值钱，波动率本身也在涨（实盘里下跌时Put往往涨得比只按股价算的更快）。
+// 限制在0～1.5之间；点太少（<4个）返回0。
+export function skewFromChain(chain: Pick<OptionChainResponse, "calls" | "puts">, spot: number, dte: number): number {
+  if (!(spot > 0) || !(dte > 0)) return 0;
+  const xs: number[] = [], ys: number[] = [];
+  const add = (q: OptionQuote, type: "call" | "put") => {
+    const m = Math.log(q.strike / spot);
+    if (m < -0.15 || m > 0.1) return;
+    if (type === "put" ? q.strike > spot : q.strike < spot) return;
+    const iv = quoteIv(q, spot, dte, type);
+    if (iv == null) return;
+    xs.push(m);
+    ys.push(iv);
+  };
+  chain.puts.forEach((q) => add(q, "put"));
+  chain.calls.forEach((q) => add(q, "call"));
+  if (xs.length < 4) return 0;
+  const mx = xs.reduce((a, b) => a + b, 0) / xs.length, my = ys.reduce((a, b) => a + b, 0) / ys.length;
+  let sxy = 0, sxx = 0;
+  for (let i = 0; i < xs.length; i++) {
+    sxy += (xs[i] - mx) * (ys[i] - my);
+    sxx += (xs[i] - mx) ** 2;
+  }
+  if (sxx <= 0) return 0;
+  return Math.max(0, Math.min(1.5, -sxy / sxx));
+}
+
+// 第3组「成交损耗」：每条期权腿现在的半个买卖价差占中间价的比例（期权链实时报价）；拿不到报价的腿为undefined（模拟里按默认公式）。
+// dteShift：legs的dte是从哪天算的离今天几天（分析模式开仓日在过去时=开仓后过了几天），查今天的期权链要减掉
+export function useLegSpreads(symbol: string, legs: Leg[], enabled: boolean, dteShift = 0): (number | undefined)[] {
+  const sym = symbol.trim().toUpperCase();
+  const key = legs.map((l) => `${l.kind ?? "o"}:${l.type}:${l.strike}:${l.dte}`).join("|") + `@${dteShift}`;
+  const [out, setOut] = useState<(number | undefined)[]>([]);
+  useEffect(() => {
+    if (!enabled || !sym) {
+      setOut([]);
+      return;
+    }
+    let alive = true;
+    Promise.all(
+      legs.map(async (l) => {
+        const dte = l.dte - dteShift;
+        if (l.kind === "stock" || !(dte >= 1)) return undefined;
+        try {
+          const c = peekResolvedChain(sym, dte) ?? (await getOptionChain(sym, dte));
+          const q = (l.type === "call" ? c.calls : c.puts).find((r) => r.strike === l.strike);
+          if (!q || !(q.bid > 0) || !(q.ask > q.bid)) return undefined;
+          const mid = (q.bid + q.ask) / 2;
+          return Math.min(0.5, (q.ask - q.bid) / 2 / mid);
+        } catch {
+          return undefined;
+        }
+      }),
+    ).then((r) => alive && setOut(r));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, sym, key]);
+  return out;
 }
 
 // 推演未来用的"市场预期波动"：开仓日是今天、有代码、期权链取得到时用最近到期日平值IV，否则退回各腿平均。
@@ -105,6 +170,13 @@ export function useMarketIv(opts: { symbol: string; legs: Leg[]; spot: number; c
     return atmIvFromChain(chain, s, dte);
   }, [chain, canUseChain, chainSpot, spot, nearDte]);
 
-  if (atm != null) return { iv: atm, source: "atm" };
-  return { iv: legsIv, source: "legs" };
+  const skew = useMemo(() => {
+    if (!chain || !canUseChain) return 0;
+    const s = chainSpot && chainSpot > 0 ? chainSpot : spot;
+    const dte = chain.usedExpiryDate ? Math.max(0.5, dteFromDate(chain.usedExpiryDate)) : nearDte;
+    return skewFromChain(chain, s, dte);
+  }, [chain, canUseChain, chainSpot, spot, nearDte]);
+
+  if (atm != null) return { iv: atm, source: "atm", skew };
+  return { iv: legsIv, source: "legs", skew };
 }

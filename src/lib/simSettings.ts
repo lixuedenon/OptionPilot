@@ -27,13 +27,35 @@ function loadRules(): Record<Side, SimRules> {
   return DEFAULT_RULES;
 }
 
+const SKEW_KEY = "optionpilot.ivSkewOn";
+function loadSkewOn(): boolean {
+  try {
+    return localStorage.getItem(SKEW_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+// 财报这一组：持仓期间有财报时，推演在财报那天加一次跳空，默认打开；万次推演和持仓建议共用
+const EARN_KEY = "optionpilot.earnJumpOn";
+function loadEarnOn(): boolean {
+  try {
+    return localStorage.getItem(EARN_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
 interface State {
   rules: Record<Side, SimRules>;
+  // 第3组：股价下跌时隐含波动率跟着上升（按期权链的微笑斜率），默认打开；万次推演和持仓建议共用
+  ivSkewOn: boolean;
+  earnJumpOn: boolean;
   vol: { symbol: string; pct: number } | null; // 手填的实际波动（%）
   drift: { symbol: string; pct: number } | null; // 买方假设年化涨跌（%）
 }
 
-let state: State = { rules: loadRules(), vol: null, drift: null };
+let state: State = { rules: loadRules(), ivSkewOn: loadSkewOn(), earnJumpOn: loadEarnOn(), vol: null, drift: null };
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
 const subscribe = (l: () => void) => {
@@ -45,6 +67,26 @@ export function setSideRules(side: Side, r: SimRules) {
   state = { ...state, rules: { ...state.rules, [side]: r } };
   try {
     localStorage.setItem(RULES_KEY, JSON.stringify(state.rules));
+  } catch {
+    /* 存不了就只在本次生效 */
+  }
+  emit();
+}
+
+export function setIvSkewOn(on: boolean) {
+  state = { ...state, ivSkewOn: on };
+  try {
+    localStorage.setItem(SKEW_KEY, on ? "1" : "0");
+  } catch {
+    /* 存不了就只在本次生效 */
+  }
+  emit();
+}
+
+export function setEarnJumpOn(on: boolean) {
+  state = { ...state, earnJumpOn: on };
+  try {
+    localStorage.setItem(EARN_KEY, on ? "1" : "0");
   } catch {
     /* 存不了就只在本次生效 */
   }
@@ -65,6 +107,8 @@ export function useSimSettings(symbol: string) {
   const s = useSyncExternalStore(subscribe, () => state);
   return {
     rules: s.rules,
+    ivSkewOn: s.ivSkewOn,
+    earnJumpOn: s.earnJumpOn,
     volOverride: s.vol && s.vol.symbol === symbol ? s.vol.pct : null,
     driftPct: s.drift && s.drift.symbol === symbol ? s.drift.pct : 0,
   };

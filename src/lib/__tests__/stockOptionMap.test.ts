@@ -3,7 +3,7 @@
 import { describe, it, expect } from "vitest";
 import type { Leg } from "@/lib/types";
 import { priceCombo } from "@/lib/pricing";
-import { buildMapModel, summarizePath, PATH_GROUPS, comboBaseIv, trackedTotalPnl, buildTrackedHistory, buildAttributionTimeline, openingTerrain } from "@/lib/stockOptionMap";
+import { buildMapModel, summarizePath, pathOdds, PATH_GROUPS, comboBaseIv, trackedTotalPnl, buildTrackedHistory, buildAttributionTimeline, openingTerrain } from "@/lib/stockOptionMap";
 import { repriceLegsAtDate } from "@/lib/historicalBackfill";
 
 const leg = (over: Partial<Leg>): Leg => ({ id: Math.random().toString(36), action: "buy", type: "call", strike: 100, dte: 30, premium: 5, ...over });
@@ -51,6 +51,22 @@ describe("stockOptionMap", () => {
     const median = 100 * Math.exp(-0.5 * m.baseIv * m.baseIv * t);
     expect(Math.sqrt(lo * hi)).toBeCloseTo(median, 8);
     expect(Math.log(hi / lo) / 2).toBeCloseTo(m.baseIv * Math.sqrt(t), 8);
+  });
+
+  it("第4组：典型走势有多常见——上涨/下跌约一个标准差≈16%，横盘给出±范围内的比例", () => {
+    const m = buildMapModel(COMBOS.bullCall, 100, 0, { baseIv: 0.3 })!;
+    const up = pathOdds(m, "up"), dn = pathOdds(m, "down"), fl = pathOdds(m, "flat");
+    expect(up.kind).toBe("up");
+    expect(up.pct).toBeGreaterThan(12);
+    expect(up.pct).toBeLessThan(20);
+    expect(dn.kind).toBe("down");
+    expect(dn.pct).toBeGreaterThan(12);
+    expect(dn.pct).toBeLessThan(20);
+    expect(fl.kind).toBe("flat");
+    expect(fl.band!).toBeGreaterThanOrEqual(0.01);
+    expect(fl.pct).toBeGreaterThan(10);
+    // 反转走势终点在±1.3个标准差，更少见
+    expect(pathOdds(m, "downUp").pct).toBeLessThan(up.pct);
   });
 
   it("opts.baseIv (ATM IV) drives path size and cone, but not leg pricing", () => {

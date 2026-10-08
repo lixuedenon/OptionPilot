@@ -24,7 +24,8 @@ import { useCompareSlots, COMPARE_SLOT_COLORS, MAX_COMPARE_SLOT_LEGS, MAX_COMPAR
 import ComboCompareSlots from "@/components/ComboCompareSlots";
 import PositionAdviceCard from "@/components/PositionAdviceCard";
 import { scenarioLegs, prepareQuickAdvice } from "@/lib/positionAdvisor";
-import { useMarketIv } from "@/lib/atmIv";
+import { useMarketIv, useLegSpreads } from "@/lib/atmIv";
+import { useEarningsContext } from "@/lib/earnings";
 import { useStrategyOrchestration } from "@/hooks/useStrategyOrchestration";
 import { nearestFridayDte, formatDateInput, parseDateInput, addCalendarDays, calendarDaysBetween, calendarDaysSince } from "@/lib/dateUtils";
 import { uid, PRESET_DTE_SET } from "@/lib/legFactory";
@@ -862,6 +863,18 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     enabled: !isCompareMode && !!openingSimBasis && openingSimBasis.daysSinceOpen === 0,
   });
   const analysisIv = marketIvInfo.iv ?? 0;
+  // 第4组：开仓日在过去时，地形图"从今天出发"用今天期权链的平值IV（腿位按今天的剩余天数找最近到期日）
+  const todayMarket = useMarketIv({
+    symbol,
+    legs: activeLegs,
+    spot: quote && quote.price > 0 ? quote.price : spot,
+    chainSpot: quote && quote.price > 0 ? quote.price : undefined,
+    enabled: !isCompareMode && !!openingSimBasis && openingSimBasis.daysSinceOpen > 0,
+  });
+  // 第3组：各腿半个买卖价差（成交损耗）和微笑斜率（下跌时IV上升），万次推演和持仓建议共用
+  const legSpreads = useLegSpreads(symbol, mapLegs, !isCompareMode, openingSimBasis ? openingSimBasis.daysSinceOpen : 0);
+  // 财报这一组：下一次财报日、市场押多少、过去几次的真实反应（持仓建议卡和万次推演用；两种模式都看今天的期权链和日期）
+  const earnState = useEarningsContext({ symbol, spot: quote && quote.price > 0 ? quote.price : spot, openingAt, enabled: !needSymbol });
   // 地形图"风险分区"/走势节点用的快速版持仓建议（规则跟万次推演、持仓建议共用simSettings）。
   const { rules: simRulesBySide } = useSimSettings(symbol);
   const mapZoneCtx = useMemo(() => {
@@ -1256,6 +1269,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 adjusted={isCompareMode && (trackedLegs ?? []).some((l) => l.derivedFrom || l.closedPnl != null)}
                 customPresets={customPresets}
                 marketIv={isCompareMode ? null : analysisIv || null}
+                skew={isCompareMode ? 0 : marketIvInfo.skew}
+                halfSpread={isCompareMode ? undefined : legSpreads}
+                earnings={earnState.ctx}
+                liveSpot={quote && quote.price > 0 ? quote.price : spot}
                 onOpenSettings={() => {
                   setShifts({ dS: 0, dT: 0, dV: 0 });
                   setChartView("winRate");
@@ -1352,6 +1369,9 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   fork={adviceScenarioLegs ? { legs: adviceScenarioLegs, spot: analyticsSpot + analyticsShifts.dS, day: analyticsShifts.dT, pnl: result.change } : null}
                   marketIv={analysisIv}
                   ivSource={marketIvInfo.source}
+                  skew={marketIvInfo.skew}
+                  halfSpread={legSpreads}
+                  earnings={earnState.ctx}
                   emptyText={needSymbol ? t("chart.noSpot") : activeLegs.length === 0 ? t("chart.addLegs") : null}
                 />
               </div>
@@ -1372,6 +1392,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   journey={trackedTimeline}
                   todayLegs={activeTrackedLegs ?? []}
                   adjusted={(trackedLegs ?? []).some((l) => l.derivedFrom || l.closedPnl != null)}
+                  markers={trackedHistory?.markers ?? []}
                   emptyText={needSymbol ? t("chart.noSpot") : activeLegs.length === 0 ? t("chart.addLegs") : null}
                 />
               </div>
@@ -1388,6 +1409,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   scenario={!isCompareMode && (shifts.dS !== 0 || shifts.dT !== 0) ? { day: shifts.dT, price: analyticsSpot + shifts.dS } : null}
                   zoneCtx={isCompareMode ? null : mapZoneCtx}
                   marketIv={isCompareMode ? null : analysisIv || null}
+                  todayIv={isCompareMode || todayMarket.source !== "atm" ? null : todayMarket.iv}
                   openingAt={openingAt}
                   daysSinceOpen={openingSimBasis && !isExpiredOpening ? openingSimBasis.daysSinceOpen : undefined}
                   emptyText={needSymbol ? t("chart.noSpot") : t("chart.addLegs")}

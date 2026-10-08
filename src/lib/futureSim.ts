@@ -1,7 +1,7 @@
 // src/lib/futureSim.ts
 // "万次推演"（分析模式）的统计层：在winRateSim的逐日走势上，累计画图要用的密度云、下车点、到期落点。
 // 走势、定价、规则判断全部沿用winRateSim（同一个runBatch），这里只做"看得见"的汇总。
-import { runBatch, runBatchPaths, prepareSim, computeStats, simPnlAt, type HistSource, type Prepared, type PathOutcome, type ExitReason, type SimRules, type SimSetup } from "@/lib/winRateSim";
+import { runBatch, runBatchPaths, prepareSim, computeStats, simPnlAt, maxShortDelta, type HistSource, type Prepared, type PathOutcome, type ExitReason, type SimRules, type SimSetup } from "@/lib/winRateSim";
 
 // 密度网格：横轴按天（第0天..horizon），纵轴按股价分rows格（row 0 = sMax，跟地形图一致）。
 export interface GridSpec {
@@ -63,7 +63,7 @@ export function runCloud(
   const end: EndDist = { counts: new Array(spec.rows).fill(0), pnlSum: new Array(spec.rows).fill(0) };
   const maxExits = opts.exitSamples ?? 80;
   for (const o of outcomes) {
-    if ((o.reason === "tp" || o.reason === "sl") && exits.length < maxExits) exits.push({ day: o.day + off, price: o.price, reason: o.reason });
+    if ((o.reason === "tp" || o.reason === "sl" || o.reason === "delta") && exits.length < maxExits) exits.push({ day: o.day + off, price: o.price, reason: o.reason });
     // 落在图的价格范围外的不计入（否则全堆在最上/最下一格，画出来像一根假的长条）
     if ((o.reason === "time" || o.reason === "expiry") && o.price >= spec.sMin && o.price <= spec.sMax) {
       const r = rowOf(spec, o.price);
@@ -84,14 +84,17 @@ export interface RuleExit {
   day: number;
   price: number;
   pnl: number;
-  kind: "tp" | "sl" | "time";
+  kind: "tp" | "sl" | "delta" | "time";
 }
+// 跟万次推演walkPath同一顺序：过了"到点平仓"那天就按到点平仓算（真实操作里那天就平了，后面的快照碰不碰线已经无关）；
+// 否则止盈 → 止损 → 卖出腿Delta碰线。
 export function replayRules(points: { day: number; price: number; pnl: number }[], p: Prepared): RuleExit | null {
   const pts = [...points].filter((x) => x.day > 0).sort((a, b) => a.day - b.day);
   for (const x of pts) {
+    if (p.closeAtRemaining > 0 && x.day >= p.endDay) return { ...x, kind: "time" };
     if (x.pnl >= p.tpLine) return { ...x, kind: "tp" };
     if (x.pnl <= p.slLine) return { ...x, kind: "sl" };
-    if (p.closeAtRemaining > 0 && x.day >= p.endDay) return { ...x, kind: "time" };
+    if (p.deltaExit != null && x.day < p.horizon && maxShortDelta(p, x.day, x.price) >= p.deltaExit) return { ...x, kind: "delta" };
   }
   return null;
 }
@@ -99,8 +102,11 @@ export function replayRules(points: { day: number; price: number; pnl: number }[
 // ── 换个规则试试：同一组走势（同一个种子、同样条数）下，几种常见的止盈/止损/平仓规则跟你现在的比 ──
 // 只有"明显更好"才建议：平均每次多赚超过随机误差的2倍且至少是基准的2%（最坏5%不能差10%以上），
 // 或最坏5%少亏两成以上而平均不比现在差（超出随机误差）。逐条走势配对相减算误差：同一组走势，规则之间的差别比两次独立模拟稳得多。
-const CANDIDATES: Record<"credit" | "debit", SimRules[]> = {
+export const RULE_CANDIDATES: Record<"credit" | "debit", SimRules[]> = {
   credit: [
+    // 第3组：卖出腿Delta到0.30/0.40就平仓（卖方常用的管理规则）
+    { takeProfitPct: 0.5, stopMult: null, closeFrac: 0.25, deltaExit: 0.3 },
+    { takeProfitPct: 0.5, stopMult: 2, closeFrac: 0, deltaExit: 0.4 },
     { takeProfitPct: 0.5, stopMult: 2, closeFrac: 0.25 },
     { takeProfitPct: 0.5, stopMult: null, closeFrac: 0.25 },
     { takeProfitPct: 0.5, stopMult: 1, closeFrac: 0 },
@@ -119,19 +125,32 @@ const CANDIDATES: Record<"credit" | "debit", SimRules[]> = {
 };
 
 const sameRules = (a: SimRules, b: SimRules) =>
-  a.takeProfitPct === b.takeProfitPct && a.stopMult === b.stopMult && Math.abs(a.closeFrac - b.closeFrac) < 1e-9;
+  a.takeProfitPct === b.takeProfitPct && a.stopMult === b.stopMult && Math.abs(a.closeFrac - b.closeFrac) < 1e-9 && (a.deltaExit ?? null) === (b.deltaExit ?? null);
 
 export interface RuleScore {
   rules: SimRules;
-  avg: number;
+  avg: number; // 每笔平均（已扣成交损耗）
   worst5: number;
   winPct: number;
+  avgDays: number; // 平均拿几天
+  avgCost: number; // 平均每笔成交损耗
+  per30: number; // 折算每30天：每笔平均 ÷ 平均拿的天数 × 30（平仓后马上能再开一笔差不多的前提下）
+}
+// 第3组：规则对比表的一行（同一组走势，跟现在的规则逐条配对相减算差别的随机误差）
+export interface RuleRow extends RuleScore {
+  current: boolean;
+  diff: number; // 每笔平均比现在的规则多/少多少
+  se: number; // diff的随机误差（配对）
 }
 export interface RuleSuggestion {
   tried: number; // 试了几种（不含现在的）
   current: RuleScore;
   best: (RuleScore & { why: "avg" | "worst" }) | null;
+  rows: RuleRow[]; // 现在的规则 + 试过的几种，表格用
 }
+const scoreOf = (rules: SimRules, st: ReturnType<typeof computeStats>): RuleScore => ({
+  rules, avg: st.avg, worst5: st.worst5, winPct: st.winPct, avgDays: st.avgDays, avgCost: st.avgCost, per30: (st.avg / Math.max(1, st.avgDays)) * 30,
+});
 
 export function suggestRules(setup: SimSetup, vol: number, n: number, seed: number, side: "credit" | "debit", hist?: HistSource): RuleSuggestion | null {
   const run = (rules: SimRules) => {
@@ -142,9 +161,12 @@ export function suggestRules(setup: SimSetup, vol: number, n: number, seed: numb
   const cur = run(setup.rules);
   if (!cur) return null;
   const cs = computeStats(cur.outcomes);
-  const current: RuleScore = { rules: setup.rules, avg: cs.avg, worst5: cs.worst5, winPct: cs.winPct };
+  const current: RuleScore = scoreOf(setup.rules, cs);
+  const rows: RuleRow[] = [{ ...current, current: true, diff: 0, se: 0 }];
   const basis = cur.p.basis;
-  const list = CANDIDATES[side].filter((r) => !sameRules(r, setup.rules));
+  // Delta规则的线要比开仓时卖出腿的Delta高出一截才有意义（平值卖出腿开仓Delta就有0.45，"到0.40就走"等于第二天就平）
+  const startDelta = maxShortDelta(cur.p, 0, cur.p.spot);
+  const list = RULE_CANDIDATES[side].filter((r) => !sameRules(r, setup.rules) && (r.deltaExit == null || r.deltaExit > startDelta + 0.05));
   let best: RuleSuggestion["best"] = null;
   let bestScore = -Infinity;
   for (const rules of list) {
@@ -159,6 +181,7 @@ export function suggestRules(setup: SimSetup, vol: number, n: number, seed: numb
     }
     const mean = sum / n;
     const se = Math.sqrt(Math.max(0, sq / n - mean * mean) / Math.max(1, n - 1));
+    rows.push({ ...scoreOf(rules, st), current: false, diff: mean, se });
     const noise = Math.max(2 * se, 0.01 * basis);
     const worseTail = cs.worst5 < 0 && st.worst5 < cs.worst5 * 1.1;
     const avgBetter = mean > Math.max(2 * se, 0.02 * basis) && !worseTail;
@@ -167,10 +190,10 @@ export function suggestRules(setup: SimSetup, vol: number, n: number, seed: numb
     const score = mean / basis + 0.5 * ((st.worst5 - cs.worst5) / basis);
     if (score > bestScore) {
       bestScore = score;
-      best = { rules, avg: st.avg, worst5: st.worst5, winPct: st.winPct, why: avgBetter ? "avg" : "worst" };
+      best = { ...scoreOf(rules, st), why: avgBetter ? "avg" : "worst" };
     }
   }
-  return { tried: list.length, current, best };
+  return { tried: list.length, current, best, rows };
 }
 
 // ── 平面图：股价范围带 + 典型结局 ──────────────────────────────────────
@@ -226,7 +249,7 @@ export function priceBands(store: PriceStore, maxCols = 60): Band[] {
 
 // 典型结局：按你的规则把1万条走势分成几类（加起来=100%），每类挑一条最典型的给图上画。
 // 止盈/止损/到时间平仓这几类取下车天数居中的那条；拿到期的取到期盈亏居中的那条。
-export type StoryKind = "tp" | "sl" | "time" | "win" | "loss";
+export type StoryKind = "tp" | "sl" | "delta" | "time" | "win" | "loss";
 export interface Story {
   kind: StoryKind;
   share: number; // 0..100
@@ -236,6 +259,8 @@ export interface Story {
   // 这条走势每天"一直拿着"的盈亏（第0天..最早到期日，含pnlOffset）：下车前就是真实走过的钱，下车后是"要是还拿着会怎样"（画虚线）。
   // 传了p才有。
   pnls?: number[];
+  index: number; // 这条走势在全部走势里的下标（历史真实走法时用来找它是哪一段）
+  start?: number; // 历史真实走法：这一段在历史上从哪天开始（unix秒），worker填
 }
 export function pickStories(outcomes: PathOutcome[], store: PriceStore, max = 4, p?: Prepared): Story[] {
   const groups = new Map<StoryKind, number[]>();
@@ -253,7 +278,7 @@ export function pickStories(outcomes: PathOutcome[], store: PriceStore, max = 4,
     const o = outcomes[pick];
     const prices = store.path(pick);
     const pnls = p ? prices.map((price, d) => (d === 0 ? p.pnlOffset : simPnlAt(p, d, price))) : undefined;
-    return { kind, share: (idx.length / n) * 100, day: o.day, pnl: o.pnl, prices, pnls };
+    return { kind, share: (idx.length / n) * 100, day: o.day, pnl: o.pnl, prices, pnls, index: pick };
   });
   all.sort((a, b) => b.share - a.share);
   const out = all.slice(0, Math.min(max, 3));

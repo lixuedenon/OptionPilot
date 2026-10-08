@@ -18,7 +18,7 @@ interface Props {
   storyIdx: number;
   colors: Record<Story["kind"], string>;
   money: Band[]; // 每天的盈亏分位数（futureSim.moneyBands）
-  exitDays: Record<"tp" | "sl" | "time", number[]>;
+  exitDays: Record<"tp" | "sl" | "delta" | "time", number[]>;
   stats: SimStats;
   tpLine: number; // 止盈/止损线（开仓以来总盈亏，每股），没设=±Infinity
   slLine: number;
@@ -61,8 +61,8 @@ export default function MoneyPanel(props: Props) {
 
   // 累计下车比例（0..1），下标=第几天
   const cum = (() => {
-    const out = { tp: [] as number[], sl: [] as number[], time: [] as number[] };
-    let a = 0, b = 0, c = 0;
+    const out = { tp: [] as number[], sl: [] as number[], delta: [] as number[], time: [] as number[] };
+    let a = 0, b = 0, c = 0, e = 0;
     for (let d = 0; d <= days; d++) {
       a += exitDays.tp[d] ?? 0;
       b += exitDays.sl[d] ?? 0;
@@ -70,6 +70,8 @@ export default function MoneyPanel(props: Props) {
       out.tp.push(a / n);
       out.sl.push(b / n);
       out.time.push(c / n);
+      e += exitDays.delta[d] ?? 0;
+      out.delta.push(e / n);
     }
     return out;
   })();
@@ -241,7 +243,8 @@ export default function MoneyPanel(props: Props) {
     g.fillRect(M.l, sTop, pw, sH);
     area(() => 0, (d) => cum.tp[d], "rgba(52,211,153,0.8)");
     area((d) => 1 - cum.sl[d], () => 1, "rgba(251,113,133,0.85)");
-    area((d) => 1 - cum.sl[d] - cum.time[d], (d) => 1 - cum.sl[d], "rgba(251,191,36,0.8)");
+    area((d) => 1 - cum.sl[d] - cum.delta[d], (d) => 1 - cum.sl[d], "rgba(167,139,250,0.85)");
+    area((d) => 1 - cum.sl[d] - cum.delta[d] - cum.time[d], (d) => 1 - cum.sl[d] - cum.delta[d], "rgba(251,191,36,0.8)");
     g.font = "10px sans-serif";
     g.textAlign = "left";
     g.fillStyle = "#94a3b8";
@@ -270,12 +273,12 @@ export default function MoneyPanel(props: Props) {
     const vars = { chg: chgT, p: `$${pEx.toFixed(2)}`, d: st.day, v: usdS(st.pnl), va: `$${Math.abs(st.pnl).toFixed(2)}`, g: g != null ? usdS(g) : "", line: usdS(st.kind === "sl" ? slLine : tpLine) };
     lines.push({ title: t("money.hWhat"), body: t(`money.what_${st.kind}`, vars) });
     const by = stats.byReason;
-    const avgOf = (k: "tp" | "sl" | "time") => {
+    const avgOf = (k: "tp" | "sl" | "delta" | "time") => {
       let s = 0, c = 0;
       exitDays[k].forEach((v, d) => { s += v * d; c += v; });
       return c ? s / c : null;
     };
-    const avg = st.kind === "tp" || st.kind === "sl" || st.kind === "time" ? avgOf(st.kind) : null;
+    const avg = st.kind === "tp" || st.kind === "sl" || st.kind === "delta" || st.kind === "time" ? avgOf(st.kind) : null;
     lines.push({
       title: t("money.hCommon"),
       body: t("money.common", {
@@ -284,6 +287,7 @@ export default function MoneyPanel(props: Props) {
         list: [
           t("money.part_tp", { p: pct(by.tp.pct) }),
           t("money.part_sl", { p: pct(by.sl.pct) }),
+          ...(by.delta.pct > 0 ? [t("money.part_delta", { p: pct(by.delta.pct) })] : []),
           ...(endDay < days || by.time.pct > 0 ? [t("money.part_time", { p: pct(by.time.pct) })] : []),
           ...(endDay >= days || by.expiry.pct > 0 ? [t("money.part_exp", { p: pct(by.expiry.pct) })] : []),
         ].join(t("money.sep")),
@@ -292,11 +296,11 @@ export default function MoneyPanel(props: Props) {
     if (scen && scen.day > 0) {
       const d = Math.min(days, Math.round(scen.day));
       const b = bandAt(money, d);
-      const h = Math.max(0, 1 - cum.tp[d] - cum.sl[d] - cum.time[d]);
+      const h = Math.max(0, 1 - cum.tp[d] - cum.sl[d] - cum.delta[d] - cum.time[d]);
       lines.push({
         title: t("money.hDay", { d, n: n.toLocaleString() }),
         body: t("money.day", {
-          d, tp: pct(cum.tp[d] * 100), sl: pct(cum.sl[d] * 100), time: cum.time[d] > 0 ? t("money.dayTime", { p: pct(cum.time[d] * 100) }) : "", h: pct(h * 100),
+          d, tp: pct(cum.tp[d] * 100), sl: pct(cum.sl[d] * 100), time: `${cum.delta[d] > 0 ? t("money.dayDelta", { p: pct(cum.delta[d] * 100) }) : ""}${cum.time[d] > 0 ? t("money.dayTime", { p: pct(cum.time[d] * 100) }) : ""}`, h: pct(h * 100),
           lo: b ? usdS(b.p5) : "", hi: b ? usdS(b.p95) : "", lo2: b ? usdS(b.p25) : "", hi2: b ? usdS(b.p75) : "",
         }),
       });

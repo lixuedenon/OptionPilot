@@ -4,6 +4,7 @@
 // 保证跟"盈亏图"标签同一个时间/股价/波动率下的数字相同。
 import type { Leg } from "@/lib/types";
 import { impliedVol, legShiftedPrice, resolveOpeningLeg, shapley3 } from "@/lib/pricing";
+import { ncdf } from "@/lib/bs";
 import { bsPrice } from "@/lib/bs";
 import { calendarDaysBetween } from "@/lib/dateUtils";
 
@@ -219,6 +220,29 @@ export function summarizePath(model: MapModel, id: PathId, steps = 60): PathSumm
     if (i === steps) end = v;
   }
   return { end, best, worst };
+}
+
+// 第4组：典型走势"有多常见"——按跟喇叭口同一个波动率（baseIv）、零漂移对数正态，看这条走势到期时的终点：
+// 涨的走势→到期涨得比它还多的比例；跌的→跌得比它还多的比例；横盘→到期离起点不超过±band的比例（band=0.25个标准差，至少1%，按0.5%取整）。
+// 只看终点（中途怎么走不算），说的是"这是一种常见的可能，不是会发生的事"。
+export interface PathOdds {
+  kind: "up" | "down" | "flat";
+  pct: number; // 0..100
+  band?: number; // 横盘时的±范围（小数）
+}
+export function pathOdds(model: MapModel, id: PathId): PathOdds {
+  const t = Math.max(1e-6, (model.horizon - model.start.day) / 365);
+  const s = model.baseIv * Math.sqrt(t);
+  const mu = -0.5 * model.baseIv * model.baseIv * t;
+  const end = model.path(id, model.horizon);
+  const r = end / model.start.price;
+  const cdf = (x: number) => ncdf((x - mu) / s);
+  if (Math.abs(r - 1) < 0.005) {
+    const band = Math.max(0.01, Math.round(0.25 * s * 200) / 200);
+    return { kind: "flat", pct: (cdf(Math.log(1 + band)) - cdf(Math.log(1 - band))) * 100, band };
+  }
+  if (r > 1) return { kind: "up", pct: (1 - cdf(Math.log(r))) * 100 };
+  return { kind: "down", pct: cdf(Math.log(Math.max(1e-6, r))) * 100 };
 }
 
 // ── 跟踪对比模式 ──────────────────────────────────────────────
