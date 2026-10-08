@@ -52,8 +52,20 @@ export function serializeSlotLegs(legs: Leg[]): string {
 // 供App.tsx算"退出前要不要逐一提示保存"用：跟`serializeStrategyState`+
 // `strategyBaseline`比较（A用的那一套）是同一个判断思路，这里是B/C专用
 // 的等价版本。
+// 套用预设时还没拿到报价的腿权利金是0，随后会自动填上市场价——这不算用户改的：基准里权利金为0的腿，只比较权利金以外的字段。
 export function isSlotDirty(slot: CompareSlot): boolean {
-  return serializeSlotLegs(slot.legs) !== slot.baseline;
+  const now = serializeSlotLegs(slot.legs);
+  if (now === slot.baseline) return false;
+  const base = slot.baseline === "" ? [] : slot.baseline.split("|");
+  const cur = now === "" ? [] : now.split("|");
+  if (base.length !== cur.length) return true;
+  return cur.some((c, i) => {
+    if (c === base[i]) return false;
+    const a = base[i].split("-");
+    const b = c.split("-");
+    // 字段顺序见serializeSlotLegs：action-type-strike-dte-premium-…，premium是第5个
+    return !(a[4] === "0" && a.length === b.length && a.every((x, k) => k === 4 || x === b[k]));
+  });
 }
 
 // A（主combo）之外最多再加2个——B/C。多了对比意义反而下降（曲线叠在一起

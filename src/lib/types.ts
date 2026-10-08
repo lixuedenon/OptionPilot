@@ -82,6 +82,9 @@ export interface Leg {
   // trackedResult again, and leaving a stale value here would double-count
   // it into realizedTrackedPnl on top of the live number.
   closedPnl?: number;
+  // 展期/保护/对冲新开的腿（derivedFrom）在开出来那一刻的权利金：开仓组合里没有它，盈亏要拿它自己的开仓价当基准。
+  // 以后刷新权利金只改premium，这个不变。老数据没有时，加载时从最早出现它的快照里补（fillEntryPremiums）。
+  entryPremium?: number;
 }
 
 export interface Shifts {

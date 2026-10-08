@@ -2040,6 +2040,9 @@ const en: Dict = {
   "stip.lg.bars": "Per-segment split",
   "stip.lg.exit": "Rule exit",
   "stip.lg.future": "After today",
+  "tracked.otherLegsStale": "This leg now uses the price you entered for today, but the other legs couldn't get today's quotes and are still from {date}, as is the stock price. Refresh or type in today's premiums for the other legs too, or the implied vol and P&L will mix two days.",
+  "tracked.saveRetry": "The position changed while quotes were refreshing, so nothing was saved (to avoid overwriting your edits). Please click save again.",
+  "storage.writeFailed": "Browser storage is full, so your last change wasn't saved to the strategy library. Export a backup from Data on the home page, then delete some strategies or snapshots you no longer need.",
 };
 
 export default en;

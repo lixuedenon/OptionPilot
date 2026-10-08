@@ -193,13 +193,13 @@ export async function fetchLegPremium(
 }
 // 按原合约（同一行权价、到期日差不超过2天）重新拉今日组合每条未平仓期权腿的权利金。全部拿到才返回新的腿位，
 // 有一条拿不到就返回null——不能一部分是今天的价格、一部分还是旧价格，否则跟同一个股价配不上。
-export async function refreshContractPremiums(symbol: string, legs: Leg[]): Promise<Leg[] | null> {
+export async function refreshContractPremiums(symbol: string, legs: Leg[], skipIds?: Set<string>): Promise<Leg[] | null> {
   const sym = symbol.trim();
   if (!sym) return null;
   try {
     const results = await Promise.all(
       legs.map(async (l) => {
-        if (l.disabled || l.kind === "stock" || l.dte <= 0) return l;
+        if (l.disabled || l.kind === "stock" || l.dte <= 0 || skipIds?.has(l.id)) return l;
         const r = await fetchLegPremium(sym, l.type, l.strike, l.dte, true);
         if (r.strikeSnapped || Math.abs(r.actualDte - l.dte) > 2) throw new Error("contract not found");
         return { ...l, premium: r.premium };
@@ -209,4 +209,18 @@ export async function refreshContractPremiums(symbol: string, legs: Leg[]): Prom
   } catch {
     return null;
   }
+}
+
+// 刷新报价是异步的，回来之前组合可能已经被改过（展期、平仓、改价）：只把新价格写进"刷新时那条腿、而且之后没动过"的腿，
+// 其它腿（新开的、改过的、换过合约的）原样保留。before=发起刷新时的腿，fresh=refreshContractPremiums的结果（id不变）。
+export function mergeFreshPremiums(current: Leg[], before: Leg[], fresh: Leg[]): Leg[] {
+  const beforeById = new Map(before.map((l) => [l.id, l]));
+  const freshById = new Map(fresh.map((l) => [l.id, l]));
+  return current.map((l) => {
+    const b = beforeById.get(l.id);
+    const f = freshById.get(l.id);
+    if (!b || !f || f.premium === b.premium) return l;
+    const unchanged = l.premium === b.premium && l.strike === b.strike && l.type === b.type && l.action === b.action && l.dte === b.dte && !!l.disabled === !!b.disabled;
+    return unchanged ? { ...l, premium: f.premium } : l;
+  });
 }

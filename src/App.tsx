@@ -11,7 +11,7 @@ import PayoffChart from "@/components/PayoffChart";
 import { useStockQuote } from "@/lib/useStockQuote";
 import { useEpsEstimate } from "@/hooks/useEpsEstimate";
 import { loadRecentSymbols, addRecentSymbol } from "@/lib/recentSymbols";
-import { serializeStrategyState, serializeTrackedLegs, computeOpeningSimBasis, saveStrategy, overwriteStrategy, type SavedStrategy, type OpeningSimBasis } from "@/lib/savedStrategies";
+import { serializeStrategyState, serializeTrackedLegs, computeOpeningSimBasis, saveStrategy, overwriteStrategy, STORAGE_FAIL_EVENT, type SavedStrategy, type OpeningSimBasis } from "@/lib/savedStrategies";
 import DropdownMenu from "@/components/DropdownMenu";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
@@ -29,7 +29,7 @@ import { useEarningsContext } from "@/lib/earnings";
 import { useStrategyOrchestration } from "@/hooks/useStrategyOrchestration";
 import { nearestFridayDte, formatDateInput, parseDateInput, addCalendarDays, calendarDaysBetween, calendarDaysSince } from "@/lib/dateUtils";
 import { uid, PRESET_DTE_SET } from "@/lib/legFactory";
-import { getOptionChain, resolveFromCache, refreshContractPremiums } from "@/lib/optionChain";
+import { getOptionChain, resolveFromCache, refreshContractPremiums, mergeFreshPremiums } from "@/lib/optionChain";
 import { estimateRescaledPremium, premiumSanityIssues, type PremiumIssue, weightedAvgIV } from "@/lib/pricing";
 import { NUMBER_RULES, clampToRule, blockInvalidNumberKey } from "@/lib/numberInput";
 import { useI18n } from "@/i18n/I18nContext";
@@ -546,8 +546,20 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
   // 进入跟踪/选中最新快照时，如果它不是今天的，按原合约自动拉今天的权利金、配实时股价（算作未保存的改动）。
   // 更早的历史快照不刷新，按当天的样子看。拉不到就提示，权利金和股价保持当天那一对。
+  // 策略库写不进浏览器存储（存满了）：提示一次，别让用户以为存上了。
+  useEffect(() => {
+    let last = 0;
+    const onFail = () => {
+      if (Date.now() - last < 10000) return;
+      last = Date.now();
+      window.alert(t("storage.writeFailed"));
+    };
+    window.addEventListener(STORAGE_FAIL_EVENT, onFail);
+    return () => window.removeEventListener(STORAGE_FAIL_EVENT, onFail);
+  }, [t]);
   const quoteRef = useRef(quote);
   quoteRef.current = quote;
+  const quoteReady = !!quote && quote.price > 0;
   const autoRefreshKey = useRef<string | null>(null);
   useEffect(() => {
     setTrackedPriceError(null);
@@ -555,6 +567,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     const snaps = trackedStrategy?.trackedSnapshots ?? [];
     const latestId = snaps.length > 0 ? snaps[snaps.length - 1].id : null;
     if (activeSnapshotId !== latestId) return;
+    // 等这只股票的实时报价到了再刷（刚换代码时报价还没回来）。
+    if (!quoteReady) return;
     const key = `${trackingStrategyId}|${activeSnapshotId}|${trackedAsOf}`;
     const legsNow = trackedLegsRef.current;
     if (!legsNow || autoRefreshKey.current === key) return;
@@ -563,10 +577,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     void refreshContractPremiums(symbol, legsNow).then((fresh) => {
       if (cancelled) return;
       const live = quoteRef.current?.price ?? 0;
-      if (fresh && live > 0) {
-        setTrackedLegs(fresh);
+      const cur = trackedLegsRef.current;
+      if (fresh && live > 0 && cur) {
+        // 刷新期间可能已经展期/平仓/改了价：只更新没动过的腿。
+        const merged = mergeFreshPremiums(cur, legsNow, fresh);
+        setTrackedLegs(merged);
         // 手机上今昔对比只能看、不能存快照，刷新后不算未保存改动，免得每次离开都问。
-        if (isMobile) setTrackedBaseline(serializeTrackedLegs(fresh));
+        if (isMobile) setTrackedBaseline(serializeTrackedLegs(merged));
         setTrackedSpot(live);
         setTrackedAsOf(null);
       } else {
@@ -578,7 +595,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       autoRefreshKey.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isCompareMode, trackedAsOf, activeSnapshotId, trackingStrategyId, trackedStrategy]);
+  }, [isCompareMode, trackedAsOf, activeSnapshotId, trackingStrategyId, trackedStrategy, quoteReady]);
 
   // 图表用的B/C曲线（需要t，所以放在这里）。
   const compareCurves = useMemo(
@@ -600,35 +617,44 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
 
   const strategyName = useMemo(() => matchStrategy(activeLegs, spot, customPresets), [activeLegs, spot, customPresets]);
   const canSaveStrategy = activeLegs.length > 0 && serializeStrategyState(symbol, legs, shifts, openingAt) !== strategyBaseline;
+  // 对比模式下"有没保存的东西"：今日组合改过、开仓组合改过（修正开仓时输错的数）、或者这个组合还没存成策略。
+  const openingDirty = isCompareMode && !!trackingStrategyId && serializeStrategyState(symbol, legs, shifts, openingAt) !== strategyBaseline;
+  const compareUnsaved = isCompareMode && (trackedDirty || openingDirty || (!trackingStrategyId && legs.length > 0));
+  const pendingAfterTrackedSave = useRef<{ then?: () => void; onAbort?: () => void } | null>(null);
+  // 确认完要不要保存之后真正要做的事（回首页 / 加入模拟账户）。
+  const leaveActionRef = useRef<() => void>(() => {});
+  const finishLeave = () => {
+    const a = leaveActionRef.current;
+    leaveActionRef.current = () => {};
+    a();
+  };
 
-  // 退出前的保存确认：对比模式看trackedDirty；分析模式把有改动的A/B/C（0=A，1/2=B/C）排成队列逐一提示，全都没改直接退出。
-  const requestLeave = () => {
+  // 退出前的保存确认：对比模式看compareUnsaved；分析模式把有改动的A/B/C（0=A，1/2=B/C）排成队列逐一提示，全都没改直接走。
+  // action=确认完要做的事，默认回首页。
+  const requestLeave = (action?: () => void) => {
+    leaveActionRef.current = action ?? (() => onBackHome?.());
     if (isCompareMode) {
-      if (trackedDirty) {
+      if (compareUnsaved) {
         pendingTrackedLeaveHome.current = true;
         setConfirmSaveTrackedOpen(true);
       } else {
-        onBackHome?.();
+        finishLeave();
       }
       return;
     }
     const dirty: number[] = [];
     if (canSaveStrategy) dirty.push(0);
     compareSlots.forEach((s, i) => { if (isSlotDirty(s)) dirty.push(i + 1); });
-    if (dirty.length === 0) { onBackHome?.(); return; }
+    if (dirty.length === 0) { finishLeave(); return; }
     setLeaveQueue(dirty);
     setConfirmLeaveOpen(true);
   };
-  // 队首那个combo被处理完（跳过不保存，或者保存成功）之后调用：从队列里
-  // 弹出一个，还有剩的就重新弹确认框问下一个（ConfirmLeaveDialog的
-  // onCancel/onDontSave/onSaveFirst三个handler，以及保存成功后的两个
-  // handleXxxForActive wrapper，都会走到这里），队列空了才是真的离开。
+  // 队首那个combo处理完（跳过或保存成功）后调用：还有剩的就问下一个，队列空了才真的走。
   const advanceLeaveQueue = () => {
-    setLeaveQueue((prev) => {
-      const rest = prev.slice(1);
-      if (rest.length === 0) { onBackHome?.(); } else { setConfirmLeaveOpen(true); }
-      return rest;
-    });
+    const rest = leaveQueue.slice(1);
+    setLeaveQueue(rest);
+    if (rest.length === 0) finishLeave();
+    else setConfirmLeaveOpen(true);
   };
 
   // 组合修改+策略保存/模式切换相关逻辑在useStrategyOrchestration.ts（全项目bug最多的一块，改动要小心）。
@@ -657,7 +683,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     symbol, legs, activeLegs, spot, shifts, openingAt,
     setSymbol, setLegs, setSpot, setShifts, setOpeningAt, setOpeningAtSimOverride,
     setExpiredStrategyPrompt, setExpiredConfirmed, setExpiredTrackPrompt, setTrackedAsOf, trackedAsOf, setTrackedPriceError,
-    isCompareMode, trackedLegs, trackedSpot, trackedDirty, effectiveTrackedSpot,
+    isCompareMode, trackedLegs, trackedSpot, trackedDirty, compareUnsaved, openingDirty, trackedLegsRef, pendingAfterTrackedSave, effectiveTrackedSpot,
     setTrackedLegs, setTrackedSpot, setTrackedDaysElapsed, setTrackedBaseline, setActiveSnapshotId, setConfirmSaveTrackedOpen,
     savedStrategies, trackingStrategyId, trackedStrategy,
     setSavedStrategies, setTrackingStrategyId, setStrategyBaseline, setSaveStrategyOpen, setManageStrategyOpen,
@@ -681,12 +707,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     if (legs.length > 0) setConfirmClearOpen(true);
   };
   // "加入模拟账户"同样按激活的combo分流：B/C时用该槽位的腿、全局spot/symbol、以今天为开仓日。
+  // 加入模拟账户后会跳到模拟账户页：有没保存的组合先按退出流程问一遍。
   const handleToolbarAddToSim = () => {
-    if (activeSlot) {
-      void handleAddToSimAccount({ legs: activeSlot.legs, spot, symbol, openingAt: Date.now() });
-      return;
-    }
-    void handleAddToSimAccount();
+    const slot = activeSlot;
+    requestLeave(() => {
+      if (slot) void handleAddToSimAccount({ legs: slot.legs, spot, symbol, openingAt: Date.now() });
+      else void handleAddToSimAccount();
+    });
   };
 
   // 保存B/C：直接写入同一个策略库。不复用handleSaveStrategy（它带着A专属的保存后联动）。
@@ -720,11 +747,16 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     a?.();
   };
   // 有未保存改动就先关策略库、弹确认框；没有就直接执行。
-  const guardLibrary = (action: () => void) => {
+  // replacesA：这个操作一定替换A（"跟踪"），不管现在激活的是哪个方案，都要看A有没有改动。
+  const guardLibrary = (action: () => void, replacesA = false) => {
     const slot = activeComboIndex > 0 ? compareSlots[activeComboIndex - 1] : undefined;
-    const kind: "strategy" | "snapshot" | null = isCompareMode
-      ? (trackedDirty ? "snapshot" : null)
-      : slot ? (isSlotDirty(slot) ? "strategy" : null) : (canSaveStrategy ? "strategy" : null);
+    let kind: "strategy" | "snapshot" | null;
+    if (isCompareMode) kind = compareUnsaved ? "snapshot" : null;
+    else if (replacesA) {
+      kind = canSaveStrategy ? "strategy" : null;
+      // "先保存"要存的是A：把激活焦点切回A，保存对话框才读A。
+      if (kind && activeComboIndex > 0) setActiveComboIndex(0);
+    } else kind = slot ? (isSlotDirty(slot) ? "strategy" : null) : (canSaveStrategy ? "strategy" : null);
     if (!kind) {
       action();
       return;
@@ -732,6 +764,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     pendingLibraryAction.current = action;
     setManageStrategyOpen(false);
     setConfirmLibrary(kind);
+  };
+  // 切换/删除快照会换掉今日组合：今日组合有没存的改动就先问。
+  const guardSnapshot = (action: () => void) => {
+    if (!trackedDirty) { action(); return; }
+    pendingLibraryAction.current = action;
+    setConfirmLibrary("snapshot");
   };
   const handleSaveStrategyForActive = async (filename: string) => {
     if (activeSlot) {
@@ -961,7 +999,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
       <button
         data-guide="add-leg"
         onClick={handleToolbarAddLeg}
-        disabled={activeToolbarLegsCount >= activeToolbarLegCap}
+        // 对比模式下开仓组合的结构是定的（只能修正输错的数），不能再加腿。
+        disabled={isCompareMode || activeToolbarLegsCount >= activeToolbarLegCap}
         title={t("leg.addLeg")}
         className="flex items-center rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
       >
@@ -1017,7 +1056,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         onCancelSimOrigin={onCancelSimOrigin}
         onBackHome={onBackHome}
         isCompareMode={isCompareMode}
-        onRequestLeave={requestLeave}
+        onRequestLeave={() => requestLeave()}
         customPresets={customPresets}
         onDeleteCustomPreset={handleDeleteCustom}
         onSelectPreset={(preset) => {
@@ -1028,7 +1067,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             if (slot) applyPresetToSlot(slot.id, rawLegs, spot, symbol);
             return;
           }
-          if (isCompareMode && trackedDirty) {
+          if (compareUnsaved) {
             pendingPresetAction.current = { name: typeof preset.name === "string" ? preset.name : preset.name.zh, rawLegs };
             setConfirmPresetOpen(true);
             return;
@@ -1211,10 +1250,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               trackedLegs={trackedLegs}
               trackedStrategy={trackedStrategy}
               activeSnapshotId={activeSnapshotId}
-              onSelectSnapshot={handleSelectSnapshot}
-              onDeleteSnapshot={handleDeleteSnapshot}
+              onSelectSnapshot={(snap) => guardSnapshot(() => handleSelectSnapshot(snap))}
+              onDeleteSnapshot={(id) => guardSnapshot(() => void handleDeleteSnapshot(id))}
               onSaveTracked={handleSaveTrackedClick}
-              trackedDirty={trackedDirty}
+              trackedDirty={compareUnsaved}
               trackedResult={trackedResult}
               realizedPnl={realizedTrackedPnl}
               spot={spot}
@@ -1546,14 +1585,19 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         // 这个对话框来自clearAllLegs或requestLeave（点logo），pendingTrackedLeaveHome区分答完后的动作。
         onDontSaveTracked={() => {
           setConfirmSaveTrackedOpen(false);
-          if (pendingTrackedLeaveHome.current) { pendingTrackedLeaveHome.current = false; onBackHome?.(); return; }
+          if (pendingTrackedLeaveHome.current) { pendingTrackedLeaveHome.current = false; finishLeave(); return; }
           doClearAll();
         }}
-        onSaveTrackedThenClear={async () => {
+        // 快照真正存好才继续；取消保存对话框或存失败就停下。
+        onSaveTrackedThenClear={() => {
           setConfirmSaveTrackedOpen(false);
-          await handleSaveTracked();
-          if (pendingTrackedLeaveHome.current) { pendingTrackedLeaveHome.current = false; onBackHome?.(); return; }
-          doClearAll();
+          void handleSaveTracked(
+            () => {
+              if (pendingTrackedLeaveHome.current) { pendingTrackedLeaveHome.current = false; finishLeave(); return; }
+              doClearAll();
+            },
+            () => { pendingTrackedLeaveHome.current = false; },
+          );
         }}
         rollTarget={rollTarget}
         rollTargetSource={rollTargetSource}
@@ -1594,10 +1638,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         confirmPresetOpen={confirmPresetOpen}
         onCancelPresetSwitch={() => { setConfirmPresetOpen(false); pendingPresetAction.current = null; }}
         onDontSavePresetSwitch={() => { setConfirmPresetOpen(false); if (pendingPresetAction.current) { applyPreset(pendingPresetAction.current.rawLegs); pendingPresetAction.current = null; } }}
-        onSaveSnapshotThenPresetSwitch={async () => {
+        onSaveSnapshotThenPresetSwitch={() => {
           setConfirmPresetOpen(false);
-          await handleSaveTracked();
-          if (pendingPresetAction.current) { applyPreset(pendingPresetAction.current.rawLegs); pendingPresetAction.current = null; }
+          void handleSaveTracked(
+            () => { if (pendingPresetAction.current) { applyPreset(pendingPresetAction.current.rawLegs); pendingPresetAction.current = null; } },
+            () => { pendingPresetAction.current = null; },
+          );
         }}
         confirmReplaceOpen={confirmReplaceOpen}
         onCancelReplace={() => { setConfirmReplaceOpen(false); pendingPresetReplace.current = null; }}
@@ -1637,10 +1683,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           setConfirmSwitchOpen(false);
           if (pendingSwitchSource.current) { performSwitchToAnalysis(pendingSwitchSource.current); pendingSwitchSource.current = null; }
         }}
-        onSaveSnapshotThenSwitch={async () => {
+        onSaveSnapshotThenSwitch={() => {
           setConfirmSwitchOpen(false);
-          await handleSaveTracked();
-          if (pendingSwitchSource.current) { performSwitchToAnalysis(pendingSwitchSource.current); pendingSwitchSource.current = null; }
+          void handleSaveTracked(
+            () => { if (pendingSwitchSource.current) { performSwitchToAnalysis(pendingSwitchSource.current); pendingSwitchSource.current = null; } },
+            () => { pendingSwitchSource.current = null; },
+          );
         }}
         confirmSymbolChangeOpen={confirmSymbolChangeOpen}
         onCancelSymbolChange={() => {
@@ -1659,13 +1707,17 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             pendingSymbolChange.current = null;
           }
         }}
-        onSaveSnapshotThenSymbolChange={async () => {
+        onSaveSnapshotThenSymbolChange={() => {
           setConfirmSymbolChangeOpen(false);
-          await handleSaveTracked();
-          if (pendingSymbolChange.current) {
-            rescaleForNewSymbol(pendingSymbolChange.current.symbol, pendingSymbolChange.current.spot);
-            pendingSymbolChange.current = null;
-          }
+          void handleSaveTracked(
+            () => {
+              if (pendingSymbolChange.current) {
+                rescaleForNewSymbol(pendingSymbolChange.current.symbol, pendingSymbolChange.current.spot);
+                pendingSymbolChange.current = null;
+              }
+            },
+            () => { setSymbol(legBaseSymbol.current); pendingSymbolChange.current = null; },
+          );
         }}
         saveStrategyOpen={saveStrategyOpen}
         onCloseSaveStrategy={() => {
@@ -1674,6 +1726,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           pendingLibraryAction.current = null;
           pendingLeaveAfterSave.current = false;
           pendingSaveTrackedAfterStrategy.current = false;
+          // "先存快照再做X"时取消了保存：X不做。
+          const cont = pendingAfterTrackedSave.current;
+          pendingAfterTrackedSave.current = null;
+          cont?.onAbort?.();
           // 退出流程中"先保存"后又取消：整体放弃退出。
           setLeaveQueue([]);
         }}
@@ -1705,7 +1761,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         onRenameStrategy={handleRenameStrategy}
         onDeleteStrategy={handleDeleteStrategy}
         onToggleStarStrategy={handleToggleStar}
-        onTrackStrategy={(s) => guardLibrary(() => void handleTrack(s))}
+        onTrackStrategy={(s) => guardLibrary(() => void handleTrack(s), true)}
       />
       {confirmLibrary === "strategy" && (
         <ConfirmReplacePresetDialog
@@ -1719,7 +1775,10 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         <ConfirmSnapshotDialog
           onCancel={() => { setConfirmLibrary(null); pendingLibraryAction.current = null; }}
           onDontSave={() => { setConfirmLibrary(null); runPendingLibrary(); }}
-          onSaveSnapshot={async () => { setConfirmLibrary(null); await handleSaveTracked(); runPendingLibrary(); }}
+          onSaveSnapshot={() => {
+            setConfirmLibrary(null);
+            void handleSaveTracked(runPendingLibrary, () => { pendingLibraryAction.current = null; });
+          }}
         />
       )}
     </div>

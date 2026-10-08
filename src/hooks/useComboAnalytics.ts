@@ -1,7 +1,7 @@
 // src/hooks/useComboAnalytics.ts
 import { useMemo } from "react";
 import type { Leg, Shifts } from "@/lib/types";
-import { priceCombo, probabilityOfProfit, weightedAvgIV, attributePnl, maxProfitLoss, resolveOpeningLeg, type PnlAttribution } from "@/lib/pricing";
+import { priceCombo, probabilityOfProfit, weightedAvgIV, attributePnl, maxProfitLoss, pairOpeningLegs, openingBaseValue, type PnlAttribution } from "@/lib/pricing";
 import { attributeSegment } from "@/lib/stockOptionMap";
 import { explainLegRoles } from "@/lib/legRoles";
 import type { SavedStrategy } from "@/lib/savedStrategies";
@@ -132,59 +132,24 @@ export function useComboAnalytics(params: {
     return Math.max(Math.abs(maxProfit), Math.abs(maxLoss), 0.01);
   }, [activeLegs, spot]);
 
-  // Days elapsed: derived from the DTE difference between opening and tracked legs,
-  // so it stays in sync when the user manually adjusts the tracked legs' DTE.
-  const effectiveDaysElapsed = useMemo(() => {
-    if (!isCompareMode || activeLegs.length === 0 || !activeTrackedLegs || activeTrackedLegs.length === 0) return trackedDaysElapsed;
-    const openMaxDte = Math.max(...activeLegs.filter((l) => l.kind !== "stock").map((l) => l.dte));
-    const trackedMaxDte = Math.max(...activeTrackedLegs.filter((l) => l.kind !== "stock").map((l) => l.dte));
-    const fromDte = Math.max(0, openMaxDte - trackedMaxDte);
-    return Math.max(fromDte, trackedDaysElapsed);
-  }, [isCompareMode, activeLegs, activeTrackedLegs, trackedDaysElapsed]);
+  // 开仓至今经过的日历天数。⚠️ 不能用"开仓腿最长剩余天数−今日腿最长剩余天数"推：两边都是从今天算的剩余天数，
+  // 平掉或展期掉最远的那条腿后会算出好几十天（日历价差平掉远月，5天会显示成30天）。
+  const effectiveDaysElapsed = trackedDaysElapsed;
 
   const trackedResult = useMemo(() => {
     if (!isCompareMode || !activeTrackedLegs) return null;
 
     const currentSpot = effectiveTrackedSpot;
-    // Pair each tracked leg with its opening counterpart via
-    // resolveOpeningLeg (id-based, with fallbacks for pre-existing data —
-    // see its own comment in pricing.ts), not by raw array position —
-    // trackedLegs can be reordered (moveTrackedLeg) or grown independently
-    // of legs (a roll/hedge/protect added straight to the tracked side, see
-    // useLegEditing.ts), at which point
-    // `activeTrackedLegs[index]`/`activeLegs[index]` silently stop being
-    // "the same leg". A tracked leg with no resolvable opening leg falls
-    // through to `base = 0` below, same as the old "no opening leg at this
-    // index" fallback.
-    const openingById = new Map(activeLegs.map((l) => [l.id, l]));
+    // 每条腿的成本基准一对一配对（pairOpeningLegs，见pricing.ts），不能按位置配。
+    const bases = pairOpeningLegs(activeTrackedLegs, activeLegs);
     let shiftedValue = 0;
     let netPremium = 0;
     const perLeg = activeTrackedLegs.map((leg, index) => {
-      const openingLeg = resolveOpeningLeg(leg, index, activeLegs, openingById);
       const sign = leg.action === "buy" ? 1 : -1;
-      const openingSign = openingLeg?.action === "buy" ? 1 : -1;
-      // 2026-09-14 bug fix: this used to compare raw per-contract premiums
-      // with no `qty` multiplier at all — correct only for qty=1, and
-      // silently understating (or overstating, for a rolled leg whose size
-      // changed) every multi-contract position's P&L by a factor of qty.
-      // Stayed invisible for a long time because nothing else in the app
-      // cross-checked this number against an independently-computed P&L —
-      // until situationExplainer.ts's legPnlSinceOpen (which does multiply
-      // by qty, same convention as legShiftedPrice/legGreekBreakdown in
-      // pricing.ts for option legs) started disagreeing with it for any
-      // leg with qty > 1. Uses the CURRENT tracked leg's qty for both sides
-      // of the comparison (same convention as legPnlSinceOpen) rather than
-      // openingLeg's — they're normally equal, and there's no well-defined
-      // meaning for "half of this leg's opening cost" if a roll changed the
-      // size. Stock legs stay unscaled (no `shares` multiplier), matching
-      // legShiftedPrice's own stock branch and its comment on why.
+      // 两边都按今天这条腿的张数算（每股口径，正股不乘股数，跟legShiftedPrice一致）。
       const qty = leg.kind === "stock" ? 1 : (leg.qty ?? 1);
       const shifted = leg.kind === "stock" ? sign * (currentSpot - leg.strike) : sign * qty * leg.premium;
-      const base = openingLeg
-        ? openingLeg.kind === "stock"
-          ? openingSign * (spot - openingLeg.strike)
-          : openingSign * qty * openingLeg.premium
-        : 0;
+      const base = openingBaseValue(leg, bases[index], spot);
       const change = shifted - base;
 
       shiftedValue += shifted;

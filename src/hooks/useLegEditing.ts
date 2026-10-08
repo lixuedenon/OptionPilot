@@ -139,7 +139,7 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
   const handleRollConfirm = (newLeg: Leg, sourcePnl?: number) => {
     if (!rollTarget) return;
     // 给新腿记上来源（derivedFrom）：界面据此给这对腿铺同色背景，撤销时据此恢复原腿。
-    const taggedLeg: Leg = { ...newLeg, derivedFrom: { legId: rollTarget.id, via: "roll" } };
+    const taggedLeg: Leg = { ...newLeg, entryPremium: newLeg.premium, derivedFrom: { legId: rollTarget.id, via: "roll" } };
     if (rollTargetSource === "tracked") {
       // 新腿没有对应的开仓组合腿（它是后来才有的），openLegId不设是对的，见types.ts。
       setTrackedLegs((prev) => (prev ? insertAfter(prev.map((l) => (l.id === rollTarget.id ? { ...l, disabled: true, closedPnl: sourcePnl } : l)), rollTarget.id, taggedLeg) : prev));
@@ -159,7 +159,7 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
   };
   const handleProtectConfirm = (protectLeg: Leg) => {
     if (!protectTarget) return;
-    const taggedLeg: Leg = { ...protectLeg, derivedFrom: { legId: protectTarget.id, via: "protect" } };
+    const taggedLeg: Leg = { ...protectLeg, entryPremium: protectLeg.premium, derivedFrom: { legId: protectTarget.id, via: "protect" } };
     if (protectTargetSource === "tracked") {
       setTrackedLegs((prev) => (prev ? insertAfter(prev, protectTarget.id, taggedLeg) : prev));
     } else {
@@ -179,7 +179,7 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
     // (handleHedge above never takes a legId either), so there's no single
     // "source" leg to link back to or restore on undo. Tagged only so the
     // menu can still show "撤销对冲" instead of a generic "删除"/"平仓".
-    const taggedLeg: Leg = { ...hedgeLeg, derivedFrom: { via: "hedge" } };
+    const taggedLeg: Leg = { ...hedgeLeg, entryPremium: hedgeLeg.premium, derivedFrom: { via: "hedge" } };
     if (hedgeTargetSource === "tracked") {
       setTrackedLegs((prev) => (prev ? [...prev, taggedLeg] : prev));
     } else {

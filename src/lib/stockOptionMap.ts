@@ -3,7 +3,7 @@
 // 盈亏口径跟priceCombo完全一致（legShiftedPrice之和 − 开仓净权利金，每股计），
 // 保证跟"盈亏图"标签同一个时间/股价/波动率下的数字相同。
 import type { Leg } from "@/lib/types";
-import { impliedVol, legShiftedPrice, resolveOpeningLeg, shapley3 } from "@/lib/pricing";
+import { impliedVol, legShiftedPrice, pairOpeningLegs, openingBaseValue, shapley3 } from "@/lib/pricing";
 import { ncdf } from "@/lib/bs";
 import { bsPrice } from "@/lib/bs";
 import { calendarDaysBetween } from "@/lib/dateUtils";
@@ -251,16 +251,14 @@ export function pathOdds(model: MapModel, id: PathId): PathOdds {
 // 再加上已平仓/展期掉的腿已实现的closedPnl。跟useComboAnalytics的trackedResult.change + realizedTrackedPnl同一口径。
 export function trackedTotalPnl(openingLegs: Leg[], legsNow: Leg[], spotNow: number, openingSpot: number): number {
   const openActive = openingLegs.filter((l) => !l.disabled);
-  const openingById = new Map(openActive.map((l) => [l.id, l]));
+  const active = legsNow.filter((l) => !l.disabled);
+  const bases = pairOpeningLegs(active, openActive);
   let total = 0;
-  legsNow.filter((l) => !l.disabled).forEach((leg, index) => {
-    const o = resolveOpeningLeg(leg, index, openActive, openingById);
+  active.forEach((leg, index) => {
     const sign = leg.action === "buy" ? 1 : -1;
     const qty = leg.kind === "stock" ? 1 : (leg.qty ?? 1);
     const shifted = leg.kind === "stock" ? sign * (spotNow - leg.strike) : sign * qty * leg.premium;
-    const oSign = o?.action === "buy" ? 1 : -1;
-    const base = o ? (o.kind === "stock" ? oSign * (openingSpot - o.strike) : oSign * qty * o.premium) : 0;
-    total += shifted - base;
+    total += shifted - openingBaseValue(leg, bases[index], openingSpot);
   });
   for (const l of legsNow) total += l.closedPnl ?? 0;
   return total;

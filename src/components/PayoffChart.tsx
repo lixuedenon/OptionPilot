@@ -2,7 +2,7 @@
 import { useMemo, useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import type { Leg, Shifts } from "@/lib/types";
 import { blackScholes } from "@/lib/bs";
-import { resolveOpeningLeg, impliedVol, pnlAtExpiry } from "@/lib/pricing";
+import { pairOpeningLegs, impliedVol, pnlAtExpiry } from "@/lib/pricing";
 import { addCalendarDays, formatDateInput } from "@/lib/dateUtils";
 import { useI18n } from "@/i18n/I18nContext";
 import { AlertTriangle } from "lucide-react";
@@ -94,19 +94,13 @@ function calcPnLAtTime(legs: Leg[], spot: number, sTest: number, daysElapsed: nu
 // Pricing uses the tracked leg's current DTE and IV (back-solved from current premium),
 // but profit is measured against what was originally paid (openingLegs premium).
 //
-// Pairs each tracked leg with its opening counterpart via resolveOpeningLeg
-// (id-based, with fallbacks for pre-existing data — see its own comment in
-// pricing.ts), not by raw array position `i` — trackedLegs can be reordered
-// (moveTrackedLeg) or grown independently of openingLegs (a roll/hedge/
-// protect added straight to the tracked side), at which point index-pairing
-// silently compares a leg's current price against some OTHER leg's opening
-// premium as its "cost basis".
+// 每条腿的成本基准用pairOpeningLegs一对一配对（见pricing.ts），不能按位置配。
 function calcTrackedPnL(trackedLegs: Leg[], openingLegs: Leg[], spot: number, sTest: number): number {
-  const openingById = new Map(openingLegs.map((l) => [l.id, l]));
+  const bases = pairOpeningLegs(trackedLegs, openingLegs);
   let pnl = 0;
   for (let i = 0; i < trackedLegs.length; i++) {
     const l = trackedLegs[i];
-    const open = resolveOpeningLeg(l, i, openingLegs, openingById);
+    const open = bases[i];
     const sign = l.action === "buy" ? 1 : -1;
     if (l.kind === "stock") { pnl += sign * (sTest - l.strike); continue; }
     const qty = l.qty ?? 1;
@@ -123,11 +117,11 @@ function calcTrackedPnL(trackedLegs: Leg[], openingLegs: Leg[], spot: number, sT
 }
 
 function calcTrackedPnLAtTime(trackedLegs: Leg[], openingLegs: Leg[], spot: number, sTest: number, daysElapsed: number): number {
-  const openingById = new Map(openingLegs.map((l) => [l.id, l]));
+  const bases = pairOpeningLegs(trackedLegs, openingLegs);
   let pnl = 0;
   for (let i = 0; i < trackedLegs.length; i++) {
     const l = trackedLegs[i];
-    const open = resolveOpeningLeg(l, i, openingLegs, openingById);
+    const open = bases[i];
     const sign = l.action === "buy" ? 1 : -1;
     if (l.kind === "stock") { pnl += sign * (sTest - l.strike); continue; }
     const qty = l.qty ?? 1;

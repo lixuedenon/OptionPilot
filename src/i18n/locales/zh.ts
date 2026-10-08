@@ -2046,6 +2046,9 @@ const zh: Dict = {
   "stip.lg.bars": "逐段拆解",
   "stip.lg.exit": "该下车",
   "stip.lg.future": "今天以后",
+  "tracked.otherLegsStale": "这条腿用了你填的今天的价，但其它腿拉不到今天的报价，还是 {date} 的，股价也还是那天的。请把其它腿也刷新或手动输入今天的权利金，否则算出来的隐含波动率和盈亏会混着两天的数。",
+  "tracked.saveRetry": "刷新报价的时候组合被改过了，这次没有保存，免得把你的改动冲掉。请再点一次保存。",
+  "storage.writeFailed": "浏览器存储空间满了，刚才的改动没能存进策略库。请先在首页「数据」里导出备份，再删掉一些不用的策略或快照。",
 };
 
 export default zh;

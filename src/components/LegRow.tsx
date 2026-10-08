@@ -486,6 +486,12 @@ export default function LegRow({
   // premium entirely.
   const [priceView, setPriceView] = useState<"opening" | "market">("opening");
   const openingPremiumRef = useRef<number | null>(null);
+  // 手动刷新报价是异步的：回来时这一行可能已经不在了（切了快照/策略），就别再写回去。
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const sym = symbol?.trim() ?? "";
   // 滑块离开原点时（locked）暂停自动拉价和手动刷新价格。
@@ -662,12 +668,14 @@ export default function LegRow({
     setPriceError(null);
     try {
       const result = await fetchLegPremium(sym, leg.type, leg.strike, leg.dte, true);
+      if (!mountedRef.current) return;
       applyFetchedPremium(result);
       setPriceView("market");
     } catch (e) {
+      if (!mountedRef.current) return;
       setPriceError(e instanceof Error ? e.message : t("leg.fetchPriceFailed"));
     } finally {
-      setPriceFetching(false);
+      if (mountedRef.current) setPriceFetching(false);
     }
   };
 

@@ -441,37 +441,66 @@ export function classifySpotOnCurve(legs: Leg[], openingSpot: number, testSpot: 
   return Math.abs(testSpot - peak.spot) <= nearWindow ? "near-peak" : "in-zone";
 }
 
-// Resolves which OPENING-combo leg a given tracked leg corresponds to.
-// Tries, in order:
-//   1. `openLegId` (see types.ts) — the correct, current mechanism, set
-//      whenever trackedLegs is derived/cloned from the opening combo.
-//   2. The tracked leg's own `id` happening to already BE an opening leg's
-//      id — true for historicalBackfill.ts's repriceLegsAtDate, which
-//      reprices a copy of the opening legs in place (keeping their ids)
-//      rather than cloning them with a fresh uid(), so backfilled/estimated
-//      snapshots never get an openLegId but their ids already double as one.
-//   3. Plain positional index — the OLD behavior everywhere this file used
-//      to just write `openingLegs[i]`, kept as a last-resort fallback for
-//      real (manually-saved) snapshots/trackedLegs created before
-//      `openLegId` existed. That old data has no way to carry the field
-//      retroactively, but in practice still lines up 1:1 by position (this
-//      fix only prevents FUTURE divergence — see the bug this replaced:
-//      trackedLegs/legs silently drifting out of positional sync once a
-//      roll/hedge/protect could target the tracked side, or a leg got
-//      reordered via moveTrackedLeg).
-export function resolveOpeningLeg(
-  trackedLeg: Leg,
-  index: number,
-  openingLegs: Leg[],
-  openingById: Map<string, Leg>,
-): Leg | undefined {
-  if (trackedLeg.openLegId) {
-    const byOpenLegId = openingById.get(trackedLeg.openLegId);
-    if (byOpenLegId) return byOpenLegId;
+// 今日组合（或某个快照）每条腿对应的"开仓时的价格基准"，一对一配对：每条开仓腿最多被用一次。
+// 顺序：①openLegId或自己的id就是开仓腿的id；②剩下的展期/保护/对冲新开的腿（derivedFrom）用它自己开出来时的权利金
+// （entryPremium，老数据没有时用当前权利金）；③同一张合约（买卖、类型、行权价相同，到期日最接近的那条）；
+// ④老数据兜底：同一位置、买卖和类型相同。都对不上=没有基准（undefined）。
+// ⚠️ 不能只按位置配：加了保护/对冲腿或调过顺序后，位置就错开了，会拿别的腿的开仓价当成本。
+export interface OpeningBase {
+  action: Leg["action"];
+  kind?: Leg["kind"];
+  type: Leg["type"];
+  strike: number;
+  premium: number;
+  own: boolean; // true=这条腿自己的开仓价（展期/保护/对冲新开的）
+}
+export function pairOpeningLegs(tracked: Leg[], opening: Leg[]): (OpeningBase | undefined)[] {
+  const out: (OpeningBase | undefined)[] = tracked.map(() => undefined);
+  const used = new Set<number>();
+  const kindOf = (l: Leg) => l.kind ?? "option";
+  const claim = (i: number, j: number) => {
+    used.add(j);
+    const o = opening[j];
+    out[i] = { action: o.action, kind: o.kind, type: o.type, strike: o.strike, premium: o.premium, own: false };
+  };
+  for (let i = 0; i < tracked.length; i++) {
+    const l = tracked[i];
+    const j = opening.findIndex((o, k) => !used.has(k) && ((l.openLegId !== undefined && o.id === l.openLegId) || o.id === l.id));
+    if (j >= 0) claim(i, j);
   }
-  const byOwnId = openingById.get(trackedLeg.id);
-  if (byOwnId) return byOwnId;
-  return openingLegs[index];
+  // 开仓组合里本来就有的展期腿（分析模式时做的）上面按id配上了；剩下的derivedFrom是持仓以后才开的，用它自己的开仓价，
+  // 不按合约去配——保护腿可能跟某条开仓腿恰好是同一张合约，配上就把那条的成本抢走了。
+  tracked.forEach((l, i) => {
+    if (l.derivedFrom && out[i] === undefined) out[i] = { action: l.action, kind: l.kind, type: l.type, strike: l.strike, premium: l.entryPremium ?? l.premium, own: true };
+  });
+  const pending = () => tracked.map((_, i) => i).filter((i) => out[i] === undefined);
+  const sameContract = (o: Leg, l: Leg) =>
+    kindOf(o) === kindOf(l) && o.action === l.action && (kindOf(l) === "stock" || (o.type === l.type && Math.abs(o.strike - l.strike) < 1e-9));
+  for (const i of pending()) {
+    const l = tracked[i];
+    let best = -1;
+    opening.forEach((o, k) => {
+      if (used.has(k) || !sameContract(o, l)) return;
+      if (best < 0 || Math.abs(o.dte - l.dte) < Math.abs(opening[best].dte - l.dte)) best = k;
+    });
+    if (best >= 0) claim(i, best);
+  }
+  for (const i of pending()) {
+    const l = tracked[i];
+    const o = opening[i];
+    if (o && !used.has(i) && kindOf(o) === kindOf(l) && o.action === l.action && (kindOf(l) === "stock" || o.type === l.type)) claim(i, i);
+  }
+  return out;
+}
+
+// 某条腿相对开仓基准的盈亏基数（每股计，跟legShiftedPrice同一口径）：期权=方向×张数×开仓权利金；
+// 开仓组合里的正股=方向×(开仓股价−买入价)；展期/对冲新开的正股按它自己的买入价算，基数0。
+export function openingBaseValue(leg: Leg, base: OpeningBase | undefined, openingSpot: number): number {
+  if (!base) return 0;
+  const sign = base.action === "buy" ? 1 : -1;
+  if (base.kind === "stock") return base.own ? 0 : sign * (openingSpot - base.strike);
+  const qty = leg.kind === "stock" ? 1 : (leg.qty ?? 1);
+  return sign * qty * base.premium;
 }
 
 // Weighted-average implied vol across option legs (weighted by |premium|).

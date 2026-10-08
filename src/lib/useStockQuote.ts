@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -37,12 +37,15 @@ export async function fetchSpotPrice(symbol: string): Promise<number> {
 }
 
 export function useStockQuote(symbol: string) {
-  const [quote, setQuote] = useState<StockQuote | null>(null);
+  // 报价跟请求它的代码绑在一起：换了代码以后，旧代码的报价（哪怕晚到）不再当成现在这只股票的价。
+  const [state, setState] = useState<{ sym: string; quote: StockQuote } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const latestSym = useRef("");
 
   const fetchQuote = useCallback(async (sym: string) => {
     if (!sym || sym.trim().length === 0) return;
+    latestSym.current = sym;
     setLoading(true);
     setError(null);
     try {
@@ -61,12 +64,14 @@ export function useStockQuote(symbol: string) {
       if (typeof data.price !== "number" || isNaN(data.price)) {
         throw new Error("Invalid price data");
       }
-      setQuote(data);
+      if (latestSym.current !== sym) return;
+      setState({ sym, quote: data });
     } catch (e) {
+      if (latestSym.current !== sym) return;
       setError(e instanceof Error ? e.message : "Failed to fetch quote");
-      setQuote(null);
+      setState(null);
     } finally {
-      setLoading(false);
+      if (latestSym.current === sym) setLoading(false);
     }
   }, []);
 
@@ -80,5 +85,6 @@ export function useStockQuote(symbol: string) {
     return () => clearTimeout(t);
   }, [symbol, fetchQuote]);
 
+  const quote = state && state.sym === symbol.trim() ? state.quote : null;
   return { quote, loading, error, refetch: () => fetchQuote(symbol.trim()) };
 }

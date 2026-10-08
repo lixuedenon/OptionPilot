@@ -129,19 +129,52 @@ function migrateLegacySnapshots(s: SavedStrategy): SavedStrategy {
   return s;
 }
 
+// 老数据里展期/保护/对冲新开的腿没有entryPremium（盈亏要拿它当成本）：按时间顺序找它最早出现的那条真实快照，用那时的权利金补上。
+// 只读时补，不写回；找不到就留空（pairOpeningLegs会退回用当前权利金）。
+const sameDerived = (a: Leg, b: Leg) =>
+  !!a.derivedFrom && !!b.derivedFrom && a.derivedFrom.via === b.derivedFrom.via && a.action === b.action && (a.kind ?? "option") === (b.kind ?? "option") &&
+  a.type === b.type && a.strike === b.strike && (a.qty ?? 1) === (b.qty ?? 1);
+export function fillEntryPremiums(legs: Leg[], snapshots: TrackedSnapshot[] | undefined): Leg[] {
+  if (!legs.some((l) => l.derivedFrom && l.entryPremium === undefined)) return legs;
+  const real = [...(snapshots ?? [])].filter((sn) => !sn.estimated).sort((a, b) => a.savedAt - b.savedAt);
+  return legs.map((l) => {
+    if (!l.derivedFrom || l.entryPremium !== undefined) return l;
+    for (const sn of real) {
+      const hit = sn.legs.find((x) => sameDerived(x, l));
+      if (hit) return { ...l, entryPremium: hit.entryPremium ?? hit.premium };
+    }
+    return l;
+  });
+}
+function migrateEntryPremiums(s: SavedStrategy): SavedStrategy {
+  const snaps = s.trackedSnapshots;
+  if (!snaps || !snaps.some((sn) => sn.legs.some((l) => l.derivedFrom && l.entryPremium === undefined))) return s;
+  return { ...s, trackedSnapshots: snaps.map((sn) => ({ ...sn, legs: fillEntryPremiums(sn.legs, snaps) })) };
+}
+
 function loadFromStorage(): SavedStrategy[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const arr = JSON.parse(raw) as SavedStrategy[];
-    return arr.map(migrateLegacySnapshots);
+    return arr.map(migrateLegacySnapshots).map(migrateEntryPremiums);
   } catch {
     return [];
   }
 }
 
+// 浏览器存储写满时（快照越积越多会碰到）不抛出去，免得界面停在改了一半的状态；发个事件让App提示用户。
+export const STORAGE_FAIL_EVENT = "optionpilot:storage-write-failed";
 function saveToStorage(strategies: SavedStrategy[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(strategies));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(strategies));
+  } catch {
+    try {
+      window.dispatchEvent(new Event(STORAGE_FAIL_EVENT));
+    } catch {
+      /* 没有window（测试环境）就算了 */
+    }
+  }
 }
 
 export async function loadSavedStrategies(): Promise<SavedStrategy[]> {

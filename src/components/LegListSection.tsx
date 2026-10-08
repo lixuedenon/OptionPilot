@@ -415,8 +415,9 @@ export default function LegListSection({
               onCompare={isCompareMode ? undefined : () => onCompare(leg.id)}
               onMoveUp={() => onMoveLeg(i, -1)}
               onMoveDown={() => onMoveLeg(i, 1)}
-              canMoveUp={i > 0}
-              canMoveDown={i < legs.length - 1}
+              // 对比模式下开仓组合只能修正输错的数，不调顺序。
+              canMoveUp={!isCompareMode && i > 0}
+              canMoveDown={!isCompareMode && i < legs.length - 1}
               selected={selectedLegIds.has(leg.id)}
               onToggleSelect={() => onToggleLegSelection(leg.id)}
               locked={locked}

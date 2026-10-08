@@ -245,12 +245,13 @@ export default function AppHeader({
               placeholder="SPY"
               value={symbol}
               onChange={(e) => onSymbolChange(e.target.value.toUpperCase())}
-              disabled={locked}
+              // 对比模式跟着一条已存的策略走，换代码会把别的股票的腿存进这条策略。
+              disabled={locked || isCompareMode}
               className="w-16 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs font-semibold text-slate-100 placeholder:text-slate-600 focus:border-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
             />
             <button
               onClick={onToggleSymbolDropdown}
-              disabled={locked}
+              disabled={locked || isCompareMode}
               className="-ml-px rounded-r border border-l-0 border-slate-700 bg-slate-900 px-1 py-1 text-slate-500 transition hover:text-slate-300 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <ChevronDown size={12} />
