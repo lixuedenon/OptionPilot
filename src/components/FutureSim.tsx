@@ -111,8 +111,9 @@ interface MainRun {
   alt: RuleSuggestion | null | undefined; // undefined=还没算完
   earn: SimStats | null; // 加了财报跳空时，"不加跳空"那一组的结果
   error: string | null;
+  key: string; // 这批结果是哪组输入算的（runKey）；输入变了、新的还没开始算时，不拿旧结果当新的说
 }
-const EMPTY_RUN: MainRun = { batches: [], holding: null, after: null, exits: [], samples: [], bands: [], done: null, curve: null, alt: undefined, earn: null, error: null };
+const EMPTY_RUN: MainRun = { key: "", batches: [], holding: null, after: null, exits: [], samples: [], bands: [], done: null, curve: null, alt: undefined, earn: null, error: null };
 
 const fmtYmd = (sec: number) => new Date(sec * 1000).toISOString().slice(0, 10);
 
@@ -135,10 +136,11 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
   const [lossLimit, setLossLimit] = useState<number>(() => loadNumber(LIMIT_KEY, 1000));
   const [view, setView] = useState<"plane" | "3d">(loadView);
   const [hv, setHv] = useState<{ status: "loading" | "ok" | "error"; hv20?: number }>({ status: "loading" });
-  const [run, setRun] = useState<MainRun>(EMPTY_RUN);
+  const [rawRun, setRun] = useState<MainRun>(EMPTY_RUN);
   const [forkRun, setForkRun] = useState<{ key: string; stats: SimStats; holding: Float32Array; samples: Sample[] } | null>(null);
   const [runNonce, setRunNonce] = useState(0);
-  const [storyIdx, setStoryIdx] = useState(0); // 立体图里看哪一种典型结局
+  // 看哪一种典型结局：按种类记（重新推演后每种结局的顺序、有没有都可能变，按位置记会换成别的结局）
+  const [storyKind, setStoryKind] = useState<string | null>(null);
   const [pathHelp, setPathHelp] = useState(false); // "两种走法有什么区别"对照表展开
   const [ruleSort, setRuleSort] = useState<"trade" | "per30">("per30"); // 第3组：规则对比表按什么排
   const [pathMode, setPathMode] = useState<"random" | "hist">(loadPathMode);
@@ -252,10 +254,20 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
   // 加了跳空时，"市场报价"里含着这次财报：跟实际波动比、画波动率曲线时用扣掉财报以后的
   const ivCmp = useJump ? exEarningsVol(ivCenter, earnJump!, days) : ivCenter;
   const histAvgVol = useMemo(() => (histPaths && histPaths.vols.length ? histPaths.vols.reduce((a, b) => a + b, 0) / histPaths.vols.length : null), [histPaths]);
+  // 图的股价范围（也是后台推演的网格）：情景点在范围里时不管它——拖滑块只是换个点画，不该让一万次推演从头再算；
+  // 拖到范围外才放宽，而且按现价5%一档放宽，档内再拖也不重算
+  const baseModel = useMemo(
+    () => (setup ? buildMapModel(legs, spot, dV, { baseIv: ivCenter }, 120, ROWS) : null),
+    [setup, legs, spot, dV, ivCenter],
+  );
+  const scenStep = spot * 0.05;
+  const scenExt = !baseModel || !scenario || (scenario.price >= baseModel.sMin && scenario.price <= baseModel.sMax)
+    ? null
+    : scenario.price < baseModel.sMin ? Math.max(0.01, Math.floor(scenario.price / scenStep) * scenStep) : Math.ceil(scenario.price / scenStep) * scenStep;
   const model = useMemo(
-    () => (setup ? buildMapModel(legs, spot, dV, { extraPrices: scenario ? [scenario.price] : [], baseIv: ivCenter }, 120, ROWS) : null),
+    () => (scenExt == null || !setup ? baseModel : buildMapModel(legs, spot, dV, { extraPrices: [scenExt], baseIv: ivCenter }, 120, ROWS)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [setup, legs, spot, dV, scenario?.price, ivCenter],
+    [baseModel, scenExt],
   );
   const grid: GridSpec | null = useMemo(() => (model ? { sMin: model.sMin, sMax: model.sMax, rows: ROWS, days } : null), [model, days]);
   // 到期时最多赚/亏多少：用来判断止盈止损线碰不碰得到。
@@ -270,6 +282,8 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
       histInput ? `hist:${histKey}:${histInput.count}` : histWaiting ? "histWait" : "random", effSkew.toFixed(3), hsKey, useJump ? `earn:${earnDay}:${earnJump!.toFixed(4)}` : "noEarn"].join("#");
   }, [runSetup, grid, spot, rules, runVol, ivCenter, drift, dV, totalTerm, runNonce, histInput, histKey, histWaiting, effSkew, hsKey, useJump, earnDay, earnJump]);
 
+  const run = rawRun.key === runKey ? rawRun : EMPTY_RUN;
+
   // 主推演：输入变了（防抖400ms）就换一个后台线程从头算。
   useEffect(() => {
     if (!runSetup || !prepared || !grid || !volReady || emptyText || histWaiting) return;
@@ -279,10 +293,14 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
       const w = new Worker(new URL("../lib/futureSim.worker.ts", import.meta.url), { type: "module" });
       workerRef.current = w;
       queueRef.current = [];
-      setRun(EMPTY_RUN);
+      setRun({ ...EMPTY_RUN, key: runKey });
       const runId = Date.now();
       w.onmessage = (e: MessageEvent<FutureResponse>) => {
         if (!cancelled && e.data.runId === runId) queueRef.current.push(e.data);
+      };
+      // 线程本身起不来/崩了（不是推演里抛的错）也要说出错了，不然界面一直等着
+      w.onerror = (ev) => {
+        if (!cancelled) queueRef.current.push({ runId, type: "error", message: ev.message || "worker" });
       };
       const req: FutureRequest = {
         kind: "main", runId, setup: runSetup, vol: runVol, ivCenter: Math.max(0.05, ivCmp + dV / 100), batches: BATCHES, perBatch: PER_BATCH, samples: SAMPLES,
@@ -293,6 +311,8 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      workerRef.current?.terminate();
+      workerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runKey, volReady, emptyText, histWaiting]);
@@ -343,6 +363,8 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      forkWorkerRef.current?.terminate();
+      forkWorkerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forkKey, volReady]);
@@ -559,6 +581,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
   const STORY_COLOR: Record<Story["kind"], string> = { tp: "#34d399", sl: "#f43f5e", delta: "#a78bfa", time: "#fbbf24", win: "#fde68a", loss: "#fb7185" };
   const shareText = (v: number) => (v > 0 && v < 1 ? t("future.shareLt1") : t("future.shareAbout", { p: Math.round(v) }));
   const stories = run.done?.stories ?? [];
+  const storyIdx = Math.max(0, stories.findIndex((x) => x.kind === storyKind));
   const drawPlane = (g: CanvasRenderingContext2D, W: number, H: number) => {
     const ed = run.done?.exitDays;
     const M = { l: PLANE_ML, r: PLANE_MR, t: ed ? 66 : 22, b: 34 };
@@ -589,7 +612,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
     }
     // 典型结局：下车前实线，下车后接着画成淡色虚线（已经不算数，只是看股价后来去了哪）。
     // 选中的那条（上方按钮，跟下面"你的钱会怎么变"、立体图是同一条）画粗、贴说明，其余的淡淡画一下；选中的最后画，压在最上面。
-    const selIdx = Math.min(storyIdx, Math.max(0, stories.length - 1));
+    const selIdx = storyIdx;
     const order = stories.map((_, i) => i).filter((i) => i !== selIdx).concat(stories.length ? [selIdx] : []);
     for (const si of order) {
       const st = stories[si];
@@ -669,7 +692,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
       const mx = Math.max(1, ...tot);
       const bw = Math.max(1, pw / days - 1);
       // 跟"看哪一种结局"联动：选中的那种颜色亮，其它淡（选的是拿到期的结局时，全部淡一些——拿到期的不在这些柱子里）
-      const selKind = stories.length ? stories[Math.min(storyIdx, stories.length - 1)].kind : null;
+      const selKind = stories.length ? stories[storyIdx].kind : null;
       for (let d = 1; d <= days && d < tot.length; d++) {
         let y = top + 32 + hh;
         for (const [k, col] of [["tp", "rgba(52,211,153,0.85)"], ["sl", "rgba(244,63,94,0.9)"], ["delta", "rgba(167,139,250,0.9)"], ["time", "rgba(251,191,36,0.85)"]] as const) {
@@ -731,7 +754,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
       g.fillStyle = "#fda4af";
       g.fillText(t("future.endAllLoss", { p: Math.round(100 - win) }), x0, M.t + ph + 24);
       // 选中那条走势到期停在哪：三角
-      const sel = stories.length ? stories[Math.min(storyIdx, stories.length - 1)] : null;
+      const sel = stories.length ? stories[storyIdx] : null;
       const endP = sel ? sel.prices[sel.prices.length - 1] : null;
       if (endP != null && endP >= model.sMin && endP <= model.sMax) {
         const yy = Y(endP);
@@ -750,7 +773,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
     // 典型结局的故事：只给选中的那条贴说明（贴在下车或到期的那一点）
     const placed: Placed[] = [];
     stories.forEach((st, i) => {
-      if (i !== Math.min(storyIdx, stories.length - 1)) return;
+      if (i !== storyIdx) return;
       const c = STORY_COLOR[st.kind];
       const v = st.prices[Math.min(st.day, st.prices.length - 1)];
       const anchor = { x: X(st.day), y: Y(Math.min(model.sMax, Math.max(model.sMin, v))) };
@@ -837,7 +860,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
     dayTick: (d: number) => t("future.dayTick", { d }),
     scen: (d: number, price: string, v: string) => t("future.scenTag3d", { d, p: price, v }),
   };
-  const story3d = stories.length ? stories[Math.min(storyIdx, stories.length - 1)] : null;
+  const story3d = stories.length ? stories[storyIdx] : null;
   const money3d = (v: number) => `${v < -0.005 ? "−" : ""}$${Math.abs(v).toFixed(2)}`;
   const path3d = story3d
     ? {
@@ -1216,11 +1239,11 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
       } else if (scenario.day > 0) {
         scenLines.push(t("future.scenFlat", { d }));
       }
-      // 万次推演里，走到情景那天之前已经按规则下车了多少：情景点说的只是还拿着的那部分
+      // 万次推演里，到情景那天为止（含那天，跟下面"钱会怎么变"的累计同一口径）已经按规则下车了多少：情景点说的只是还拿着的那部分
       const ed = run.done?.exitDays;
       if (ed && d > 0) {
         const n = run.done!.stats.n || 1;
-        const before = (arr: number[]) => (arr.slice(0, Math.min(arr.length, d)).reduce((a, b) => a + b, 0) / n) * 100;
+        const before = (arr: number[]) => (arr.slice(0, Math.min(arr.length, d + 1)).reduce((a, b) => a + b, 0) / n) * 100;
         const tp = before(ed.tp), sl = before(ed.sl), dl = before(ed.delta), tm = before(ed.time);
         scenLines.push(
           t("future.scenBefore", {
@@ -1326,7 +1349,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
           cell("r", t("future.concl.risk"), "risk", (
             <>
               {rules.stopMult != null && sl.pct > 0
-                ? t("future.concl.riskOpen", { k: Math.max(0, Math.round(sl.pct / 10)), l: usd(sl.avgPnl), w: money(sm.worst5) })
+                ? t("future.concl.riskOpen", { k: sl.pct < 1 ? t("future.concl.lt1") : `${Math.round(sl.pct)}%`, l: usd(sl.avgPnl), w: money(sm.worst5) })
                 : t("future.concl.riskNoSl", { w: money(sm.worst5) })}
               {earnDay != null && <> {t("future.concl.riskEarn", { d: earnDay })}</>}
             </>
@@ -1380,7 +1403,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
   }
 
   // 彩色线举个例子：选中的那条是什么（历史真实走法=哪一段真实行情；随机=那一类里排在正中间的一条），为什么有的线很短
-  const selStory = stories.length ? stories[Math.min(storyIdx, stories.length - 1)] : null;
+  const selStory = stories.length ? stories[storyIdx] : null;
   const storyExample = selStory
     ? t(selStory.start != null ? "future.howPlaneEgHist" : "future.howPlaneEgRand", {
         name: t(`future.story_${selStory.kind}`), date: fmtYmd(selStory.start ?? 0), d: days, s: spot.toFixed(2), e: selStory.day,
@@ -1470,9 +1493,9 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
           {stories.map((st, i) => (
             <button
               key={st.kind}
-              onClick={() => setStoryIdx(i)}
-              className={`rounded border px-2 py-0.5 ${i === Math.min(storyIdx, stories.length - 1) ? "font-semibold text-slate-100" : "border-slate-700 text-slate-400 hover:text-slate-200"}`}
-              style={i === Math.min(storyIdx, stories.length - 1) ? { borderColor: STORY_COLOR[st.kind], background: `${STORY_COLOR[st.kind]}22` } : undefined}
+              onClick={() => setStoryKind(st.kind)}
+              className={`rounded border px-2 py-0.5 ${i === storyIdx ? "font-semibold text-slate-100" : "border-slate-700 text-slate-400 hover:text-slate-200"}`}
+              style={i === storyIdx ? { borderColor: STORY_COLOR[st.kind], background: `${STORY_COLOR[st.kind]}22` } : undefined}
             >
               {t(`future.story_${st.kind}`)}{shareText(st.share)}
             </button>
@@ -1508,7 +1531,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
           <CanvasBox
             className="h-full w-full"
             draw={drawPlane}
-            deps={[model, run.bands, run.done, forkShown, scen?.day, scen?.price, p.endDay, symbol, storyIdx, t]}
+            deps={[model, run.bands, run.done, forkShown, scen?.day, scen?.price, p.endDay, symbol, storyIdx, earnDay, earnings?.next, t]}
             label={histActive ? t("future.titleHist", { s: symbol, n: totalN.toLocaleString() }) : t("future.title", { s: symbol })}
           />
         )}

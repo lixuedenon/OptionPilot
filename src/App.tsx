@@ -988,9 +988,9 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     const { segments, totals } = trackedTimeline;
     return {
       todayDay: trackedHistory.todayDay, pnlOffset: trackedHistory.pnlNow, opening: { legs: openingDayLegs, spot },
-      history: trackedHistory.points, markers: trackedHistory.markers, segments, totals, ruleExit,
+      history: trackedHistory.points, markers: trackedHistory.markers, segments, totals, ruleExit, asOfDays: trackedAsOfDays,
     };
-  }, [showStockOptionMap, trackedHistory, trackedTimeline, ruleExit, openingDayLegs, spot]);
+  }, [showStockOptionMap, trackedHistory, trackedTimeline, ruleExit, openingDayLegs, spot, trackedAsOfDays]);
 
   const legToolbar = (
     <>

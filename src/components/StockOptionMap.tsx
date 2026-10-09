@@ -2,7 +2,7 @@
 // "股价 vs 期权价"标签：横轴时间（开仓→最近到期日）、纵轴股价（往上是涨）、颜色是组合盈亏，
 // 叠加典型股价走势线（对立走势同图，形成喇叭口），让人直接看到"股价这样走，期权组合会怎样"。
 // 计算在lib/stockOptionMap.ts；这里只负责画图、子标签和鼠标读数。
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import InfoTip from "@/components/InfoTip";
 import type { Leg } from "@/lib/types";
 import { useI18n } from "@/i18n/I18nContext";
@@ -29,8 +29,9 @@ interface Props {
   // 白线是开仓以来每天的真实收盘价，圆点是快照的真实总账；右半边是今天组合剩下的地形，调暗、不画推演走势。
   // 所有盈亏都是开仓至今的总账（pnlOffset）。
   // segments/totals：今昔对比——开仓至今的盈亏逐段拆成股价/时间/波动率/调整，画在左半边底部，读数和图下方的总结都用它。
+  // asOfDays：看的是以前某天的快照时，那天离今天几天（股价/总账都是那天的，结论框按那天比）。
   // ruleExit：按你的止盈止损规则，真实走过的路上第一次碰到线的那一天（今昔对比，标"这里本该下车"）。
-  tracked?: { todayDay: number; pnlOffset: number; opening?: { legs: Leg[]; spot: number }; history: HistoryPoint[]; markers: AdjustMarker[]; segments?: SegmentAttribution[]; totals?: PnlParts & { total: number }; ruleExit?: { day: number; price: number; pnl: number; kind: "tp" | "sl" | "delta" | "time" } | null };
+  tracked?: { todayDay: number; pnlOffset: number; opening?: { legs: Leg[]; spot: number }; history: HistoryPoint[]; markers: AdjustMarker[]; segments?: SegmentAttribution[]; totals?: PnlParts & { total: number }; ruleExit?: { day: number; price: number; pnl: number; kind: "tp" | "sl" | "delta" | "time" } | null; asOfDays?: number };
   // 推演未来：底部股价/时间滑块定的情景点（画蓝色菱形）；滑块一动，鼠标钉住的点就让位给滑块。
   scenario?: { day: number; price: number } | null;
   // 推演未来：风险分区和走势上的节点用的快速版持仓建议（跟左边持仓建议同一套规则）。
@@ -179,10 +180,29 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     const firstClose = closes.length ? closes[0].day : Infinity;
     const snaps = tracked.history.slice(1).filter((h) => h.day < Math.min(firstClose, today)).map((h) => ({ day: h.day, price: h.price }));
     const start = tracked.history[0] ?? { day: 0, price: spot };
+    // 看以前某天的快照时，spot是那天的价：放在那天（替掉那天的收盘），今天这一点没有价就不画
+    const asOf = tracked.asOfDays ?? 0;
+    if (asOf > 0) {
+      const at = today - asOf;
+      return [{ day: 0, price: start.price }, ...snaps, ...closes.filter((c) => c.day !== at), ...(at > 0 ? [{ day: at, price: spot }] : [])].sort((a, b) => a.day - b.day);
+    }
     return [{ day: 0, price: start.price }, ...snaps, ...closes, { day: today, price: spot }];
   }, [tracked, series, seriesKey, openingAt, spot]);
   const closeByDay = useMemo(() => new Map(pricePath.map((p) => [p.day, p.price])), [pricePath]);
   const terrainAt = useMemo(() => openingTerrain(tracked?.opening), [tracked?.opening]);
+  // 开仓至今的四项拆解：看以前某天的快照时只加到那天（总账pnlOffset也是那天的）
+  const totAt = useMemo(() => {
+    if (!tracked?.totals) return undefined;
+    const asOf = tracked.asOfDays ?? 0;
+    if (asOf <= 0 || !tracked.segments) return tracked.totals;
+    const at = tracked.todayDay - asOf;
+    const z = { price: 0, time: 0, iv: 0, adjust: 0, total: 0 };
+    for (const sg of tracked.segments) {
+      if (sg.toDay > at + 1e-9) continue;
+      z.price += sg.price; z.time += sg.time; z.iv += sg.iv; z.adjust += sg.adjust; z.total += sg.total;
+    }
+    return z;
+  }, [tracked]);
 
   const canStartToday = !tracked && daysSinceOpen !== undefined && daysSinceOpen > 0 && liveSpot !== undefined && liveSpot > 0;
   const useToday = startMode === "today" && canStartToday;
@@ -292,33 +312,43 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     return { items: out, beHead, beSub, timeTxt };
   }, [model, zoneCtx, tracked, legs, spot, dV, t, useToday]);
   const findings = facts.items;
-  // 结论框"接下来怎么做"：在起点（或滑块定的情景日）那一天，股价往下/往上走到哪，持仓建议会变（跟风险分区同一套判断）
+  // 结论框"接下来怎么做"：跟左边持仓建议用同一个点（鼠标停留/钉住的点 → 滑块情景 → 开仓那一刻），
+  // 说这一点的风险分区，以及股价往下/往上走到哪会变。看多看空都一样：每个方向第一次变化定下是变好还是变坏，
+  // 之后只记同一方向继续变的（中间来回变的不说）。
+  const deferredPoint = useDeferredValue(point);
+  const scenDay = scenario?.day, scenPrice = scenario?.price;
   const nextInfo = useMemo(() => {
     if (!model || !zoneCtx || tracked) return null;
-    const day = scenario ? scenario.day : model.start.day;
+    const origin = deferredPoint
+      ? { ...deferredPoint, src: "point" as const }
+      : scenDay != null && scenPrice != null ? { day: scenDay, price: scenPrice, src: "scen" as const } : { day: 0, price: spot, src: "open" as const };
+    const day = origin.day;
     if (day >= model.horizon - 1e-9) return null;
-    const s0 = scenario ? scenario.price : model.start.price;
+    const s0 = origin.price;
     const p = zoneCtx.p;
     const act = (x: number) => quickAdvice(zoneCtx, day, x, model.pnlAt(day, x), simPnlAt(p, p.horizon, x));
     const now = act(s0);
-    // 只记往"更坏"（往下）/"更好"（往上）走的变化，中间来回变的不说（比如涨很多后又从"持有或止盈"回到"持有"）
     const rank = (a: AdviceAction) => ZONE_ORDER.indexOf(a);
-    const scan = (end: number, worse: boolean) => {
-      const out: { price: number; act: AdviceAction }[] = [];
+    const scan = (end: number) => {
+      const out: { price: number; act: AdviceAction; worse: boolean }[] = [];
       let last = rank(now);
-      const N = 200;
+      let dir = 0;
+      const N = 120;
       for (let i = 1; i <= N && out.length < 2; i++) {
         const x = s0 + ((end - s0) * i) / N;
         const a = act(x);
-        if (worse ? rank(a) > last : rank(a) < last) {
-          out.push({ price: x, act: a });
-          last = rank(a);
-        }
+        const r = rank(a);
+        if (r === last) continue;
+        const d = Math.sign(r - last);
+        if (dir === 0) dir = d;
+        if (d !== dir) continue;
+        out.push({ price: x, act: a, worse: d > 0 });
+        last = r;
       }
       return out;
     };
-    return { day, price: s0, now, down: scan(model.sMin, true), up: scan(model.sMax, false) };
-  }, [model, zoneCtx, tracked, scenario]);
+    return { day, price: s0, src: origin.src, now, down: scan(model.sMin), up: scan(model.sMax) };
+  }, [model, zoneCtx, tracked, deferredPoint, scenDay, scenPrice, spot]);
   const multiExpiry = new Set(legs.filter((l) => l.kind !== "stock").map((l) => l.dte)).size > 1;
 
   useEffect(() => {
@@ -886,9 +916,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     const act = (a: AdviceAction) => t(`advice.act.${a}`);
     let nextBody: ReactNode = <span className="text-slate-400">{t("sconcl.nextNone")}</span>;
     if (nextInfo) {
-      const head = scenario
-        ? t("sconcl.nextScen", { d: Math.round(nextInfo.day), s: nextInfo.price.toFixed(2), a: act(nextInfo.now) })
-        : t(useToday ? "sconcl.nextToday" : "sconcl.nextOpen", { a: act(nextInfo.now) });
+      const head = t(nextInfo.src === "open" ? "sconcl.nextOpen" : "sconcl.nextAt", { d: Math.round(nextInfo.day), s: nextInfo.price.toFixed(2), a: act(nextInfo.now) });
       const moves = [
         ...nextInfo.down.map((x) => t("sconcl.down", { p: x.price.toFixed(2), a: act(x.act) })),
         ...nextInfo.up.map((x) => t("sconcl.up", { p: x.price.toFixed(2), a: act(x.act) })),
@@ -896,7 +924,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       nextBody = (
         <>
           {head} {moves.length ? moves.join(t("sconcl.sep")) + t("sconcl.end") : t("sconcl.noChange")}
-          {!scenario && <span className="text-slate-400"> {t("sconcl.nextSlide")}</span>}
+          <span className="text-slate-400"> {t(nextInfo.src === "open" ? "sconcl.nextSlide" : "sconcl.nextSame")}</span>
         </>
       );
     }
@@ -920,13 +948,14 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
         {cell("next", t("future.concl.next"), "next", nextBody)}
       </div>
     );
-  } else if (tracked && terrainAt && tracked.todayDay > 0) {
-    // 走过的路：开仓那天的地形在今天这一点给的盈亏 vs 真实总账；差额 = 隐含波动率变化 + 调整
-    const expected = terrainAt(tracked.todayDay, spot);
+  } else if (tracked && terrainAt && tracked.todayDay - (tracked.asOfDays ?? 0) > 0) {
+    // 走过的路：开仓那天的地形在这一点（今天，或正在看的那天快照）给的盈亏 vs 真实总账；差额 = 隐含波动率变化 + 调整
+    const atDay = tracked.todayDay - (tracked.asOfDays ?? 0);
+    const expected = terrainAt(atDay, spot);
     const gap = tracked.pnlOffset - expected;
-    const adjusted = tracked.markers.length > 0 || Math.abs(tracked.totals?.adjust ?? 0) > 0.005;
-    const vars = { s: spot.toFixed(2), d: tracked.todayDay, a: fmtPnl(expected), b: fmtPnl(tracked.pnlOffset), c: fmtPnl(gap) };
-    const tot = tracked.totals;
+    const adjusted = tracked.markers.some((mk) => mk.day <= atDay) || Math.abs(totAt?.adjust ?? 0) > 0.005;
+    const vars = { s: spot.toFixed(2), d: atDay, a: fmtPnl(expected), b: fmtPnl(tracked.pnlOffset), c: fmtPnl(gap) };
+    const tot = totAt;
     let where: ReactNode = "—";
     if (tot) {
       const sameSign = PART_KEYS.filter((k) => tot[k] * tot.total > 0);
@@ -952,7 +981,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       : tot
         ? t(adjusted ? "sconcl.tWhyAdj" : "sconcl.tWhyIv", { c: fmtPnl(gap), iv: fmtPnl(tot.iv), adj: fmtPnl(tot.adjust) })
         : t(adjusted ? "som.gapIvAdj" : "som.gapIv", vars);
-    const re = tracked.ruleExit;
+    const re = tracked.ruleExit && tracked.ruleExit.day <= atDay ? tracked.ruleExit : null;
     const reKey = re ? (re.kind === "tp" ? "som.ruleExitTp" : re.kind === "sl" ? "som.ruleExitSl" : re.kind === "delta" ? "som.ruleExitDelta" : "som.ruleExitTime") : "";
     conclBox = (
       <div className="grid shrink-0 grid-cols-1 overflow-hidden rounded-md border border-amber-700/70 bg-slate-900/70 sm:grid-cols-[minmax(120px,0.85fr)_1fr_1.15fr_1.15fr]">
@@ -1082,8 +1111,8 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
         />
       </div>
       {mapLegend}
-      {tracked?.totals && tracked.segments && tracked.segments.length > 0 && (() => {
-        const tot = tracked.totals;
+      {totAt && tracked?.segments && tracked.segments.length > 0 && (() => {
+        const tot = totAt;
         // "为什么是今天这样"：跟总结果同方向、贡献最大的那一项；反方向更大的一项算"抵消了一部分"。
         const sameSign = PART_KEYS.filter((k) => tot[k] * tot.total > 0);
         const main = sameSign.length ? sameSign.reduce((a, b) => (Math.abs(tot[b]) > Math.abs(tot[a]) ? b : a)) : null;

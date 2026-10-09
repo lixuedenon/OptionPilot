@@ -180,6 +180,9 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
         if (m.type === "retro") setRun({ key: runKey, sorted: m.sorted, prices: m.prices, days: m.days, holding: m.holding, samples: m.samples, end: m.end, bands: m.bands });
         else if (m.type === "error") setError(true);
       };
+      w.onerror = () => {
+        if (!cancelled) setError(true);
+      };
       // 回看不套规则：问的是"组合一直不动，到今天会在哪"，跟真实总账（含已实现）比；规则复盘另外沿真实的路做。
       const req: FutureRequest = {
         kind: "retro", runId, vol: openIv, n: PATHS, samples: SAMPLES, seed: RETRO_SEED, grid, checkDays,
@@ -190,6 +193,8 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      workerRef.current?.terminate();
+      workerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runKey]);
@@ -621,7 +626,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
               {box(t("future.adjHold"), hold.pnl, hold.estimated)}
               {box(same ? t("future.adjDiffSame") : helped ? t("future.adjDiffHelped") : t("future.adjDiffHurt"), diff, false, same ? undefined : helped ? "good" : "bad")}
             </div>
-            <div><span className="text-[11px] font-bold text-sky-300">{t("future.adjWhatLbl")}</span> {t(same ? "future.adjWhatSame" : helped ? "future.adjWhatHelped" : "future.adjWhatHurt", { via, h: signed(hold.pnl), r: signed(pnlNow), d: `$${Math.abs(diff).toFixed(2)}`, day: firstAdj?.day ?? 0 })}</div>
+            <div><span className="text-[11px] font-bold text-sky-300">{t("future.adjWhatLbl")}</span> {t(same ? "future.adjWhatSame" : `${helped ? "future.adjWhatHelped" : "future.adjWhatHurt"}${firstAdj ? "" : "NoDay"}`, { via, h: signed(hold.pnl), r: signed(pnlNow), d: `$${Math.abs(diff).toFixed(2)}`, day: firstAdj?.day ?? 0 })}</div>
             {!same && adjPrice != null && (
               <div><span className="text-[11px] font-bold text-sky-300">{t("future.adjWhyLbl")}</span> {t(helped ? "future.adjWhyHelped" : "future.adjWhyHurt", { a: adjPrice.toFixed(2), n: nowSpot.toFixed(2) })}</div>
             )}
@@ -704,28 +709,39 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
         <div className="mt-0.5 text-[11.5px] leading-snug text-slate-100">{body}</div>
       </div>
     );
-    if (rankPct == null || !totals) {
+    // 过去2年那一节（⑦）还在拿数据时先等着：不然先按粗略的办法说一套，数据到了又改口
+    const histPending = !histSum || histSum.status === "loading";
+    if (error || rankPct == null || !totals || histPending) {
       conclBox = (
         <div className="grid shrink-0 grid-cols-1 overflow-hidden rounded-md border border-slate-700 bg-slate-900/70">
-          {cell("v", t("rconcl.title"), "verdict", <span className="text-slate-400">{t("future.concl.pending")}</span>)}
+          {cell("v", t("rconcl.title"), "verdict", error ? <span className="text-rose-300">{t("rconcl.error")}</span> : <span className="text-slate-400">{t("future.concl.pending")}</span>)}
         </div>
       );
     } else {
       // 运气：⑦①这段行情在过去2年同类时段里罕不罕见（<15%算少见）；拿不到时按开仓时市场预期，股价走了1.5个标准差以上算少见
       const z = moveInSigma(spot, nowSpot, openIv, days);
       const rare = histSum && histSum.regPct != null ? histSum.regPct < 15 : Math.abs(z) >= 1.5;
-      // 这笔本身：⑦②开仓前2年真实走法下这组期权值不值你收/付的价；拿不到时按实际波动vs开仓隐含波动率
+      // 这笔本身：⑦②开仓前2年真实走法下这组期权值不值你收/付的价（差5%以内算差不多）；
+      // 拿不到时按实际波动vs开仓隐含波动率（0.9～1.1倍算差不多）；都拿不到就说看不出来，不替你下结论
       const ratio = since.status === "ok" && since.vol ? since.vol / openIv : null;
-      const edgeGood = histSum && histSum.edgeGood != null ? histSum.edgeGood : ratio == null ? true : credit ? ratio <= 1.1 : ratio >= 0.9;
+      const edge: "good" | "bad" | "even" | "unknown" =
+        histSum && histSum.edge != null ? histSum.edge
+          : ratio == null ? "unknown"
+            : ratio >= 0.9 && ratio <= 1.1 ? "even"
+              : (credit ? ratio < 0.9 : ratio > 1.1) ? "good" : "bad";
       const losing = pnlNow < -0.005;
       const kind = losing
-        ? rare ? (edgeGood ? "luck" : "both") : edgeGood ? "normal" : "edge"
-        : rare ? "lucky" : edgeGood ? "good" : "luckyEdge";
-      const tone: Record<string, string> = { luck: "border-sky-600", both: "border-rose-600", normal: "border-slate-600", edge: "border-amber-600", lucky: "border-amber-600", good: "border-emerald-600", luckyEdge: "border-amber-600" };
-      const color: Record<string, string> = { luck: "text-sky-300", both: "text-rose-300", normal: "text-slate-200", edge: "text-amber-300", lucky: "text-amber-300", good: "text-emerald-300", luckyEdge: "text-amber-200" };
+        ? rare
+          ? edge === "bad" ? "both" : edge === "unknown" ? "luckU" : "luck"
+          : edge === "bad" ? "edge" : edge === "unknown" ? "normalU" : "normal"
+        : rare
+          ? edge === "bad" ? "luckyEdge" : "lucky"
+          : edge === "good" ? "good" : edge === "bad" ? "luckyEdge" : edge === "even" ? "fair" : "goodU";
+      const tone: Record<string, string> = { luck: "border-sky-600", luckU: "border-sky-600", both: "border-rose-600", normal: "border-slate-600", normalU: "border-slate-600", edge: "border-amber-600", lucky: "border-amber-600", good: "border-emerald-600", fair: "border-emerald-700", goodU: "border-slate-600", luckyEdge: "border-amber-600" };
+      const color: Record<string, string> = { luck: "text-sky-300", luckU: "text-sky-300", both: "text-rose-300", normal: "text-slate-200", normalU: "text-slate-200", edge: "text-amber-300", lucky: "text-amber-300", good: "text-emerald-300", fair: "text-emerald-200", goodU: "text-slate-200", luckyEdge: "text-amber-200" };
       const sub = t("rconcl.sub", {
         luck: t(rare ? "rconcl.subRare" : "rconcl.subCommon"),
-        edge: t(edgeGood ? "rconcl.subEdgeGood" : "rconcl.subEdgeBad"),
+        edge: t(edge === "good" ? "rconcl.subEdgeGood" : edge === "bad" ? "rconcl.subEdgeBad" : edge === "even" ? "rconcl.subEdgeEven" : "rconcl.subEdgeUnknown"),
       });
       // 亏/赚在哪：跟总结果同方向最大的一项
       const PK = ["price", "time", "iv", "adjust"] as const;
@@ -734,15 +750,15 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
       // 你做的决定：当初的价格、调整、条件该下车没下车
       const decisions: string[] = [];
       if (histSum && histSum.fair != null && histSum.edgePct != null) {
-        decisions.push(t(credit ? "rconcl.decEntryCredit" : "rconcl.decEntryDebit", {
-          b: usd(basis ?? 0), f: usd(histSum.fair), p: Math.abs(histSum.edgePct).toFixed(0),
-          gl: t(histSum.edgePct >= 0 ? (credit ? "rconcl.more" : "rconcl.less") : credit ? "rconcl.less" : "rconcl.more"),
-        }));
+        // 收的比值的多=占便宜；付的比值的少=占便宜。差5%以内说"差不多"
+        const ep = histSum.edgePct;
+        const v = Math.abs(ep) < 5 ? "Even" : (ep > 0) === credit ? "More" : "Less";
+        decisions.push(t(`rconcl.decEntry${credit ? "Credit" : "Debit"}${v}`, { b: usd(basis ?? 0), f: usd(histSum.fair), p: Math.abs(ep).toFixed(0) }));
       }
       if (adjInfo && Math.abs(adjInfo.diff) >= 0.005) {
         const odds = histSum?.adjOdds;
         decisions.push(
-          t(adjInfo.diff >= 0 ? "rconcl.decAdjHelped" : "rconcl.decAdjHurt", { day: adjInfo.day, via: adjInfo.via, d: usd(adjInfo.diff) }) +
+          t(`${adjInfo.diff >= 0 ? "rconcl.decAdjHelped" : "rconcl.decAdjHurt"}${adjInfo.day > 0 ? "" : "NoDay"}`, { day: adjInfo.day, via: adjInfo.via, d: usd(adjInfo.diff) }) +
             (odds ? t(odds.pBeyond >= 50 ? "rconcl.decAdjOk" : "rconcl.decAdjMaybe", { p: Math.round(odds.pBeyond) }) : ""),
         );
       }
@@ -860,7 +876,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
         }
       />
       <div className="shrink-0 rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 leading-relaxed">
-        {error ? <span className="text-rose-300">{t("winRate.error")}</span> : <div className="flex flex-col gap-2">{ordered}</div>}
+        {error ? <span className="text-rose-300">{t("future.retroError")}</span> : <div className="flex flex-col gap-2">{ordered}</div>}
         <div className="mt-2 text-[10px] text-slate-500">{t("future.retroModel")}</div>
       </div>
     </div>

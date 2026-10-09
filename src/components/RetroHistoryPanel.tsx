@@ -36,8 +36,9 @@ interface Props {
 }
 
 export interface RetroHistSummary {
+  status: "loading" | "ok" | "error"; // 日线/财报日期还在拿时是loading（结论框先等着，免得结论先说一套再变）
   regPct: number | null; // 跟你这段同一类的时段里比你更极端的比例（0..100），null=数据不够
-  edgeGood: boolean | null; // 当初的价格占便宜（按开仓前2年真实走法的理论值），null=数据不够
+  edge: "good" | "bad" | "even" | null; // 当初的价格占不占便宜（按开仓前2年真实走法的理论值，差5%以内算差不多），null=数据不够
   fair: number | null; // 理论上值多少（每股）
   edgePct: number | null; // 多收/少付了百分之几（负=吃亏）
   adjOdds: { pBeyond: number; day: number; via: "roll" | "protect" | "hedge" } | null; // 调整那天过去2年同样起点继续越过卖出腿的比例
@@ -96,20 +97,27 @@ export default function RetroHistoryPanel(props: Props) {
   // 把结论框要用的几样报给上层（RetroSim）
   useEffect(() => {
     if (!onSummary) return;
+    const none = { regPct: null, edge: null, fair: null, edgePct: null, adjOdds: null };
     if (!s) {
-      onSummary(null);
+      onSummary({ status: series.status === "error" ? "error" : "loading", ...none });
+      return;
+    }
+    if (earnDates.status === "loading") {
+      onSummary({ status: "loading", ...none });
       return;
     }
     const edge = eq ? (credit ? eq.basis - eq.fair : eq.fair - eq.basis) : null;
+    const edgePct = eq && edge != null && eq.fair > 0.005 ? (edge / (credit ? eq.fair : eq.basis)) * 100 : null;
     onSummary({
+      status: "ok",
       regPct: reg ? regPct : null,
-      edgeGood: edge == null ? null : edge > 0.01,
+      edge: edge == null ? null : edgePct != null ? (Math.abs(edgePct) < 5 ? "even" : edgePct > 0 ? "good" : "bad") : Math.abs(edge) <= 0.01 ? "even" : edge > 0 ? "good" : "bad",
       fair: eq ? eq.fair : null,
-      edgePct: eq && edge != null && eq.fair > 0.005 ? (edge / (credit ? eq.fair : eq.basis)) * 100 : null,
+      edgePct,
       adjOdds: adj && firstAdj ? { pBeyond: adj.pBeyond, day: firstAdj.day, via: firstAdj.via } : null,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s, reg, regPct, eq, adj, credit]);
+  }, [s, series.status, earnDates.status, reg, regPct, eq, adj, credit]);
 
   const candidates = useMemo(() => {
     // Delta规则的线要高过开仓时卖出腿的Delta才有意义（跟万次推演"比一比"同一个判断）
