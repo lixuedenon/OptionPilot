@@ -303,7 +303,12 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
         const k = sameSign && Math.abs(early) > 1e-6 ? Math.abs(late / early) : 0;
         timeTxt =
           t(late >= 0 ? "som.findTimeGain" : "som.findTimeLoss", { a: fmtVal(early), b: fmtVal(late) }) +
-          (sameSign && k >= 1.5 ? t(late >= 0 ? "som.findTimeFaster" : "som.findTimeFasterLoss", { k: k.toFixed(1) }) : "");
+          (sameSign && k >= 1.5
+            ? t(late >= 0 ? "som.findTimeFaster" : "som.findTimeFasterLoss", { k: k.toFixed(1) })
+            : // 虚值较远的期权：时间价值大半在前面就掉了，后面剩得不多，所以越往后越慢——不是"加速衰减"
+              sameSign && k <= 0.67
+              ? t(late >= 0 ? "som.findTimeSlower" : "som.findTimeSlowerLoss", { p: Math.round(k * 100) })
+              : "");
         out.push(timeTxt);
       }
     }
