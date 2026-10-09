@@ -113,7 +113,6 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     }
   }, [colorMode]);
   const [groupId, setGroupId] = useState(PATH_GROUPS[0].id);
-  const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
@@ -372,12 +371,18 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
   }, []);
   const multiExpiry = new Set(legs.filter((l) => l.kind !== "stock").map((l) => l.dte)).size > 1;
 
-  useEffect(() => {
-    const el = wrapRef.current;
+  // 用回调ref：组合清空时图的容器会卸载（上面提前return），再加腿时是新的容器，必须重新量；
+  // 原来只在第一次挂上时量一次，旧容器卸载那一下量到0×0，之后图就一直是空白。
+  const wrapRo = useRef<ResizeObserver | null>(null);
+  const wrapRef = useCallback((el: HTMLDivElement | null) => {
+    wrapRo.current?.disconnect();
+    wrapRo.current = null;
     if (!el) return;
-    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
+    const ro = new ResizeObserver(() => {
+      if (el.isConnected) setSize({ w: el.clientWidth, h: el.clientHeight });
+    });
     ro.observe(el);
-    return () => ro.disconnect();
+    wrapRo.current = ro;
   }, []);
 
   const pathColor = (id: PathId, i: number) => (id === "flat" ? FLAT_COLOR : PATH_COLORS[i % PATH_COLORS.length]);
