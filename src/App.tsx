@@ -23,7 +23,7 @@ import { useComboAnalytics } from "@/hooks/useComboAnalytics";
 import { useCompareSlots, COMPARE_SLOT_COLORS, MAX_COMPARE_SLOT_LEGS, MAX_COMPARE_SLOTS, isSlotDirty } from "@/hooks/useCompareSlots";
 import ComboCompareSlots from "@/components/ComboCompareSlots";
 import PositionAdviceCard from "@/components/PositionAdviceCard";
-import { scenarioLegs, prepareQuickAdvice } from "@/lib/positionAdvisor";
+import { scenarioLegs, prepareQuickAdvice, type ScenarioAdviceSummary } from "@/lib/positionAdvisor";
 import { useMarketIv, useLegSpreads } from "@/lib/atmIv";
 import { useEarningsContext } from "@/lib/earnings";
 import { useStrategyOrchestration } from "@/hooks/useStrategyOrchestration";
@@ -501,6 +501,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // 不写进shifts——保存策略时存的是真实shifts，绝不能用mapPoint。滑块一动，地形图会清掉这个点（见StockOptionMap的scenario）。
   const [chartView, setChartView] = useState<"payoff" | "stockVsOption" | "winRate">("payoff");
   const [mapPoint, setMapPoint] = useState<{ day: number; price: number } | null>(null);
+  // 左边持仓建议算出的情景建议，右边万次推演的情景结论直接用它（两边不说两套话）
+  const [scenarioAdvice, setScenarioAdvice] = useState<ScenarioAdviceSummary | null>(null);
   const mapActive = chartView === "stockVsOption" && !isCompareModeNow && !isMobile;
   const analyticsShifts: Shifts = useMemo(
     () => (mapActive && mapPoint ? { dS: mapPoint.price - analyticsSpot, dT: mapPoint.day, dV: shifts.dV } : shifts),
@@ -1313,6 +1315,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 earnings={earnState.ctx}
                 liveSpot={quote && quote.price > 0 ? quote.price : spot}
                 waitScenario={!isCompareMode && analyticsShifts.dS === 0 && analyticsShifts.dT === 0 && analyticsShifts.dV === 0}
+                onScenarioAdvice={setScenarioAdvice}
+                scenarioDv={analyticsShifts.dV}
                 onOpenSettings={() => {
                   setShifts({ dS: 0, dT: 0, dV: 0 });
                   setChartView("winRate");
@@ -1414,6 +1418,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   skew={marketIvInfo.skew}
                   halfSpread={legSpreads}
                   earnings={earnState.ctx}
+                  leftAdvice={isCompareMode ? null : scenarioAdvice}
                   emptyText={needSymbol ? t("chart.noSpot") : activeLegs.length === 0 ? t("chart.addLegs") : null}
                 />
               </div>

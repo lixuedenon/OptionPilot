@@ -3,7 +3,7 @@
 // 然后股价/时间/盈利/往后四行（触发建议的那一行加▶），最后是指派等提示。计算在positionAdvisor.ts。
 // 推演未来：跟着情景滑块/地形图上指的点走；今昔对比：今天的持仓、开仓以来总盈亏（含已实现）。
 // 止盈止损、平仓时间、假设波动跟胜率模拟共用一份设定（simSettings.ts）。
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@/i18n/I18nContext";
 import type { Leg } from "@/lib/types";
 import type { CustomPreset } from "@/lib/customPresets";
@@ -14,7 +14,7 @@ import { comboBaseIv } from "@/lib/stockOptionMap";
 import { ncdf } from "@/lib/bs";
 import { openingBasis, isCreditCombo, prepareSim, earningsShift, capJump } from "@/lib/winRateSim";
 import { comboDelta } from "@/lib/legDelta";
-import { adviseCombo, ADVICE_DRIVER, type Advice, type AdviceAction, type AdviceDriver } from "@/lib/positionAdvisor";
+import { adviseCombo, ADVICE_DRIVER, type Advice, type AdviceAction, type AdviceDriver, type ScenarioAdviceSummary } from "@/lib/positionAdvisor";
 import { useSimSettings, useHv20, fracLabel } from "@/lib/simSettings";
 import { exEarningsVol, type EarningsCtx } from "@/lib/earnings";
 import EarningsRow from "@/components/EarningsRow";
@@ -44,6 +44,9 @@ interface Props {
   // 推演未来：滑块（和地形图上的点）都还在开仓那一刻时不给建议——刚建好的组合谈不上"持有还是平仓"，
   // 只说组合是什么、提示去拖滑块；财报那一行照样显示（那是组合本身的风险，不是建议）
   waitScenario?: boolean;
+  // 推演未来：把算好的情景建议交给右边万次推演（scenarioDv=情景的波动率滑块，只用来让右边核对是不是同一个情景点）
+  onScenarioAdvice?: (a: ScenarioAdviceSummary | null) => void;
+  scenarioDv?: number;
 }
 
 const ACTION_CLS: Record<AdviceAction, string> = {
@@ -64,7 +67,7 @@ const pct0 = (v: number) => String(Math.round(v * 100));
 const pctSmall = (v: number) => (Math.abs(v) < 0.01 ? (v * 100).toFixed(1) : String(Math.round(v * 100)));
 const fmtStrike = (k: number) => (Number.isInteger(k) ? String(k) : k.toFixed(2));
 
-export default function PositionAdviceCard({ mode, symbol, openingLegs, openingSpot, openingAt, nowLegs, nowSpot, nowDay, pnl, adjusted, customPresets, onOpenSettings, marketIv, skew = 0, halfSpread, earnings = null, liveSpot, waitScenario = false }: Props) {
+export default function PositionAdviceCard({ mode, symbol, openingLegs, openingSpot, openingAt, nowLegs, nowSpot, nowDay, pnl, adjusted, customPresets, onOpenSettings, marketIv, skew = 0, halfSpread, earnings = null, liveSpot, waitScenario = false, onScenarioAdvice, scenarioDv = 0 }: Props) {
   const { t, lang } = useI18n();
   const { rules: rulesBySide, volOverride, driftPct, ivSkewOn, earnJumpOn } = useSimSettings(symbol);
   const effSkew = ivSkewOn ? skew : 0;
@@ -125,6 +128,8 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
 
   // 模拟要几十毫秒：输入停下来一会儿再算（地形图上鼠标移动时不至于卡）；固定种子，同样的输入给同样的结果。
   const [advice, setAdvice] = useState<Advice | null>(null);
+  // 这条建议是在哪个情景点算的（交给右边时核对用）
+  const adviceAt = useRef<{ day: number; spot: number; dV: number } | null>(null);
   const [sdOpen, setSdOpen] = useState(false);
   const runKey = useMemo(() => {
     if (waitScenario || !advLegs || basis == null || hasStock || !volReady) return "";
@@ -136,8 +141,10 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
       setAdvice(null);
       return;
     }
+    const at = { day: nowDay, spot: nowSpot, dV: scenarioDv };
     const id = window.setTimeout(() => {
       try {
+        adviceAt.current = at;
         setAdvice(
           adviseCombo({
             legs: advLegs, spot: nowSpot, basis, credit, pnl: advPnl, totalTerm, rules, vol: simVol, earnings: earnSim, iv: useMarket && nowIv != null ? nowIv : undefined, skew: effSkew, halfSpread: advLegs.length === (halfSpread ?? []).length ? halfSpread : undefined,
@@ -151,6 +158,26 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
     return () => window.clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runKey]);
+
+  // 推演未来：把建议交给右边万次推演的情景结论（理由用卡片上同一句话）
+  const onScenarioAdviceRef = useRef(onScenarioAdvice);
+  onScenarioAdviceRef.current = onScenarioAdvice;
+  useEffect(() => {
+    const cb = onScenarioAdviceRef.current;
+    if (!cb) return;
+    const at = adviceAt.current;
+    if (mode !== "analysis" || !advice || !at || waitScenario) {
+      cb(null);
+      return;
+    }
+    const s = advice.signals;
+    cb({
+      day: at.day, spot: at.spot, dV: at.dV, action: advice.action, rule: advice.rule,
+      why: t(`advice.why.${advice.rule}`, { rr: pct0(s.rrRel ?? 0), z: (s.sigmaToEdge ?? 0).toFixed(1), sl: pct0(s.pSl), w: pct0(s.pWin) }),
+      pWin: s.pWin, pSl: s.pSl, remainingGain: s.remainingGain, remainingRisk: s.remainingRisk,
+    });
+  }, [advice, mode, waitScenario, t]);
+  useEffect(() => () => onScenarioAdviceRef.current?.(null), []);
 
   if (options.length === 0) return null;
 

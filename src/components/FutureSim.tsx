@@ -18,7 +18,7 @@ import type { FutureRequest, FutureResponse, Sample } from "@/lib/futureSim.work
 import { buildMapModel, comboBaseIv, attributeSegment } from "@/lib/stockOptionMap";
 import { priceStance } from "@/lib/retroStory";
 import { NowCells, JourneyBlock } from "@/components/ValueJourney";
-import { expiryScan } from "@/lib/positionAdvisor";
+import { expiryScan, type ScenarioAdviceSummary } from "@/lib/positionAdvisor";
 import { earningsDayFrom, exEarningsVol, type EarningsCtx } from "@/lib/earnings";
 import { useSimSettings, setEarnJumpOn, setIvSkewOn, setSideRules, setVolOverride as setVolOverrideFor, setDriftPct as setDriftPctFor, fracLabel, type Side } from "@/lib/simSettings";
 import { computeHV, fetchHistoricalSeries, type HistoryRange } from "@/lib/historicalVolatility";
@@ -47,6 +47,8 @@ interface Props {
   halfSpread?: (number | undefined)[];
   // 财报这一组：下一次财报（lib/earnings.ts），持仓期间有财报时可以在那天加一次跳空
   earnings?: EarningsCtx | null;
+  // 左边持仓建议在同一个情景点算出的建议：情景结论的"建议"直接用它，平均钱数只当作理由之一
+  leftAdvice?: ScenarioAdviceSummary | null;
   emptyText: string | null;
 }
 
@@ -125,8 +127,8 @@ function niceStep(span: number, target: number) {
   return (n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10) * mag;
 }
 
-export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: forkProp, marketIv: marketIvProp, ivSource, skew = 0, halfSpread, earnings = null, emptyText }: Props) {
-  const { t } = useI18n();
+export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: forkProp, marketIv: marketIvProp, ivSource, skew = 0, halfSpread, earnings = null, leftAdvice = null, emptyText }: Props) {
+  const { t, lang } = useI18n();
   const { rules: rulesBySide, volOverride, driftPct, ivSkewOn, earnJumpOn } = useSimSettings(symbol);
   // 悬停说明（InfoTip）：标题/说明/例子都在 tip.<id>.t/b/e
   const tip = (id: string) => ({ title: t(`tip.${id}.t`), body: t(`tip.${id}.b`), example: t(`tip.${id}.e`) });
@@ -1390,6 +1392,45 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
           cell("r", t("future.concl.risk"), "risk", <span className="text-slate-400">—</span>),
           cell("n", t("future.concl.next"), "next", t("future.concl.next_s_hit")),
         ]);
+      } else if (forkShown && fork && leftAdvice && Math.abs(leftAdvice.day - fork.day) < 0.01 && Math.abs(leftAdvice.spot - fork.spot) < 0.005 && Math.abs(leftAdvice.dV - dV) < 0.01) {
+        // 建议跟左边持仓建议一致；平均钱数（拿着 vs 现在平）只是理由的第一步——期权价格公道时两者几乎总是差不多，
+        // 真正决定怎么做的是风险（回本机会、离盈亏平衡点多远、还可能亏多少），这部分用左边同一句理由
+        const fs = forkShown.stats;
+        const cost = exitCost(p, fork.day, fork.spot);
+        const closeNow = fork.pnl - cost;
+        const noise = Math.max((2 * fs.sd) / Math.sqrt(Math.max(1, effN(fs.n))), 0.03 * p.basis);
+        const k = fs.avg > closeNow + noise ? "hold" : fs.avg < closeNow - noise ? "close" : "even";
+        const a = leftAdvice.action;
+        const tone = a === "stopLoss" ? "bad" : a === "holdOrStopLoss" ? "flat" : a === "hold" ? "" : "good";
+        const ACLS: Record<string, string> = { stopLoss: "text-rose-300", holdOrStopLoss: "text-amber-300", hold: "text-slate-200", holdOrTakeProfit: "text-emerald-200", takeProfit: "text-emerald-300" };
+        const unl = (v: number | null) => (v == null ? t("advice.unlimited") : usd(v));
+        const nv = { n: fs.n.toLocaleString(), avg: money(fs.avg), close: money(closeNow), c: usd(cost), d: usd(Math.abs(fs.avg - closeNow)), w: Math.round(leftAdvice.pWin * 100), sl: Math.round(leftAdvice.pSl * 100), w5: money(fs.worst5), g: unl(leftAdvice.remainingGain), r: unl(leftAdvice.remainingRisk), why: lang === "en" ? leftAdvice.why.charAt(0).toLowerCase() + leftAdvice.why.slice(1) : leftAdvice.why };
+        const stopish = a === "stopLoss" || a === "holdOrStopLoss";
+        const conflict = k === "hold" && stopish ? "future.concl.sConflictHold" : k === "close" && (a === "hold" || a === "holdOrTakeProfit") ? "future.concl.sConflictClose" : null;
+        conclBox = box(tone, [
+          cell("v", title, "verdict", (
+            <>
+              <span className={`block text-[17px] font-bold ${ACLS[a]}`}>{t(`advice.act.${a}`)}</span>
+              <span className="text-[10.5px] text-slate-400">{t("future.concl.sameAsLeft")}</span>
+            </>
+          ), "bg-slate-950/40"),
+          cell("w", t("future.concl.why"), "why", (
+            <>
+              <span className="block">{t("future.concl.sAvg", nv)} {t(k === "even" ? "future.concl.sAvgEven" : k === "hold" ? "future.concl.sAvgHold" : "future.concl.sAvgClose", nv)}</span>
+              <span className="mt-1 block">{t(k === "even" ? "future.concl.sRiskEven" : "future.concl.sRisk", nv)}</span>
+            </>
+          )),
+          cell("r", t("future.concl.risk"), "risk", t("future.concl.sRiskCell", nv)),
+          cell("n", t("future.concl.next"), "next", (
+            <>
+              {t(`future.concl.sNext_${a}`, nv)}
+              {conflict && <span className="mt-1 block text-amber-200/90">{t(conflict)}</span>}
+            </>
+          )),
+        ]);
+      } else if (forkShown && fork && leftAdvice) {
+        // 左边还在按新的情景点算（约四分之一秒），先等它，免得先说一套再改口
+        conclBox = box("", [cell("v", title, "verdict", <span className="text-slate-400">{t("future.concl.pending")}</span>)]);
       } else if (forkShown && fork) {
         const fs = forkShown.stats;
         const cost = exitCost(p, fork.day, fork.spot);

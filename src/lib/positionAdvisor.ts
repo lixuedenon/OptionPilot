@@ -119,6 +119,21 @@ export interface Advice {
   signals: AdviceSignals;
 }
 
+// 左边持仓建议卡片算出的情景建议，交给右边万次推演的情景结论用（两边同一个情景点、同一组推演，结论必须一致）。
+// day/spot/dV是算这条建议时的情景点，右边对得上才用。
+export interface ScenarioAdviceSummary {
+  day: number;
+  spot: number;
+  dV: number;
+  action: AdviceAction;
+  rule: AdviceRule;
+  why: string;
+  pWin: number;
+  pSl: number;
+  remainingGain: number | null;
+  remainingRisk: number | null;
+}
+
 // 到期（最早到期日）时的盈亏范围：0.02~5倍现价宽范围扫描，端点还在走就算不封顶（maxProfit/maxLoss为null）。
 export function expiryScan(p: Prepared, spot: number) {
   const h = p.horizon;
