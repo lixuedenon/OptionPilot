@@ -125,6 +125,8 @@ export function expiryScan(p: Prepared, spot: number) {
   const prices: number[] = [];
   for (let i = 0; i <= 480; i++) prices.push(spot * Math.exp(Math.log(0.02) + (Math.log(5 / 0.02) * i) / 480));
   for (const l of p.legs) if (l.kind !== "stock") prices.push(l.strike);
+  // 股价跌到几乎为0也要算到：卖Put的最大亏损在那里（只扫到0.02倍现价会少算约2%行权价）
+  prices.push(0.01);
   prices.sort((a, b) => a - b);
   const vals = prices.map((x) => simPnlAt(p, h, x));
   let maxV = -Infinity;

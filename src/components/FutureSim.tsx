@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@/i18n/I18nContext";
 import type { Leg } from "@/lib/types";
 import {
-  openingBasis, isCreditCombo, prepareSim, simPnlAt, earningsShift, exitCost, maxShortDelta, probPriceBeyond, batchStability, driftCushion,
+  openingBasis, isCreditCombo, prepareSim, simPnlAt, earningsShift, exitCost, maxShortDelta, probPriceBeyond, batchStability, driftCushion, capJump,
   type SimRules, type SimStats, type Histogram, type CurvePoint, type Breakeven, type DriftPoint,
 } from "@/lib/winRateSim";
 import type { ExitPoint, GridSpec, RuleSuggestion, Band, Story } from "@/lib/futureSim";
@@ -235,7 +235,8 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
   );
   // 财报这一组：财报落在推演期间里（第1天～最早到期日）时，打开开关就在那天加一次跳空（只在随机走法里加：历史真实走势本来就有过去的财报跳空）
   const earnDay = earningsDayFrom(earnings, 0, days);
-  const earnJump = earnDay != null && earnings?.jump != null && earnings.jump > 0 ? earnings.jump : null;
+  // 跳空不超过市场预期波动在这段时间里装得下的（跟引擎、"市场押"同一个下限，见winRateSim.capJump）
+  const earnJump = earnDay != null && earnings?.jump != null && earnings.jump > 0 ? capJump(earnings.jump, ivCenter, days) : null;
   const useJump = earnJumpOn && earnJump != null && !histActive && !histWaiting;
   // 按隐含波动率推演时（没有手填、拿不到最近20天的实际波动），隐含波动率里已经含着这次财报，加跳空要先扣掉，不然算两遍
   const volFromIv = volOverride == null && !(hv.status === "ok" && hv.hv20);
@@ -864,8 +865,10 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
   // 判断直接看1万次的结果：平均盈亏要明显离开0（超过随机误差的2倍，且至少是基准的3%）才算有优势/吃亏。
   // 不用"盈亏平衡波动率"下结论：带止盈止损时平均盈亏随波动变化很平，平衡点会随每次随机走势大幅跳动（那条曲线留在高级分析里）。
   let verdict: Verdict | null = null;
+  // 历史真实走法：相邻两段大部分重叠，不是独立的样本，随机误差要按"不重叠的段数"算，否则太容易下结论
+  const effN = (n: number) => (histActive ? Math.max(2, n / Math.max(1, (days * 252) / 365)) : n);
   if (s) {
-    const noise = Math.max((2 * s.sd) / Math.sqrt(Math.max(1, s.n)), 0.03 * p.basis);
+    const noise = Math.max((2 * s.sd) / Math.sqrt(Math.max(1, effN(s.n))), 0.03 * p.basis);
     verdict = Math.abs(s.avg) < noise ? "flat" : s.avg < 0 ? "bad" : s.avg >= 0.1 * p.basis ? "good" : "slight";
   }
   let why: ReactNode = null;
@@ -1292,7 +1295,14 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
     );
     const sm = run.done?.stats;
     if (!scenActive) {
-      if (!sm || !run.done || !verdict) {
+      // 期限太短：按"剩多少时间平仓"的条件，开仓当天就到了平仓时间——每条走势都在第0天平掉，只亏成交损耗，不能据此说"不值得开"
+      if (p.endDay === 0) {
+        conclBox = box("flat", [
+          cell("v", t("future.concl.open"), "verdict", <span className="block text-[15px] font-bold leading-tight text-amber-200">{t("future.concl.closeDay0")}</span>, "bg-slate-950/40"),
+          cell("w", t("future.concl.why"), "why", t("future.concl.closeDay0Why", { h: p.horizon, c: p.closeAtRemaining })),
+          cell("n", t("future.concl.next"), "next", t("future.concl.closeDay0Next")),
+        ]);
+      } else if (!sm || !run.done || !verdict) {
         conclBox = box("", [cell("v", t("future.concl.open"), "verdict", <span className="text-slate-400">{t("future.concl.pending")}</span>)]);
       } else {
         const hd = run.done.hold;
@@ -1355,7 +1365,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
         const fs = forkShown.stats;
         const cost = exitCost(p, fork.day, fork.spot);
         const closeNow = fork.pnl - cost;
-        const noise = Math.max((2 * fs.sd) / Math.sqrt(Math.max(1, fs.n)), 0.03 * p.basis);
+        const noise = Math.max((2 * fs.sd) / Math.sqrt(Math.max(1, effN(fs.n))), 0.03 * p.basis);
         const k = fs.avg > closeNow + noise ? "hold" : fs.avg < closeNow - noise ? "close" : "even";
         conclBox = box(k === "close" ? "flat" : k === "hold" ? "good" : "", [
           cell("v", title, "verdict", <span className={`block text-[17px] font-bold ${VCLS[k]}`}>{t(`future.concl.s_${k}`)}</span>, "bg-slate-950/40"),

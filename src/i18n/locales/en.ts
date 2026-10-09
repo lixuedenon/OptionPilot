@@ -2043,6 +2043,9 @@ const en: Dict = {
   "tracked.otherLegsStale": "This leg now uses the price you entered for today, but the other legs couldn't get today's quotes and are still from {date}, as is the stock price. Refresh or type in today's premiums for the other legs too, or the implied vol and P&L will mix two days.",
   "tracked.saveRetry": "The position changed while quotes were refreshing, so nothing was saved (to avoid overwriting your edits). Please click save again.",
   "storage.writeFailed": "Browser storage is full, so your last change wasn't saved to the strategy library. Export a backup from Data on the home page, then delete some strategies or snapshots you no longer need.",
+  "future.concl.closeDay0": "By your rules, close now",
+  "future.concl.closeDay0Why": "Only {h} days are left and your rule closes with {c} days left, so it's already closing time on day 0: every simulated path closes immediately and just pays the exit cost, which says nothing about whether the trade is worth it.",
+  "future.concl.closeDay0Next": "To judge the trade itself, set the close rule to hold to expiry, or pick a later expiry.",
 };
 
 export default en;

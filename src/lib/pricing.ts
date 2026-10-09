@@ -82,6 +82,21 @@ export function estimateRescaledPremium(oldSpot: number, oldLeg: Leg, newSpot: n
 // two copies. Omitted (the normal path for any OTHER caller, e.g.
 // positionHealth.ts's direct external call), it falls back to computing its
 // own IV exactly as before — fully backward compatible.
+// 深度实值期权的权利金常常低于欧式模型在最低波动率下的价格（美式期权报价贴着内在价值），反推的隐含波动率被压到下限，
+// 模型价比权利金高一截——第0天就凭空多出盈亏。记下这条腿"权利金−模型价"的差，定价时按剩余时间比例加回去，到期归零。
+// 按腿对象缓存（引擎里同一条腿要定价几十万次）。
+const premiumGapCache = new WeakMap<Leg, { spot: number; gap: number }>();
+function premiumGap(leg: Leg, spot: number): number {
+  if (leg.kind === "stock" || !(leg.dte > 0) || !(leg.premium > 0) || !(spot > 0)) return 0;
+  const hit = premiumGapCache.get(leg);
+  if (hit && hit.spot === spot) return hit.gap;
+  const iv = impliedVol(spot, leg.strike, leg.dte, leg.premium, leg.type);
+  const raw = leg.premium - bsPrice(spot, leg.strike, leg.dte, iv, RATE, leg.type);
+  const gap = Math.abs(raw) < 1e-4 ? 0 : raw;
+  premiumGapCache.set(leg, { spot, gap });
+  return gap;
+}
+
 export function legShiftedPrice(leg: Leg, s: Shifts, spot: number, ivOverride?: number): number {
   const sign = leg.action === "buy" ? 1 : -1;
   const qty = leg.qty ?? 1;
@@ -103,7 +118,7 @@ export function legShiftedPrice(leg: Leg, s: Shifts, spot: number, ivOverride?: 
       ? Math.max(0, newSpot - leg.strike)
       : Math.max(0, leg.strike - newSpot);
   } else {
-    newPrice = bsPrice(newSpot, leg.strike, newDte, newVol, RATE, leg.type);
+    newPrice = Math.max(0, bsPrice(newSpot, leg.strike, newDte, newVol, RATE, leg.type) + premiumGap(leg, spot) * (newDte / leg.dte));
   }
   return newPrice * sign * qty;
 }

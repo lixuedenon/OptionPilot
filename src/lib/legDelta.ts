@@ -19,7 +19,12 @@ export function optionDelta(leg: Leg, spot: number, ivOverride?: number): number
     return spot < leg.strike ? -1 : 0;
   }
   const iv = ivOverride ?? (leg.premium > 0 ? impliedVol(spot, leg.strike, leg.dte, leg.premium, leg.type) : NaN);
-  if (!(iv >= IV_MIN)) return null;
+  if (!(iv >= IV_MIN)) {
+    // 深度实值、权利金贴着内在价值（反推不出波动率）：基本跟股票一样动，按±1算，不要整个组合的Delta都没了
+    const intrinsic = leg.type === "call" ? spot - leg.strike : leg.strike - spot;
+    if (intrinsic > 0 && leg.premium > 0 && leg.premium <= intrinsic + Math.max(0.05, 0.02 * intrinsic)) return leg.type === "call" ? 1 : -1;
+    return null;
+  }
   return blackScholes({ spot, strike: leg.strike, dte: leg.dte, vol: iv, rate: RATE, type: leg.type }).delta;
 }
 

@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import { bsPrice } from "./bs";
 import { RATE } from "./pricing";
 import { atmIvFromChain } from "./atmIv";
+import { NORMAL_VOL_FLOOR } from "./winRateSim";
 import { getOptionChain } from "./optionChain";
 import { fetchHistoricalSeries } from "./historicalVolatility";
 import { dteFromDate, todayISO, daysBetweenLocalDates, formatDateInput } from "./dateUtils";
@@ -158,7 +159,7 @@ export function impliedFromChains(
     if (s2 != null) {
       const T2 = c2.dte / 365;
       const est = (s2 * s2 * T2 - s1 * s1 * T1) / (T2 - T1);
-      if (est > 0) b2 = Math.min((0.95 * s1) ** 2, Math.max((0.3 * s1) ** 2, est));
+      if (est > 0) b2 = Math.min((0.95 * s1) ** 2, Math.max((NORMAL_VOL_FLOOR * s1) ** 2, est));
     }
   }
   const jump = Math.sqrt(Math.max(s1 * s1 * T1 - b2 * T1, 0.16 * s1 * s1 * T1));
@@ -177,8 +178,9 @@ export function jumpFromPast(rs: Reaction[]): { move: number; jump: number } | n
 // days=推演多少天（到最早到期日）；至少留原来的一半。手填/按最近实际波动时不用扣（那里面没有这次财报）。
 export function exEarningsVol(vol: number, jump: number, days: number): number {
   if (!(days > 0) || !(jump > 0)) return vol;
-  return Math.sqrt(Math.max((0.5 * vol) ** 2, vol * vol - (jump * jump * 365) / days));
+  return Math.sqrt(Math.max((NORMAL_VOL_FLOOR * vol) ** 2, vol * vol - (jump * jump * 365) / days));
 }
+
 
 // ── 合起来：App用 ──
 export interface EarningsCtx {

@@ -180,7 +180,9 @@ export function suggestRules(setup: SimSetup, vol: number, n: number, seed: numb
       sq += d * d;
     }
     const mean = sum / n;
-    const se = Math.sqrt(Math.max(0, sq / n - mean * mean) / Math.max(1, n - 1));
+    // 历史真实走法的段大部分重叠：按不重叠的段数算误差（每段约 days×252/365 个交易日）
+    const nEff = hist ? Math.max(2, n / Math.max(1, (hist.days * 252) / 365)) : n;
+    const se = Math.sqrt(Math.max(0, sq / n - mean * mean) / Math.max(1, nEff - 1));
     rows.push({ ...scoreOf(rules, st), current: false, diff: mean, se });
     const noise = Math.max(2 * se, 0.01 * basis);
     const worseTail = cs.worst5 < 0 && st.worst5 < cs.worst5 * 1.1;
@@ -311,7 +313,8 @@ export function moneyBands(store: PriceStore, outcomes: PathOutcome[], p: Prepar
     for (let k = 0; k < m; k++) {
       const i = ids[k];
       const o = outcomes[i];
-      col[k] = day === 0 ? p.pnlOffset : day >= o.day ? o.pnl : simPnlAt(p, day, store.data[i * (store.days + 1) + day]);
+      // 已经下车（包括第0天就平掉）的停在下车时的盈亏；还拿着的按当天重新定价
+      col[k] = day >= o.day ? o.pnl : day === 0 ? p.pnlOffset : simPnlAt(p, day, store.data[i * (store.days + 1) + day]);
     }
     col.sort();
     return { day, p5: q(0.05), p25: q(0.25), p50: q(0.5), p75: q(0.75), p95: q(0.95) };

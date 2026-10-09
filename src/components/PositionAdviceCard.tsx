@@ -12,7 +12,7 @@ import { matchStrategy } from "@/lib/matchStrategy";
 import { addCalendarDays } from "@/lib/dateUtils";
 import { comboBaseIv } from "@/lib/stockOptionMap";
 import { ncdf } from "@/lib/bs";
-import { openingBasis, isCreditCombo, prepareSim, earningsShift } from "@/lib/winRateSim";
+import { openingBasis, isCreditCombo, prepareSim, earningsShift, capJump } from "@/lib/winRateSim";
 import { comboDelta } from "@/lib/legDelta";
 import { adviseCombo, ADVICE_DRIVER, type Advice, type AdviceAction, type AdviceDriver } from "@/lib/positionAdvisor";
 import { useSimSettings, useHv20, fracLabel } from "@/lib/simSettings";
@@ -87,16 +87,28 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
   const remaining = nowLegs ? Math.max(0, Math.round(Math.min(...nowLegs.filter((l) => l.kind !== "stock" && !l.disabled).map((l) => l.dte), Infinity))) : 0;
   const earnRel = earnings ? earnings.dayFromOpen - Math.round(nowDay) : null;
   const earnIn = earnRel != null && earnRel >= 1 && earnRel <= remaining ? earnRel : null;
-  const earnSim = earnJumpOn && earnIn != null && earnings?.jump != null && earnings.jump > 0 ? { day: earnIn, jump: earnings.jump } : null;
+  // 跳空不超过隐含波动率装得下的（跟万次推演、引擎同一个下限，见winRateSim.capJump）。
+  // 推演未来：按开仓时的市场预期波动和开仓总期限；今昔对比：按今天的隐含波动率和剩余天数。
+  const capIv = (mode === "analysis" ? openingIv : nowIv) ?? vol;
+  const capDays = mode === "analysis" ? totalTerm : remaining;
+  const jumpCapped = earnings?.jump != null && earnings.jump > 0 ? capJump(earnings.jump, capIv, capDays) : null;
+  const earnSim = earnJumpOn && earnIn != null && jumpCapped != null ? { day: earnIn, jump: jumpCapped } : null;
   const volFromIv = volOverride == null && !(hv.status === "ok" && hv.hv20);
-  const simVol = earnSim && volFromIv ? exEarningsVol(vol, earnSim.jump, remaining) : vol;
+  // 按隐含波动率推演时扣掉跳空，免得算两遍。⚠️ 推演未来要跟万次推演一样：平常波动按开仓总期限从开仓时的隐含波动率里扣
+  // （财报过了以后也是这个平常波动）；今昔对比用今天的隐含波动率，财报还在后面才扣、按剩余天数扣。
+  const earnInOpening = earnings != null && earnings.dayFromOpen >= 1 && earnings.dayFromOpen <= totalTerm;
+  const simVol = !volFromIv || !earnJumpOn || jumpCapped == null
+    ? vol
+    : mode === "analysis"
+      ? (earnInOpening ? exEarningsVol(vol, jumpCapped, totalTerm) : vol)
+      : (earnSim ? exEarningsVol(vol, jumpCapped, remaining) : vol);
   // 推演未来：开了财报跳空时，情景点的腿位和盈亏按财报前后隐含波动率的变化重算（跟万次推演从情景点出发那团云同一份，见winRateSim.earningsShift）
   const shift = useMemo(() => {
     if (mode !== "analysis" || !earnJumpOn || !earnings || earnings.jump == null || !(earnings.jump > 0) || !nowLegs || basis == null) return null;
     if (earnings.dayFromOpen < 1 || earnings.dayFromOpen > totalTerm) return null;
-    const pe = prepareSim({ legs: openingLegs, spot: openingSpot, basis, pnlOffset: 0, rules, totalTerm, earnings: { day: earnings.dayFromOpen, jump: earnings.jump } });
+    const pe = prepareSim({ legs: openingLegs, spot: openingSpot, basis, pnlOffset: 0, rules, totalTerm, earnings: { day: earnings.dayFromOpen, jump: jumpCapped ?? earnings.jump } });
     return pe ? earningsShift(pe, nowDay, nowSpot, nowLegs) : null;
-  }, [mode, earnJumpOn, earnings, nowLegs, basis, totalTerm, openingLegs, openingSpot, rules, nowDay, nowSpot]);
+  }, [mode, earnJumpOn, earnings, jumpCapped, nowLegs, basis, totalTerm, openingLegs, openingSpot, rules, nowDay, nowSpot]);
   const advLegs = shift ? shift.legs : nowLegs;
   const advPnl = pnl + (shift?.dPnl ?? 0);
   const earnKey = earnSim ? `${earnSim.day}:${earnSim.jump.toFixed(4)}` : "";

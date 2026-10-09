@@ -7,6 +7,16 @@ import type { Leg } from "@/lib/types";
 import { bsPrice } from "@/lib/bs";
 import { impliedVol, legShiftedPrice, RATE } from "@/lib/pricing";
 
+// 平常日子的波动至少留隐含波动率的多少（跟impliedFromChains解期限结构时的下限一致）。
+// ⚠️ 推演、定价、"市场押"三处必须用同一个下限：下限不一致时，跳空+平常波动加起来会比期权价格里含的波动还大，周度财报的卖方会被系统性看坏。
+export const NORMAL_VOL_FLOOR = 0.3;
+// 跳空不能比隐含波动率在这么多天里能装下的还大（过去几次财报估出来的跳空可能很大）：最多 √(1−下限²)·σ·√(天数/365)。
+export function capJump(jump: number, iv: number, days: number): number {
+  if (!(jump > 0) || !(iv > 0) || !(days > 0)) return jump;
+  return Math.min(jump, Math.sqrt(1 - NORMAL_VOL_FLOOR ** 2) * iv * Math.sqrt(days / 365));
+}
+
+
 export interface SimRules {
   takeProfitPct: number | null; // 0.5 = 赚到基准的50%就平仓；null=不设
   stopMult: number | null; // 1 = 亏到基准的1倍就平仓；null=不设
@@ -81,12 +91,19 @@ export function prepareSim(setup: SimSetup): Prepared | null {
   const endDay = closeAtRemaining > 0 ? Math.max(0, horizon - closeAtRemaining) : horizon;
   const e = setup.earnings;
   const earnDay = e && e.jump > 0 && e.day >= 1 && e.day <= horizon ? Math.round(e.day) : null;
-  const earnJump = earnDay != null ? e!.jump : 0;
-  // 平常波动² = 开仓IV² − 跳空²/剩余年数（至少留开仓IV的一半）；到期在财报之前（或当天之前）的腿不受影响
+  // 跳空不能比跨过财报的腿的隐含波动率装得下的还大（取最紧的那条腿），否则跳空+平常波动会比期权价格里的波动还多
+  let earnJump = earnDay != null ? e!.jump : 0;
+  if (earnDay != null) {
+    legs.forEach((l, i) => {
+      const iv = ivs[i];
+      if (iv !== undefined && l.dte > earnDay) earnJump = capJump(earnJump, iv, l.dte);
+    });
+  }
+  // 平常波动² = 开仓IV² − 跳空²/剩余年数（至少留NORMAL_VOL_FLOOR）；到期在财报之前（或当天之前）的腿不受影响
   const baseIvs = legs.map((l, i) => {
     const iv = ivs[i];
     if (earnDay == null || iv === undefined || !(l.dte > earnDay)) return undefined;
-    return Math.sqrt(Math.max((0.5 * iv) ** 2, iv * iv - (earnJump * earnJump * 365) / l.dte));
+    return Math.sqrt(Math.max((NORMAL_VOL_FLOOR * iv) ** 2, iv * iv - (earnJump * earnJump * 365) / l.dte));
   });
   const earnVar = legs.map((l, i) => {
     const iv = ivs[i], b = baseIvs[i];
@@ -154,12 +171,14 @@ export function earningsShift(p: Prepared, day: number, price: number, nowLegs: 
   return { legs, dPnl };
 }
 
-// 提前平仓的成交损耗（每股、正数）：各期权腿按半个买卖价差
-export function exitCost(p: Prepared, day: number, price: number): number {
+// 提前平仓的成交损耗（每股、正数）：各期权腿按半个买卖价差。
+// onlyStillOpen：只算那天还没到期的腿（日历/对角价差拿到近月到期时，远月那条还得平掉，这一笔不能当成免费）。
+export function exitCost(p: Prepared, day: number, price: number, onlyStillOpen = false): number {
   let c = 0;
   for (let i = 0; i < p.legs.length; i++) {
     const l = p.legs[i];
     if (l.kind === "stock") continue;
+    if (onlyStillOpen && !(l.dte > day + 0.5)) continue;
     const px = Math.abs(legShiftedPrice(l, { dS: price - p.spot, dT: day, dV: day > 0 ? p.dV : 0 }, p.spot, legIvAt(p, i, day, price))) / (l.qty ?? 1);
     const half = p.halfSpread[i] != null ? Math.max(0.01, p.halfSpread[i]! * px) : 0.01 + 0.01 * px;
     c += half * (l.qty ?? 1);
@@ -278,7 +297,13 @@ function walkPath(p: Prepared, next: (d: number) => number, keep: boolean, onSte
         const cost = exitCost(p, d, S);
         return { reason, day: d, pnl: pnl - cost, price: S, holdPnl: 0, cost };
       };
-      if (d === p.endDay) out = p.endDay < p.horizon ? early("time") : { reason: "expiry", day: d, pnl, price: S, holdPnl: 0, cost: 0 };
+      if (d === p.endDay) {
+        if (p.endDay < p.horizon) out = early("time");
+        else {
+          const cost = exitCost(p, d, S, true);
+          out = { reason: "expiry", day: d, pnl: pnl - cost, price: S, holdPnl: 0, cost };
+        }
+      }
       else if (pnl >= p.tpLine) out = early("tp");
       else if (pnl <= p.slLine) out = early("sl");
       else if (p.deltaExit != null && maxShortDelta(p, d, S) >= p.deltaExit) out = early("delta");
@@ -286,7 +311,7 @@ function walkPath(p: Prepared, next: (d: number) => number, keep: boolean, onSte
     onStep?.(d, S, !out || out.day >= d);
   }
   const final = out!;
-  final.holdPnl = final.reason === "expiry" ? final.pnl : simPnlAt(p, p.horizon, S);
+  final.holdPnl = final.reason === "expiry" ? final.pnl : simPnlAt(p, p.horizon, S) - exitCost(p, p.horizon, S, true);
   return { out: final, prices };
 }
 

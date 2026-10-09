@@ -98,9 +98,9 @@ describe("implied move", () => {
     expect(jumpFromPast([{ date: "a", day: "a", t: 0, move: 0.05, afterClose: true }])).toBeNull();
   });
 
-  it("推演的平常波动扣掉跳空，至少留一半；财报不在推演期间里不算", () => {
+  it("推演的平常波动扣掉跳空，至少留三成（跟解期限结构的下限一致）；财报不在推演期间里不算", () => {
     expect(exEarningsVol(0.5, 0.08, 30)).toBeCloseTo(Math.sqrt(0.25 - (0.0064 * 365) / 30), 6);
-    expect(exEarningsVol(0.3, 0.2, 10)).toBeCloseTo(0.15, 6);
+    expect(exEarningsVol(0.3, 0.2, 10)).toBeCloseTo(0.09, 6);
     const ctx = { dayFromOpen: 20 } as EarningsCtx;
     expect(earningsDayFrom(ctx, 0, 30)).toBe(20);
     expect(earningsDayFrom(ctx, 5, 30)).toBe(15);

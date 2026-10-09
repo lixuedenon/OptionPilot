@@ -104,7 +104,8 @@ self.onmessage = (e: MessageEvent<FutureRequest>) => {
       const asc = (a: number, b: number) => a - b;
       const days: RetroDay[] = [...check.entries()].map(([day, c]) => ({ day, prices: c.prices.sort(asc), pnls: c.pnls.sort(asc) }));
       post({
-        runId: req.runId, type: "retro", sorted: run.outcomes.map((o) => o.pnl).sort(asc), prices: run.outcomes.map((o) => o.price).sort(asc), days,
+        // 回看问的是"一直拿着到今天值多少"：不扣平仓的成交损耗（跟上面checkDays那几天的口径一致）
+        runId: req.runId, type: "retro", sorted: run.outcomes.map((o) => o.pnl + (o.cost ?? 0)).sort(asc), prices: run.outcomes.map((o) => o.price).sort(asc), days,
         holding: density.holding, samples: run.samples, end: run.end, bands: priceBands(store),
       });
       return;
