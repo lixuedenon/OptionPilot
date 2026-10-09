@@ -47,6 +47,20 @@ describe("earningsReactions", () => {
     const last = new Date(s.timestamps[9] * 1000).toISOString().slice(0, 10);
     expect(earningsReactions(s, [last, "2025-06-01", "2027-01-01"])).toHaveLength(0);
   });
+
+  it("有盘中最高/最低时：涨的那天记最高、跌的那天记最低（相对前一个收盘）；没有就不记", () => {
+    const s = series(40, { "2026-01-09": -0.08, "2026-01-21": 0.06 });
+    const highs = s.closes.map((c) => c * 1.02);
+    const lows = s.closes.map((c) => c * 0.97);
+    const rs = earningsReactions({ ...s, highs, lows }, ["2026-01-08", "2026-01-21"]);
+    const iDown = s.timestamps.findIndex((t) => new Date(t * 1000).toISOString().startsWith("2026-01-09"));
+    const iUp = s.timestamps.findIndex((t) => new Date(t * 1000).toISOString().startsWith("2026-01-21"));
+    expect(rs[0].extreme).toBeCloseTo(lows[iDown] / s.closes[iDown - 1] - 1, 9); // 跌的那天：最低
+    expect(rs[0].extreme!).toBeLessThan(rs[0].move);
+    expect(rs[1].extreme).toBeCloseTo(highs[iUp] / s.closes[iUp - 1] - 1, 9); // 涨的那天：最高
+    expect(rs[1].extreme!).toBeGreaterThan(rs[1].move);
+    expect(earningsReactions(s, ["2026-01-21"])[0].extreme).toBeUndefined();
+  });
 });
 
 describe("reaction day", () => {

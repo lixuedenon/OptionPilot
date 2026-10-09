@@ -17,6 +17,9 @@ interface HistoricalPricesResult {
   // which needs each day's (open+close)/2 as a stand-in spot price, not
   // just the closes historicalVolatility.ts already consumed this for.
   opens: number[];
+  // 盘中最高/最低（跟closes对齐；Yahoo缺的那根用开盘/收盘里大的/小的补）——财报那一行要画每次反应当天盘中走到多远
+  highs: number[];
+  lows: number[];
   timestamps: number[]; // unix seconds (UTC), Yahoo's per-bar session timestamp
   source: string;
 }
@@ -37,7 +40,10 @@ async function readCache(symbol: string, range: string): Promise<HistoricalPrice
     const { data, error } = await db().from("price_history_cache").select("data, fetched_at").eq("symbol", symbol).eq("range", range).maybeSingle();
     if (error || !data) return null;
     if (Date.now() - new Date(data.fetched_at as string).getTime() > CACHE_TTL_MS) return null;
-    return data.data as HistoricalPricesResult;
+    // 加highs/lows以前存的缓存没有这两项，当作过期重新拉
+    const d = data.data as HistoricalPricesResult;
+    if (!Array.isArray(d?.highs) || !Array.isArray(d?.lows)) return null;
+    return d;
   } catch {
     return null;
   }
@@ -102,6 +108,8 @@ Deno.serve(async (req: Request) => {
 
     const rawCloses: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
     const rawOpens: (number | null)[] = result.indicators?.quote?.[0]?.open ?? [];
+    const rawHighs: (number | null)[] = result.indicators?.quote?.[0]?.high ?? [];
+    const rawLows: (number | null)[] = result.indicators?.quote?.[0]?.low ?? [];
     const rawTimestamps: (number | null)[] = result.timestamp ?? [];
 
     // Build the filtered bar set from indices where BOTH open and close are
@@ -112,6 +120,8 @@ Deno.serve(async (req: Request) => {
     // every array's indices differently unless they're filtered together.)
     const closes: number[] = [];
     const opens: number[] = [];
+    const highs: number[] = [];
+    const lows: number[] = [];
     const timestamps: number[] = [];
     for (let i = 0; i < rawCloses.length; i++) {
       const c = rawCloses[i];
@@ -120,6 +130,9 @@ Deno.serve(async (req: Request) => {
       if (c != null && c > 0 && o != null && o > 0 && ts != null) {
         closes.push(c);
         opens.push(o);
+        const h = rawHighs[i], l = rawLows[i];
+        highs.push(h != null && h > 0 ? Math.max(h, o, c) : Math.max(o, c));
+        lows.push(l != null && l > 0 ? Math.min(l, o, c) : Math.min(o, c));
         timestamps.push(ts);
       }
     }
@@ -135,6 +148,8 @@ Deno.serve(async (req: Request) => {
       symbol: sym,
       closes,
       opens,
+      highs,
+      lows,
       timestamps,
       source: "yahoo-finance",
     };

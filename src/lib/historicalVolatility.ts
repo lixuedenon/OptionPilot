@@ -14,6 +14,9 @@ export async function fetchHistoricalCloses(symbol: string): Promise<number[]> {
 export interface HistoricalSeries {
   closes: number[]; // oldest first
   timestamps: number[]; // unix seconds, index-aligned with closes
+  // 盘中最高/最低（跟closes对齐）；historical-prices没重新部署时没有
+  highs?: number[];
+  lows?: number[];
 }
 
 // 同一个代码（和区间）10分钟内不重复请求（标签来回切换时会反复用到）。只在内存里，不落盘。
@@ -43,7 +46,8 @@ export function fetchHistoricalSeries(symbol: string, range: HistoryRange = "2mo
     }
     const closes = data.closes as number[];
     const timestamps = Array.isArray(data.timestamps) && data.timestamps.length === closes.length ? (data.timestamps as number[]) : [];
-    return { closes, timestamps };
+    const aligned = (a: unknown) => (Array.isArray(a) && a.length === closes.length ? (a as number[]) : undefined);
+    return { closes, timestamps, highs: aligned(data.highs), lows: aligned(data.lows) };
   })();
   seriesCache.set(key, { at: Date.now(), p });
   p.catch(() => seriesCache.delete(key));

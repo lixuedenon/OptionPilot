@@ -41,6 +41,9 @@ interface Props {
   // 财报这一组：下一次财报（App的useEarningsContext）；liveSpot=今天的股价（市场押的幅度按今天的期权价算）
   earnings?: EarningsCtx | null;
   liveSpot?: number;
+  // 推演未来：滑块（和地形图上的点）都还在开仓那一刻时不给建议——刚建好的组合谈不上"持有还是平仓"，
+  // 只说组合是什么、提示去拖滑块；财报那一行照样显示（那是组合本身的风险，不是建议）
+  waitScenario?: boolean;
 }
 
 const ACTION_CLS: Record<AdviceAction, string> = {
@@ -61,7 +64,7 @@ const pct0 = (v: number) => String(Math.round(v * 100));
 const pctSmall = (v: number) => (Math.abs(v) < 0.01 ? (v * 100).toFixed(1) : String(Math.round(v * 100)));
 const fmtStrike = (k: number) => (Number.isInteger(k) ? String(k) : k.toFixed(2));
 
-export default function PositionAdviceCard({ mode, symbol, openingLegs, openingSpot, openingAt, nowLegs, nowSpot, nowDay, pnl, adjusted, customPresets, onOpenSettings, marketIv, skew = 0, halfSpread, earnings = null, liveSpot }: Props) {
+export default function PositionAdviceCard({ mode, symbol, openingLegs, openingSpot, openingAt, nowLegs, nowSpot, nowDay, pnl, adjusted, customPresets, onOpenSettings, marketIv, skew = 0, halfSpread, earnings = null, liveSpot, waitScenario = false }: Props) {
   const { t, lang } = useI18n();
   const { rules: rulesBySide, volOverride, driftPct, ivSkewOn, earnJumpOn } = useSimSettings(symbol);
   const effSkew = ivSkewOn ? skew : 0;
@@ -124,10 +127,10 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
   const [advice, setAdvice] = useState<Advice | null>(null);
   const [sdOpen, setSdOpen] = useState(false);
   const runKey = useMemo(() => {
-    if (!advLegs || basis == null || hasStock || !volReady) return "";
+    if (waitScenario || !advLegs || basis == null || hasStock || !volReady) return "";
     const lk = advLegs.map((l) => [l.action, l.type, l.strike, l.dte.toFixed(2), l.premium.toFixed(4), l.qty ?? 1].join(":")).join("|");
     return [lk, nowSpot.toFixed(3), advPnl.toFixed(4), basis.toFixed(4), JSON.stringify(rules), simVol.toFixed(4), driftPct, totalTerm, credit, useMarket && nowIv != null ? nowIv.toFixed(4) : "", effSkew.toFixed(3), (halfSpread ?? []).map((h) => (h == null ? "-" : h.toFixed(3))).join(","), earnKey].join("#");
-  }, [advLegs, nowSpot, advPnl, basis, hasStock, volReady, rules, simVol, driftPct, totalTerm, credit, useMarket, nowIv, effSkew, halfSpread, earnKey]);
+  }, [waitScenario, advLegs, nowSpot, advPnl, basis, hasStock, volReady, rules, simVol, driftPct, totalTerm, credit, useMarket, nowIv, effSkew, halfSpread, earnKey]);
   useEffect(() => {
     if (!runKey || !advLegs || basis == null) {
       setAdvice(null);
@@ -193,6 +196,22 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
   if (hasStock) body = <div className="text-[11px] text-slate-400">{t("advice.noStock")}</div>;
   else if (basis == null) body = <div className="text-[11px] text-slate-400">{t("advice.noBasis")}</div>;
   else if (!nowLegs) body = <div className="text-[11px] text-slate-400">{t("advice.expired")}</div>;
+  else if (waitScenario)
+    body = (
+      <div className="space-y-1 text-[11px] leading-snug">
+        <div className="text-slate-400">{t("advice.waitScenario")}</div>
+        {earnings && (
+          <EarningsRow
+            earnings={earnings}
+            day={earnIn}
+            legs={nowLegs}
+            spot={liveSpot && liveSpot > 0 ? liveSpot : nowSpot}
+            expiryDate={fmtDate(addCalendarDays(openingAt, totalTerm))}
+            afterNow={earnRel != null && earnRel < 1 && earnings.dayFromOpen <= totalTerm}
+          />
+        )}
+      </div>
+    );
   else if (!advice) body = <div className="text-[11px] text-slate-500">{t("advice.computing")}</div>;
   else body = renderAdvice(advice);
 

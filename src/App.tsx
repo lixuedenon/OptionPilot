@@ -1312,6 +1312,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 halfSpread={isCompareMode ? undefined : legSpreads}
                 earnings={earnState.ctx}
                 liveSpot={quote && quote.price > 0 ? quote.price : spot}
+                waitScenario={!isCompareMode && analyticsShifts.dS === 0 && analyticsShifts.dT === 0 && analyticsShifts.dV === 0}
                 onOpenSettings={() => {
                   setShifts({ dS: 0, dT: 0, dV: 0 });
                   setChartView("winRate");

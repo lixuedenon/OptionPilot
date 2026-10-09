@@ -15,7 +15,7 @@ import { RATE } from "./pricing";
 import { atmIvFromChain } from "./atmIv";
 import { NORMAL_VOL_FLOOR } from "./winRateSim";
 import { getOptionChain } from "./optionChain";
-import { fetchHistoricalSeries } from "./historicalVolatility";
+import { fetchHistoricalSeries, type HistoricalSeries } from "./historicalVolatility";
 import { dteFromDate, todayISO, daysBetweenLocalDates, formatDateInput } from "./dateUtils";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -80,30 +80,39 @@ export interface Reaction {
   t: number; // 反应那天日线的时间戳（unix秒）
   move: number; // 反应那天的涨跌（小数）：前一个收盘 → 那天收盘
   afterClose: boolean | null; // true=第二天反应（盘后公布），false=当天反应（盘前/盘中），null=公布日不是交易日
+  // 反应那天盘中走到最远的地方（相对前一个收盘）：涨的那天=最高，跌的那天=最低；没有盘中数据时没有
+  extreme?: number;
 }
 
 const isoOf = (sec: number) => new Date(sec * 1000).toISOString().slice(0, 10); // Yahoo日线时间戳在美东开盘时刻（UTC 13:30/14:30），UTC日期=美东日期
 
-export function earningsReactions(series: { closes: number[]; timestamps: number[] }, past: string[]): Reaction[] {
+export function earningsReactions(series: { closes: number[]; timestamps: number[]; highs?: number[]; lows?: number[] }, past: string[]): Reaction[] {
   const n = Math.min(series.closes.length, series.timestamps.length);
   if (n < 3) return [];
   const iso = series.timestamps.slice(0, n).map(isoOf);
   const c = series.closes;
   const out: Reaction[] = [];
+  const hs = series.highs && series.highs.length >= n ? series.highs : null;
+  const ls = series.lows && series.lows.length >= n ? series.lows : null;
+  const withExtreme = (r: Reaction, k: number): Reaction => {
+    const ref = c[k - 1];
+    const v = r.move >= 0 ? hs?.[k] : ls?.[k];
+    return v != null && v > 0 && ref > 0 ? { ...r, extreme: v / ref - 1 } : r;
+  };
   for (const D of past) {
     let i = 0;
     while (i < n && iso[i] < D) i++;
     if (i < 1 || i >= n) continue; // 数据里没有公布日前后
     if (iso[i] > D) {
       // 公布日不是交易日（周末/假日公布）：第一个交易日反应
-      out.push({ date: D, day: iso[i], t: series.timestamps[i], move: c[i] / c[i - 1] - 1, afterClose: null });
+      out.push(withExtreme({ date: D, day: iso[i], t: series.timestamps[i], move: c[i] / c[i - 1] - 1, afterClose: null }, i));
       continue;
     }
     if (i + 1 >= n) continue; // 公布日就是最后一天：盘后公布的话反应还没发生，不算
     const same = c[i] / c[i - 1] - 1;
     const next = c[i + 1] / c[i] - 1;
     const k = Math.abs(next) > Math.abs(same) ? i + 1 : i;
-    out.push({ date: D, day: iso[k], t: series.timestamps[k], move: k === i ? same : next, afterClose: k !== i });
+    out.push(withExtreme({ date: D, day: iso[k], t: series.timestamps[k], move: k === i ? same : next, afterClose: k !== i }, k));
   }
   return out;
 }
@@ -208,7 +217,7 @@ const EMPTY: EarningsState = { status: "loading", ctx: null, past: [] };
 export function useEarningsContext({ symbol, spot, openingAt, enabled }: { symbol: string; spot: number; openingAt: number; enabled: boolean }): EarningsState {
   const sym = symbol.trim().toUpperCase();
   const dates = useEarningsDates(enabled ? sym : "");
-  const [series, setSeries] = useState<{ sym: string; s: { closes: number[]; timestamps: number[] } | null }>({ sym: "", s: null });
+  const [series, setSeries] = useState<{ sym: string; s: HistoricalSeries | null }>({ sym: "", s: null });
   // base=代码|反应日：换了才清掉旧值；股价按2%一档重算（报价每跳一下就重算会让万次推演一直重跑），重算期间先用上一次的
   const [implied, setImplied] = useState<{ base: string; v: (ImpliedMove & { expiry: string }) | null } | null>(null);
 

@@ -17,6 +17,9 @@ interface Props {
 }
 
 const pct1 = (v: number) => (v * 100).toFixed(1);
+// "这次市场押的范围"在两张图里同一个颜色（琥珀色：跟绿涨红跌、蓝色的现价都分得开）
+const BAND_FILL = "#f59e0b";
+const BAND_EDGE = "#fbbf24";
 const md = (iso: string) => iso.slice(5).replace("-", "/");
 
 export default function EarningsRow({ earnings, day, legs, spot, expiryDate, afterNow }: Props) {
@@ -98,7 +101,7 @@ function RangeBar({ spot, m, legs }: { spot: number; m: number; legs: Leg[] }) {
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="mt-1 w-full max-w-[320px]" role="img" aria-label="earnings range">
       <line x1={8} x2={W - 8} y1={24} y2={24} stroke="#334155" strokeWidth={2} />
-      <rect x={X(spot * (1 - m))} y={17} width={X(spot * (1 + m)) - X(spot * (1 - m))} height={14} rx={3} fill="#0c4a6e" stroke="#38bdf8" />
+      <rect x={X(spot * (1 - m))} y={17} width={X(spot * (1 + m)) - X(spot * (1 - m))} height={14} rx={3} fill={BAND_FILL} fillOpacity={0.28} stroke={BAND_EDGE} />
       <line x1={X(spot)} x2={X(spot)} y1={12} y2={36} stroke="#f1f5f9" strokeDasharray="3 2" />
       <text x={X(spot)} y={9} fill="#e2e8f0" fontSize={9} textAnchor="middle">${spot.toFixed(2)}</text>
       {opts.map((l, i) => (
@@ -113,34 +116,49 @@ function RangeBar({ spot, m, legs }: { spot: number; m: number; legs: Leg[] }) {
   );
 }
 
-// 过去几次：每次反应那天的涨跌（柱），背景带=这次市场押的范围
+// 过去几次：每次反应那天的涨跌（柱=收盘），细线=那天盘中走到最远的地方（涨的那天到最高、跌的那天到最低，跟K线的影线一样）；
+// 背景带=这次市场押的范围（琥珀色，跟上面范围图同一个颜色）
 function PastBars({ earnings }: { earnings: EarningsCtx }) {
   const { t } = useI18n();
   const rs = earnings.reactions;
   const m = earnings.move ?? 0;
-  const mx = Math.max(m * 1.2, ...rs.map((r) => Math.abs(r.move))) || 0.05;
-  const W = 300, H = 92, mid = 42, k = 34 / mx;
+  const far = (r: (typeof rs)[number]) => (r.extreme != null && Math.abs(r.extreme) > Math.abs(r.move) && Math.sign(r.extreme) === Math.sign(r.move || r.extreme) ? r.extreme : r.move);
+  const mx = Math.max(m * 1.2, ...rs.map((r) => Math.abs(far(r)))) || 0.05;
+  const W = 300, H = 104, mid = 48, k = 38 / mx;
   const bw = (W - 16) / rs.length;
+  const hasWick = rs.some((r) => far(r) !== r.move);
   return (
     <div className="mt-1 rounded border border-slate-700/70 bg-slate-950/50 px-1.5 py-1">
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-[320px]" role="img" aria-label={t("earn.pastOpen")}>
-        {m > 0 && <rect x={8} y={mid - m * k} width={W - 16} height={2 * m * k} fill="#0c4a6e" fillOpacity={0.4} />}
+        {m > 0 && (
+          <>
+            <rect x={8} y={mid - m * k} width={W - 16} height={2 * m * k} fill={BAND_FILL} fillOpacity={0.3} />
+            <line x1={8} x2={W - 8} y1={mid - m * k} y2={mid - m * k} stroke={BAND_EDGE} strokeDasharray="3 2" strokeWidth={0.8} />
+            <line x1={8} x2={W - 8} y1={mid + m * k} y2={mid + m * k} stroke={BAND_EDGE} strokeDasharray="3 2" strokeWidth={0.8} />
+          </>
+        )}
         <line x1={8} x2={W - 8} y1={mid} y2={mid} stroke="#334155" />
         {rs.map((r, i) => {
-          const x = 8 + i * bw;
+          const x = 8 + i * bw, cx = x + bw / 2;
           const h = Math.max(1, Math.abs(r.move) * k);
           const up = r.move >= 0;
           const c = up ? "#34d399" : "#fb7185";
+          const f = far(r);
+          const wy = mid - f * k; // 影线末端
+          const endY = up ? Math.min(mid - h, wy) : Math.max(mid + h, wy);
+          const tip = `${r.day}  ${t("earn.tipClose")} ${up ? "+" : "−"}${pct1(Math.abs(r.move))}%` + (f !== r.move ? `  ${t(up ? "earn.tipHigh" : "earn.tipLow")} ${f >= 0 ? "+" : "−"}${pct1(Math.abs(f))}%` : "");
           return (
             <g key={r.date}>
+              <title>{tip}</title>
+              {f !== r.move && <line x1={cx} x2={cx} y1={up ? mid - h : mid + h} y2={wy} stroke={c} strokeWidth={1} />}
               <rect x={x + bw * 0.2} y={up ? mid - h : mid} width={bw * 0.6} height={h} rx={1.5} fill={c} />
-              <text x={x + bw / 2} y={up ? mid - h - 2 : mid + h + 9} fill={c} fontSize={8.5} textAnchor="middle">{`${up ? "+" : "−"}${pct1(Math.abs(r.move))}`}</text>
-              <text x={x + bw / 2} y={H - 2} fill="#64748b" fontSize={8} textAnchor="middle">{r.day.slice(2, 7)}</text>
+              <text x={cx} y={up ? endY - 2 : endY + 9} fill={c} fontSize={8.5} textAnchor="middle">{`${up ? "+" : "−"}${pct1(Math.abs(r.move))}`}</text>
+              <text x={cx} y={H - 2} fill="#64748b" fontSize={8} textAnchor="middle">{r.day.slice(2, 7)}</text>
             </g>
           );
         })}
       </svg>
-      <div className="text-[10px] text-slate-500">{t("earn.pastNote")}</div>
+      <div className="text-[10px] text-slate-500">{t(hasWick ? "earn.pastNoteWick" : "earn.pastNote")}</div>
     </div>
   );
 }
