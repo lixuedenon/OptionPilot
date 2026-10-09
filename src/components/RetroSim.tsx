@@ -22,6 +22,7 @@ import { getOptionChain, premiumFromQuote } from "@/lib/optionChain";
 import { holdLegPrice, holdPnl, priceNearDay } from "@/lib/adjustReview";
 import RetroHistoryPanel, { type RetroHistSummary } from "@/components/RetroHistoryPanel";
 import InfoTip from "@/components/InfoTip";
+import { perUnitText } from "@/lib/perContract";
 
 interface Props {
   symbol: string;
@@ -416,7 +417,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
   if (totals) {
     sections.push(
       sec("journey", t("future.jTitle", { d: days }), (
-        <JourneyBlock mode="retro" totals={totals} pnl={pnlNow} credit={credit} basis={basis} stance={stance} spot0={spot} spot1={nowSpot} day={days} ivA={ivA} ivB={ivB} />
+        <JourneyBlock mode="retro" totals={totals} pnl={pnlNow} credit={credit} basis={basis} legs={legs} stance={stance} spot0={spot} spot1={nowSpot} day={days} ivA={ivA} ivB={ivB} />
       )),
     );
   }
@@ -753,7 +754,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
         // 收的比值的多=占便宜；付的比值的少=占便宜。差5%以内说"差不多"
         const ep = histSum.edgePct;
         const v = Math.abs(ep) < 5 ? "Even" : (ep > 0) === credit ? "More" : "Less";
-        decisions.push(t(`rconcl.decEntry${credit ? "Credit" : "Debit"}${v}`, { b: usd(basis ?? 0), f: usd(histSum.fair), p: Math.abs(ep).toFixed(0) }));
+        decisions.push(t(`rconcl.decEntry${credit ? "Credit" : "Debit"}${v}`, { b: perUnitText(basis ?? 0, legs, t, usd), f: perUnitText(histSum.fair, legs, t, usd), p: Math.abs(ep).toFixed(0) }));
       }
       if (adjInfo && Math.abs(adjInfo.diff) >= 0.005) {
         const odds = histSum?.adjOdds;

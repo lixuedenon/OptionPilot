@@ -19,6 +19,7 @@ import { buildMapModel, comboBaseIv, attributeSegment } from "@/lib/stockOptionM
 import { priceStance } from "@/lib/retroStory";
 import { NowCells, JourneyBlock } from "@/components/ValueJourney";
 import { expiryScan, type ScenarioAdviceSummary } from "@/lib/positionAdvisor";
+import { perUnitText } from "@/lib/perContract";
 import { earningsDayFrom, exEarningsVol, type EarningsCtx } from "@/lib/earnings";
 import { useSimSettings, setEarnJumpOn, setIvSkewOn, setSideRules, setVolOverride as setVolOverrideFor, setDriftPct as setDriftPctFor, fracLabel, type Side } from "@/lib/simSettings";
 import { computeHV, fetchHistoricalSeries, type HistoryRange } from "@/lib/historicalVolatility";
@@ -1108,8 +1109,8 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
       const src = histActive ? t("future.theoSrcHist", { s: symbol, y: histYears }) : t("future.theoSrcRandom", { v: (vol * 100).toFixed(1) });
       const edgePct = credit ? (fair > 0.005 ? (avgHold / fair) * 100 : null) : p.basis > 0 ? (avgHold / p.basis) * 100 : null;
       const body = t(credit ? "future.theoCredit" : "future.theoDebit", {
-        src, a: money(avgHold), f: usd(Math.max(0, fair)), b: usd(p.basis),
-        cmp: t(`future.theo${avgHold >= 0 ? "Good" : "Bad"}${credit ? "Credit" : "Debit"}`, { d: usd(avgHold), p: edgePct == null ? "—" : `${avgHold >= 0 ? "+" : "−"}${Math.abs(edgePct).toFixed(0)}` }),
+        src, a: perUnitText(avgHold, legs, t, money), f: perUnitText(Math.max(0, fair), legs, t, usd), b: perUnitText(p.basis, legs, t, usd),
+        cmp: t(`future.theo${avgHold >= 0 ? "Good" : "Bad"}${credit ? "Credit" : "Debit"}`, { d: perUnitText(avgHold, legs, t, usd), p: edgePct == null ? "—" : `${avgHold >= 0 ? "+" : "−"}${Math.abs(edgePct).toFixed(0)}` }),
       });
       card.push(row("theo", t("future.theoLabel"), <>{body}{!histActive && <span className="text-slate-500"> {t("future.theoRandomNote")}</span>}</>));
     }
@@ -1298,7 +1299,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
       parts.push(
         sec("journey", Math.round(sDay) > 0 ? t("future.jTitleScen", { d: Math.round(sDay) }) : t("future.jTitleScen0"), (
           <JourneyBlock
-            mode="scenario" totals={{ ...tot, total: fork.pnl }} pnl={fork.pnl} credit={credit} basis={p.basis} stance={stance}
+            mode="scenario" totals={{ ...tot, total: fork.pnl }} pnl={fork.pnl} credit={credit} basis={p.basis} legs={legs} stance={stance}
             spot0={spot} spot1={sPrice} day={sDay} ivA={ivA} ivB={dV !== 0 ? ivB : null}
           />
         )),

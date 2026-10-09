@@ -14,6 +14,7 @@ import { comboBaseIv } from "@/lib/stockOptionMap";
 import { ncdf } from "@/lib/bs";
 import { openingBasis, isCreditCombo, prepareSim, earningsShift, capJump } from "@/lib/winRateSim";
 import { comboDelta } from "@/lib/legDelta";
+import { perUnitText } from "@/lib/perContract";
 import { adviseCombo, ADVICE_DRIVER, type Advice, type AdviceAction, type AdviceDriver, type ScenarioAdviceSummary } from "@/lib/positionAdvisor";
 import { useSimSettings, useHv20, fracLabel } from "@/lib/simSettings";
 import { exEarningsVol, type EarningsCtx } from "@/lib/earnings";
@@ -195,7 +196,7 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
       </div>
       <div>{t("advice.opened", { date: fmtDate(openingAt), s: openingSpot.toFixed(2), exp: fmtDate(expiryTs), d: totalTerm })}</div>
       <div>
-        {basis != null && t(credit ? "advice.premiumCredit" : "advice.premiumDebit", { v: usd(basis) })}
+        {basis != null && t(credit ? "advice.premiumCredit" : "advice.premiumDebit", { v: perUnitText(basis, descLegs, t, usd) })}
         {openingIv != null && (
           <>
             {basis != null && " · "}

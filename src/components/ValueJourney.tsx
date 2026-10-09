@@ -8,6 +8,8 @@ import type { ReactNode } from "react";
 import { useI18n } from "@/i18n/I18nContext";
 import type { PnlParts } from "@/lib/stockOptionMap";
 import { summarize, type Factor, type Stance } from "@/lib/retroStory";
+import type { Leg } from "@/lib/types";
+import { perUnitText } from "@/lib/perContract";
 
 const usd = (v: number) => `$${Math.abs(v).toFixed(2)}`;
 const signed = (v: number) => `${v >= 0 ? "+" : "−"}$${Math.abs(v).toFixed(2)}`;
@@ -53,9 +55,10 @@ interface JourneyProps {
   day: number;
   ivA: number; // 百分数
   ivB: number | null;
+  legs?: Leg[]; // 有多张时开仓收/付写成"每张$x（n张共$y）"
 }
 
-export function JourneyBlock({ mode, totals, pnl, credit, basis, stance, spot0, spot1, day, ivA, ivB }: JourneyProps) {
+export function JourneyBlock({ mode, totals, pnl, credit, basis, stance, spot0, spot1, day, ivA, ivB, legs }: JourneyProps) {
   const { t } = useI18n();
   const scen = mode === "scenario";
   const chg = spot1 - spot0;
@@ -101,7 +104,7 @@ export function JourneyBlock({ mode, totals, pnl, credit, basis, stance, spot0, 
   const openKey = credit ? (scen ? "future.jOpenCreditScen" : "future.jOpenCredit") : scen ? "future.jOpenDebitScen" : "future.jOpenDebit";
   return (
     <div className="flex flex-col gap-1">
-      <div className="text-slate-400">{t(openKey, { v: usd(basis) })}</div>
+      <div className="text-slate-400">{t(openKey, { v: legs ? perUnitText(basis, legs, t, usd) : usd(basis) })}</div>
       {lines}
       <div className="flex gap-2 border-t border-slate-800 pt-1">
         <span className={`w-16 shrink-0 text-right font-bold tabular-nums ${pnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{signed(pnl)}</span>
