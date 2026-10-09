@@ -197,7 +197,8 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
   else body = renderAdvice(advice);
 
   return (
-    <div className="rounded border border-slate-700/80 bg-slate-900/60 px-2.5 py-2">
+    // 左边那一列标签（股价/时间/方向/财报…）的宽度：英文词更长，34px会把"Direction"截掉、"Earnings"压到内容上
+    <div className="rounded border border-slate-700/80 bg-slate-900/60 px-2.5 py-2" style={{ ["--lbl" as string]: lang === "en" ? "62px" : "34px" }}>
       {title}
       {header}
       <div className="mt-1.5 border-t border-slate-800 pt-1.5">{body}</div>
@@ -312,7 +313,7 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
       rr: pct0(s.rrRel ?? 0), z: (s.sigmaToEdge ?? 0).toFixed(1), sl: pct0(s.pSl), w: pct0(s.pWin),
     });
     const row = (key: Exclude<AdviceDriver, null>, label: string, lines: ReactNode[]) => (
-      <div className={`grid grid-cols-[14px_34px_1fr] gap-x-1 ${driver === key ? "text-slate-100" : "text-slate-400"}`}>
+      <div className={`grid grid-cols-[14px_var(--lbl,34px)_1fr] gap-x-1 ${driver === key ? "text-slate-100" : "text-slate-400"}`}>
         <span className="text-sky-400">{driver === key ? "▶" : ""}</span>
         <span className={driver === key ? "font-semibold" : "text-slate-500"}>{label}</span>
         <span className={`min-w-0 ${driver === key ? "font-semibold" : ""}`}>
@@ -329,7 +330,7 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
         {row("price", t("advice.lblPrice"), [priceCell])}
         {row("time", t("advice.lblTime"), [timeTxt])}
         {dirTxt && (
-          <div className="grid grid-cols-[14px_34px_1fr] gap-x-1 text-slate-400">
+          <div className="grid grid-cols-[14px_var(--lbl,34px)_1fr] gap-x-1 text-slate-400">
             <span />
             <span className="text-slate-500">{t("advice.lblDir")}</span>
             <span className="min-w-0">{dirTxt}</span>

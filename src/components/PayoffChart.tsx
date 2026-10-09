@@ -396,6 +396,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
 
   const ySpan = yMax - yMin || 1;
   const toX = (s: number) => pad.l + ((s - sMin) / (sMax - sMin || 1)) * CW;
+  const tagX = (px: number) => Math.min(pad.l + CW - 36, Math.max(pad.l + 36, px));
   const toY = (pnl: number) => pad.t + (1 - (pnl - yMin) / ySpan) * CH;
   const zeroY = toY(0);
   const currentSpot = compareMode && hasTracked ? effectiveTrackedSpot : (active ? spot + shifts.dS : spot);
@@ -747,9 +748,10 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
               return (
                 <g clipPath="url(#chart-clip)">
                   <circle cx={px} cy={py} r="3" fill="#34d399" stroke="#1e293b" strokeWidth="1" />
-                  <rect x={px - 28} y={py - 16} width={56} height={12} rx={2} fill="rgb(15 23 42)" fillOpacity={0.85} />
-                  <text x={px} y={py - 7} textAnchor="middle" fontSize="8" fill="#34d399" fontWeight="bold">
-                    MAX +${maxProfit.toFixed(0)}
+                  {/* 标签贴着图边时往里挪，不被裁掉（原来常只剩半截"$-17"） */}
+                  <rect x={tagX(px) - 34} y={py - 16} width={68} height={12} rx={2} fill="rgb(15 23 42)" fillOpacity={0.85} />
+                  <text x={tagX(px)} y={py - 7} textAnchor="middle" fontSize="8" fill="#34d399" fontWeight="bold">
+                    {t("chart.maxGainTag", { v: `+$${maxProfit.toFixed(0)}` })}
                   </text>
                 </g>
               );
@@ -762,9 +764,9 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
               return (
                 <g clipPath="url(#chart-clip)">
                   <circle cx={px} cy={py} r="3" fill="#f43f5e" stroke="#1e293b" strokeWidth="1" />
-                  <rect x={px - 28} y={py + 4} width={56} height={12} rx={2} fill="rgb(15 23 42)" fillOpacity={0.85} />
-                  <text x={px} y={py + 13} textAnchor="middle" fontSize="8" fill="#f43f5e" fontWeight="bold">
-                    MAX ${maxLoss.toFixed(0)}
+                  <rect x={tagX(px) - 34} y={py + 4} width={68} height={12} rx={2} fill="rgb(15 23 42)" fillOpacity={0.85} />
+                  <text x={tagX(px)} y={py + 13} textAnchor="middle" fontSize="8" fill="#f43f5e" fontWeight="bold">
+                    {t("chart.maxLossTag", { v: `−$${Math.abs(maxLoss).toFixed(0)}` })}
                   </text>
                 </g>
               );

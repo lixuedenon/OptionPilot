@@ -4,6 +4,7 @@
 // 情景点和从情景点往后的蓝色云。结论卡片按"判断→（隐含波动率远高于实际时的提醒）→为什么→胜率和赔率→最坏→你的规则→换个规则→情景点"给大白话。
 // 三个情景滑块都生效：股价/时间定情景点（从那里分出第二团云，跟左边持仓建议同一组走势），波动率改变期权定价、整张图重算。
 // 计算在futureSim.worker.ts，这里管节奏和展示。今昔对比的回看在RetroSim（同一个worker的retro请求）。
+import { formatDateInput } from "@/lib/dateUtils";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@/i18n/I18nContext";
 import type { Leg } from "@/lib/types";
@@ -740,19 +741,22 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
       // 上面：一直拿到期赚的比例 vs 按条件赚的比例（规则帮了还是拖了）
       const ruleWin = run.done.stats.winPct;
       const dw = Math.round(ruleWin) - Math.round(win);
-      g.fillText(t("future.endAllTitle"), x0, M.t - (ed ? 30 : 4));
+      // 右边距窄，英文放不下时往左挪，不出画布
+      const fit = (txt: string, x: number) => Math.max(M.l + pw - 40, Math.min(x, W - 2 - g.measureText(txt).width));
+      const put = (txt: string, y: number) => g.fillText(txt, fit(txt, x0), y);
+      put(t("future.endAllTitle"), M.t - (ed ? 30 : 4));
       if (ed) {
         g.font = "bold 10px sans-serif";
         g.fillStyle = "#6ee7b7";
-        g.fillText(t("future.endAllWin", { p: Math.round(win) }), x0, M.t - 17);
+        put(t("future.endAllWin", { p: Math.round(win) }), M.t - 17);
         g.fillStyle = "#fbbf24";
-        g.fillText(`${t("future.endRule", { p: Math.round(ruleWin) })}${dw !== 0 ? `（${dw > 0 ? "+" : "−"}${Math.abs(dw)}）` : ""}`, x0, M.t - 4);
+        put(`${t("future.endRule", { p: Math.round(ruleWin) })}${dw !== 0 ? t("future.endRuleDiff", { d: `${dw > 0 ? "+" : "−"}${Math.abs(dw)}` }) : ""}`, M.t - 4);
       }
       g.font = "bold 10px sans-serif";
       g.fillStyle = "#6ee7b7";
-      g.fillText(t("future.endAllWin", { p: Math.round(win) }), x0, M.t + ph + 12);
+      put(t("future.endAllWin", { p: Math.round(win) }), M.t + ph + 12);
       g.fillStyle = "#fda4af";
-      g.fillText(t("future.endAllLoss", { p: Math.round(100 - win) }), x0, M.t + ph + 24);
+      put(t("future.endAllLoss", { p: Math.round(100 - win) }), M.t + ph + 24);
       // 选中那条走势到期停在哪：三角
       const sel = stories.length ? stories[storyIdx] : null;
       const endP = sel ? sel.prices[sel.prices.length - 1] : null;
@@ -767,7 +771,9 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
         g.fill();
         g.font = "9px sans-serif";
         g.fillStyle = "#e2e8f0";
-        g.fillText(t("future.endPick"), x0 + 2, yy - 7);
+        // 贴近顶上时写在三角下面，不跟上面"按条件赚X%"那几行叠在一起
+        const pickTxt = t("future.endPick");
+        g.fillText(pickTxt, fit(pickTxt, x0 + 2), yy - 7 < M.t + 9 ? yy + 15 : yy - 7);
       }
     }
     // 典型结局的故事：只给选中的那条贴说明（贴在下车或到期的那一点）
@@ -964,7 +970,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
     );
     // 历史真实走法：先说清楚这次用的是哪些数据、多少段（相邻两段大部分重叠）
     if (histActive && histPaths) {
-      const fmtD = (sec: number) => new Date(sec * 1000).toLocaleDateString();
+      const fmtD = (sec: number) => formatDateInput(sec * 1000); // 按固定格式，不跟浏览器语言走
       const gotYears = (histPaths.to - histPaths.from) / (365 * 86400);
       card.push(
         row("hdata", t("future.histDataLabel"), (
@@ -1306,7 +1312,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
   let conclBox: ReactNode = null;
   {
     const cell = (key: string, label: string, tipId: string, body: ReactNode, cls = "") => (
-      <div key={key} className={`min-w-0 border-t border-slate-800 px-3 py-1.5 first:border-t-0 sm:border-l sm:border-t-0 sm:first:border-l-0 ${cls}`}>
+      <div key={key} className={`min-w-0 px-3 py-1.5 ${cls}`}>
         <InfoTip {...tip(tipId)}><span className="text-[10.5px] text-slate-400">{label}</span></InfoTip>
         <div className="mt-0.5 text-[11.5px] leading-snug text-slate-100">{body}</div>
       </div>
@@ -1314,7 +1320,7 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
     const VCLS: Record<string, string> = { good: "text-emerald-300", slight: "text-emerald-200", flat: "text-amber-200", bad: "text-rose-300", hold: "text-emerald-300", close: "text-amber-200", even: "text-slate-200", tp: "text-emerald-300", sl: "text-rose-300", time: "text-amber-200" };
     const BORDER: Record<string, string> = { good: "border-emerald-600", slight: "border-emerald-700", flat: "border-amber-600", bad: "border-rose-600" };
     const box = (tone: string, cells: ReactNode[]) => (
-      <div className={`grid shrink-0 grid-cols-1 overflow-hidden rounded-md border bg-slate-900/70 sm:grid-cols-[minmax(110px,0.8fr)_1fr_1fr_1.2fr] ${BORDER[tone] ?? "border-slate-700"}`}>{cells}</div>
+      <div className="concl shrink-0"><div className={`concl-grid overflow-hidden rounded-md border bg-slate-900/70 ${BORDER[tone] ?? "border-slate-700"}`} style={{ ["--concl-cols" as string]: "minmax(110px,0.8fr) 1fr 1fr 1.2fr" }}>{cells}</div></div>
     );
     const sm = run.done?.stats;
     if (!scenActive) {
@@ -1503,14 +1509,14 @@ export default function FutureSim({ symbol, legs, spot, dV, scenario, fork: fork
         </div>
       )}
       {/* 平面图矮一些（窗口高度的55%，340～560像素）：整张图连同上下的小柱子能一屏看全；立体图还是高一点才看得清 */}
+      {/* 平面图上两处不好在图例里说的：上面的小柱子、右边的横条。放在图上方一行（放在图里会压住图上的标题） */}
+      {view === "plane" && run.done && (
+        <div className="-mb-0.5 flex shrink-0 justify-between px-1 text-[10px] text-sky-300/80" style={{ paddingLeft: PLANE_ML }}>
+          <InfoTip {...tip("exits")}><span>{t("future.tipExitsLbl")}</span></InfoTip>
+          <InfoTip {...tip("endAll")}><span>{t("future.tipEndLbl")}</span></InfoTip>
+        </div>
+      )}
       <div className={`relative ${view === "3d" ? "h-[clamp(420px,70vh,760px)]" : "h-[clamp(340px,55vh,560px)]"} shrink-0 overflow-hidden rounded-md border border-slate-800`}>
-        {/* 平面图上两处不好在图例里说的：上面的小柱子、右边的横条，直接在图上放ⓘ */}
-        {view === "plane" && run.done && (
-          <>
-            <span className="absolute z-10" style={{ left: PLANE_ML, top: 3 }}><InfoTip {...tip("exits")}><span className="text-[10px] text-sky-300/80">{t("future.tipExitsLbl")}</span></InfoTip></span>
-            <span className="absolute right-1 z-10" style={{ top: 2 }}><InfoTip {...tip("endAll")}><span className="text-[10px] text-sky-300/80">{t("future.tipEndLbl")}</span></InfoTip></span>
-          </>
-        )}
         {view === "3d" ? (
           <SimSurface3D
             model={model}

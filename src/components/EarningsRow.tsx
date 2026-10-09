@@ -25,7 +25,7 @@ export default function EarningsRow({ earnings, day, legs, spot, expiryDate, aft
   const date = md(earnings.next);
   const label = <span className="text-amber-400/90">{t("earn.label")}</span>;
   const wrap = (body: ReactNode) => (
-    <div className="grid grid-cols-[14px_34px_1fr] gap-x-1 text-slate-400">
+    <div className="grid grid-cols-[14px_var(--lbl,34px)_1fr] gap-x-1 text-slate-400">
       <span />
       {label}
       <span className="min-w-0">{body}</span>

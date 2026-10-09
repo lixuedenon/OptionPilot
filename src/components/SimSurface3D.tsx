@@ -83,6 +83,7 @@ export default function SimSurface3D(props: Props) {
   const size = useRef({ w: 0, h: 0 });
   const raf = useRef(0);
   const drag = useRef<{ x: number; y: number; pan: boolean } | null>(null);
+  const userMoved = useRef(false); // 真拖过才打断开场动画；只是点一下不打断（原来点一下就停在正上方、提示条一直挂着）
   // 放大缩小+平移：屏幕坐标 = 自动缩放居中后的坐标 × k + (tx, ty)。
   const zoom = useRef({ k: 1, tx: 0, ty: 0 });
 
@@ -617,7 +618,7 @@ export default function SimSurface3D(props: Props) {
     const HOLD = 900, TILT = 1800;
     let id = 0;
     const step = (now: number) => {
-      if (drag.current) return;
+      if (userMoved.current) return;
       const k = Math.min(1, Math.max(0, (now - start - HOLD) / TILT));
       const e = k < 0.5 ? 4 * k * k * k : 1 - (-2 * k + 2) ** 3 / 2;
       view.current = { yaw: from.yaw + (DEFAULT_VIEW.yaw - from.yaw) * e, pitch: from.pitch + (DEFAULT_VIEW.pitch - from.pitch) * e };
@@ -663,6 +664,7 @@ export default function SimSurface3D(props: Props) {
         if (!drag.current) return;
         const dx = e.clientX - drag.current.x;
         const dy = e.clientY - drag.current.y;
+        if (Math.abs(dx) + Math.abs(dy) > 1) userMoved.current = true;
         drag.current = { ...drag.current, x: e.clientX, y: e.clientY };
         if (drag.current.pan) zoom.current = { ...zoom.current, tx: zoom.current.tx + dx, ty: zoom.current.ty + dy };
         else view.current = { yaw: view.current.yaw + dx * 0.008, pitch: Math.min(1.35, Math.max(0.1, view.current.pitch + dy * 0.006)) };
@@ -671,8 +673,12 @@ export default function SimSurface3D(props: Props) {
       onPointerUp={() => {
         drag.current = null;
       }}
+      onPointerCancel={() => {
+        drag.current = null;
+      }}
       onContextMenu={(e) => e.preventDefault()}
       onDoubleClick={() => {
+        userMoved.current = true;
         view.current = { ...DEFAULT_VIEW };
         zoom.current = { k: 1, tx: 0, ty: 0 };
         schedule();

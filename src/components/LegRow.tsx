@@ -168,7 +168,7 @@ function ToggleBtn({
 // 字号自动收缩的公共公式，NumField和ValueBadge共用：宽度固定死、不能滚动，靠缩小字号放下长数字。
 const SHRINK_BASE_FONT_PX = 12;
 const SHRINK_MIN_FONT_PX = 7;
-const SHRINK_CHAR_PX = 6.6;
+const SHRINK_CHAR_PX = 7.2; // 估宽一点：按6.6估时窄窗口下"227.5"这种会被裁掉最后一位
 function shrinkFontSize(text: string, widthPx: number, innerPad = 12): number {
   const innerPx = widthPx - innerPad;
   const len = Math.max(text.length, 1);

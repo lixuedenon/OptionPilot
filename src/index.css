@@ -36,3 +36,42 @@ input[type="number"] {
 .op-mobile svg text[font-size="8"] { font-size: 10px; }
 .op-mobile svg text[font-size="9"] { font-size: 11px; }
 .op-mobile svg text[font-size="10"] { font-size: 12px; }
+
+/* 图上方的四格结论框：按这块框自己的宽度排（不是按整个窗口）——右栏常常只有600像素左右，
+   按窗口宽度会挤成四条很窄的竖列。窄时一列、中等两列（2×2）、够宽才四列；格子之间的分隔线跟着排法变。 */
+.concl {
+  container-type: inline-size;
+}
+.concl-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+.concl-grid > * + * {
+  border-top: 1px solid rgb(30 41 59);
+}
+@container (min-width: 440px) {
+  .concl-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .concl-grid > * + * {
+    border-top: 0;
+  }
+  .concl-grid > :nth-child(2n) {
+    border-left: 1px solid rgb(30 41 59);
+  }
+  .concl-grid > :nth-child(n + 3) {
+    border-top: 1px solid rgb(30 41 59);
+  }
+}
+@container (min-width: 780px) {
+  .concl-grid {
+    grid-template-columns: var(--concl-cols, repeat(4, minmax(0, 1fr)));
+  }
+  .concl-grid > :nth-child(n) {
+    border-top: 0;
+    border-left: 1px solid rgb(30 41 59);
+  }
+  .concl-grid > :first-child {
+    border-left: 0;
+  }
+}

@@ -832,7 +832,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           onClick={handleSwitchToCompare}
           disabled={isExploring}
           title={t("leg.switchToCompareHint")}
-          className="flex shrink-0 items-center gap-1 rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[10px] font-semibold text-sky-400 transition hover:border-sky-500/50 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <GitCompare size={11} />
           {t("leg.switchToCompare")}
@@ -1349,14 +1349,15 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         {/* RIGHT: 图表+滑块（手机上在下面；图表要给固定高度，否则整页滚动时高度为0） */}
         <div className={isMobile ? "flex flex-col" : "flex min-w-0 flex-1 flex-col min-h-0"}>
           <div
-            className={isMobile ? "px-1 py-1.5" : "min-h-0 flex-1 px-2 py-1.5"}
+            // 标签行高度不固定（窄窗口/英文会换行），图表区用flex占满剩下的，不再假设标签行30px（原来会溢出压到滑块）
+            className={isMobile ? "flex flex-col px-1 py-1.5" : "flex min-h-0 flex-1 flex-col px-2 py-1.5"}
             style={isMobile ? { height: "min(62vh, 560px)", minHeight: 320 } : undefined}
           >
             {showChartTabs && (
-              <div className="mb-1.5 flex items-end gap-1 border-b border-slate-700">
+              <div className="mb-1.5 flex shrink-0 items-end gap-1 border-b border-slate-700">
                 {/* 盈亏图和地形图都属于"未来情景模拟"：标题+代码在左边，后面是真正的文件夹式标签（下沿跟图表区连在一起），
                     避免看起来像三个并列的功能按钮。没有有效股票代码时整块不可用。 */}
-                <span className={`flex items-baseline gap-2 self-center border-r border-slate-700 pb-1 pr-3 mr-2 ${needSymbol ? "opacity-40" : ""}`}>
+                <span className={`flex shrink-0 items-baseline gap-2 self-center whitespace-nowrap border-r border-slate-700 pb-1 pr-3 mr-2 ${needSymbol ? "opacity-40" : ""}`}>
                   <span className="relative pr-1 text-[13px] font-bold text-sky-400">
                     {showGuide5 && <StepBadge n={5} title={t("guide.step5")} />}
                       {isCompareMode ? t("shift.scenarioFrozen") : t("shift.scenario")}
@@ -1370,7 +1371,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                       // 三个标签共用同一组情景滑块，切换时不归零。
                       setChartView(v);
                     }}
-                    className={`relative -mb-px rounded-t-md border px-3 py-1 text-[12px] font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                    className={`relative -mb-px shrink-0 whitespace-nowrap rounded-t-md border px-3 py-1 text-[12px] font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
                       chartView === v
                         ? "border-slate-600 border-b-slate-950 bg-slate-950 text-sky-300"
                         : "border-transparent text-slate-500 hover:bg-slate-800/50 hover:text-slate-300"
@@ -1382,7 +1383,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   </button>
                 ))}
                 {/* 右端：分析模式的盈亏头部 + 分析↔对比模式切换（两种模式、三个标签下都在这里）。 */}
-                <div className="ml-auto flex items-center gap-3 self-center pb-1">
+                {/* 窄窗口/英文放不下时，头部和切换按钮在这一格里换行，不被裁掉 */}
+                <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-0.5 self-center pb-1">
                 {!isCompareMode && activeLegs.length > 0 && (
                   <PnlHeadline
                     dateTs={addCalendarDays(openingAt, analyticsShifts.dT)}
@@ -1398,7 +1400,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             )}
             <ErrorBoundary>
               {showWinRate && !isCompareMode ? (
-              <div className="h-[calc(100%-30px)]">
+              <div className="min-h-0 flex-1">
                 <FutureSim
                   symbol={symbol}
                   legs={mapLegs}
@@ -1415,7 +1417,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 />
               </div>
               ) : showWinRate ? (
-              <div className="h-[calc(100%-30px)]">
+              <div className="min-h-0 flex-1">
                 <RetroSim
                   symbol={symbol}
                   legs={openingDayLegs}
@@ -1436,7 +1438,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 />
               </div>
               ) : showStockOptionMap ? (
-              <div className={showChartTabs ? "h-[calc(100%-30px)]" : "h-full"}>
+              <div className="min-h-0 flex-1">
                 <StockOptionMap
                   symbol={symbol}
                   liveSpot={quote?.price}
@@ -1455,7 +1457,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 />
               </div>
               ) : (
-              <div className={showChartTabs ? "h-[calc(100%-30px)]" : "h-full"}>
+              <div className="min-h-0 flex-1">
               <PayoffChart
                 // 分析模式用开仓基准腿位（第0天=开仓日），跟滑块的dT、头部盈亏、归因、地形图同一份数据；
                 // 用实时腿位的话，开仓日在过去时"已过去的天数"会被重复扣一次。

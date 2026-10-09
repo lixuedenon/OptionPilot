@@ -33,7 +33,7 @@ export default function PnlHeadline({ dateTs, pnl, netValue, netChange, hasStock
   return (
     <div className={`flex items-center gap-3 ${className ?? ""}`}>
       {dateTs !== null && (
-        <span className="text-sm font-bold tabular-nums text-sky-300" title={formatDateInput(dateTs)}>
+        <span className="whitespace-nowrap text-sm font-bold tabular-nums text-sky-300" title={formatDateInput(dateTs)}>
           {fmtDate(dateTs)}
         </span>
       )}
@@ -41,10 +41,10 @@ export default function PnlHeadline({ dateTs, pnl, netValue, netChange, hasStock
         <span className={`text-lg font-black tabular-nums leading-none ${amountCls}`}>
           {sign === "profit" ? "+" : sign === "loss" ? "−" : ""}${money(pnl)}
         </span>
-        <span className={`text-[9px] font-bold ${labelCls}`}>{label}</span>
+        <span className={`whitespace-nowrap text-[9px] font-bold ${labelCls}`}>{label}</span>
       </span>
       {/* 净值>0：现在平仓能收回这笔钱；<0：平仓要付出这笔钱（比如卖方组合）。 */}
-      <span className="shrink-0 rounded border border-slate-700 bg-slate-900 px-1.5 py-0 text-[9px]" title={t("chart.netHint")}>
+      <span className="shrink-0 whitespace-nowrap rounded border border-slate-700 bg-slate-900 px-1.5 py-0 text-[9px]" title={t("chart.netHint")}>
         <span className="text-slate-500">{netValue >= 0 ? t("chart.netReceive") : t("chart.netPay")} </span>
         <span className="font-bold tabular-nums text-slate-100">${money(netValue)}</span>
         <span

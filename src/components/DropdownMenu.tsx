@@ -35,7 +35,7 @@ export default function DropdownMenu({ label, icon, menuClassName, children, dis
         data-guide={guideId}
         onClick={() => setOpen((v) => !v)}
         disabled={disabled}
-        className={`flex items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+        className={`flex shrink-0 items-center gap-1 whitespace-nowrap rounded border px-2 py-1 text-[10px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
           open
             ? "border-slate-500 bg-slate-700/60 text-slate-100"
             : "border-slate-700 bg-slate-800/60 text-slate-300 hover:border-slate-600 hover:text-white"

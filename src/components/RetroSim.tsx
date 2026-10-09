@@ -704,7 +704,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
   let conclBox: ReactNode = null;
   {
     const cell = (key: string, label: string, tipId: string, body: ReactNode, cls = "") => (
-      <div key={key} className={`min-w-0 border-t border-slate-800 px-3 py-1.5 first:border-t-0 sm:border-l sm:border-t-0 sm:first:border-l-0 ${cls}`}>
+      <div key={key} className={`min-w-0 px-3 py-1.5 ${cls}`}>
         <InfoTip {...tip(tipId)}><span className="text-[10.5px] text-slate-400">{label}</span></InfoTip>
         <div className="mt-0.5 text-[11.5px] leading-snug text-slate-100">{body}</div>
       </div>
@@ -776,7 +776,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
         else if (levels.profitSide === "outside") levelTxt = t("future.lvOutside", { a: be[0].toFixed(2), b: be[1].toFixed(2) });
       }
       conclBox = (
-        <div className={`grid shrink-0 grid-cols-1 overflow-hidden rounded-md border bg-slate-900/70 sm:grid-cols-[minmax(120px,0.85fr)_1fr_1.15fr_1.15fr] ${tone[kind]}`}>
+        <div className="concl shrink-0"><div className={`concl-grid overflow-hidden rounded-md border bg-slate-900/70 ${tone[kind]}`} style={{ ["--concl-cols" as string]: "minmax(120px,0.85fr) 1fr 1.15fr 1.15fr" }}>
           {cell("v", t("rconcl.title"), "verdict", (
             <>
               <span className={`block text-[16px] font-bold leading-tight ${color[kind]}`}>{t(`rconcl.k_${kind}`)}</span>
@@ -791,7 +791,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
               {t("rconcl.nowAdvice")} {t(`rconcl.lesson_${kind}`)}
             </>
           ))}
-        </div>
+        </div></div>
       );
     }
   }

@@ -292,9 +292,11 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     }
     // 时间：股价不动，前1/3和最后1/3每天的盈亏
     const h = model.horizon;
-    if (h >= 6) {
-      const early = (model.pnlAt(h / 3, s0) - model.pnlAt(0, s0)) / (h / 3);
-      const late = (model.pnlAt(h, s0) - model.pnlAt((2 * h) / 3, s0)) / (h / 3);
+    // 从起点那天算（"从今天看"时是今天到到期，不拿今天的股价去算已经过去的日子）
+    const d0 = model.start.day, span = h - d0;
+    if (span >= 6) {
+      const early = (model.pnlAt(d0 + span / 3, s0) - model.pnlAt(d0, s0)) / (span / 3);
+      const late = (model.pnlAt(h, s0) - model.pnlAt(d0 + (2 * span) / 3, s0)) / (span / 3);
       if (Math.abs(early) > 1e-4 || Math.abs(late) > 1e-4) {
         const sameSign = early * late > 0;
         const k = sameSign && Math.abs(early) > 1e-6 ? Math.abs(late / early) : 0;
@@ -906,7 +908,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
 
   // ── 结论框（图上方，2026-10-08）：把图里最要紧的几句话提到最前面，每格有ⓘ ──
   const cell = (key: string, label: string, tipId: string, body: ReactNode, cls = "") => (
-    <div key={key} className={`min-w-0 border-t border-slate-800 px-3 py-1.5 first:border-t-0 sm:border-l sm:border-t-0 sm:first:border-l-0 ${cls}`}>
+    <div key={key} className={`min-w-0 px-3 py-1.5 ${cls}`}>
       <InfoTip {...tip(tipId)}><span className="text-[10.5px] text-slate-400">{label}</span></InfoTip>
       <div className="mt-0.5 text-[11.5px] leading-snug text-slate-100">{body}</div>
     </div>
@@ -936,7 +938,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       v: fmtPnl(sm.end),
     }));
     conclBox = (
-      <div className="grid shrink-0 grid-cols-1 overflow-hidden rounded-md border border-sky-800 bg-slate-900/70 sm:grid-cols-[minmax(120px,0.85fr)_1fr_1.15fr_1.15fr]">
+      <div className="concl shrink-0"><div className="concl-grid overflow-hidden rounded-md border border-sky-800 bg-slate-900/70" style={{ ["--concl-cols" as string]: "minmax(120px,0.85fr) 1fr 1.15fr 1.15fr" }}>
         {cell("one", t("sconcl.one"), "one", (
           <>
             <span className="block text-[15px] font-bold leading-tight text-sky-200">{facts.beHead}</span>
@@ -946,7 +948,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
         {cell("time", t("sconcl.time"), "time", facts.timeTxt ?? <span className="text-slate-400">{t("sconcl.timeShort")}</span>)}
         {cell("paths", t("sconcl.paths", { g: t(`som.group.${group.id}`) }), "paths", pathsTxt.length ? pathsTxt.join(t("sconcl.sep")) + t("sconcl.end") : "—")}
         {cell("next", t("future.concl.next"), "next", nextBody)}
-      </div>
+      </div></div>
     );
   } else if (tracked && terrainAt && tracked.todayDay - (tracked.asOfDays ?? 0) > 0) {
     // 走过的路：开仓那天的地形在这一点（今天，或正在看的那天快照）给的盈亏 vs 真实总账；差额 = 隐含波动率变化 + 调整
@@ -984,7 +986,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     const re = tracked.ruleExit && tracked.ruleExit.day <= atDay ? tracked.ruleExit : null;
     const reKey = re ? (re.kind === "tp" ? "som.ruleExitTp" : re.kind === "sl" ? "som.ruleExitSl" : re.kind === "delta" ? "som.ruleExitDelta" : "som.ruleExitTime") : "";
     conclBox = (
-      <div className="grid shrink-0 grid-cols-1 overflow-hidden rounded-md border border-amber-700/70 bg-slate-900/70 sm:grid-cols-[minmax(120px,0.85fr)_1fr_1.15fr_1.15fr]">
+      <div className="concl shrink-0"><div className="concl-grid overflow-hidden rounded-md border border-amber-700/70 bg-slate-900/70" style={{ ["--concl-cols" as string]: "minmax(120px,0.85fr) 1fr 1.15fr 1.15fr" }}>
         {cell("gap", t("sconcl.tGap"), "tGap", (
           <>
             <span className={`block text-[15px] font-bold leading-tight ${small ? "text-slate-200" : gap > 0 ? "text-emerald-300" : "text-rose-300"}`}>
@@ -1000,7 +1002,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
             {re ? `${t(reKey, { d: re.day, v: fmtPnl(re.pnl) })}${t("sconcl.end")}` : t("sconcl.tNoExit")} {t("sconcl.tNextBody")}
           </>
         ))}
-      </div>
+      </div></div>
     );
   }
   // 图上各样东西的说明（画在画布上的线/点没法直接悬停，放一排带ⓘ的图例）
@@ -1020,7 +1022,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       <InfoTip {...tip("path")}><span className="inline-block h-0.5 w-4 rounded bg-sky-400" /><span className="inline-block h-0.5 w-4 rounded bg-amber-400" />{t("stip.lg.path")}</InfoTip>
       <InfoTip {...tip("cone")}><span className="inline-block w-4 border-t border-dashed border-violet-300" />{t("stip.lg.cone")}</InfoTip>
       <InfoTip {...tip("be")}><span className="inline-block w-4 border-t border-dashed border-slate-100" />{t("stip.lg.be")}</InfoTip>
-      <InfoTip {...tip("strike")}><span className="inline-block w-4 border-t border-dashed border-rose-400" />{t("stip.lg.strike")}</InfoTip>
+      <InfoTip {...tip("strike")}><span className="inline-flex gap-0.5"><span className="inline-block w-1.5 border-t border-dashed border-emerald-400" /><span className="inline-block w-1.5 border-t border-dashed border-slate-100" /><span className="inline-block w-1.5 border-t border-dashed border-rose-400" /></span>{t("stip.lg.strike")}</InfoTip>
       {zoneCtx && <InfoTip {...tip("node")}><span className="inline-block h-2 w-2 rounded-full border border-slate-100 bg-slate-950" />{t("stip.lg.node")}</InfoTip>}
       {scenario && <InfoTip {...tip("scen")}><span className="inline-block h-2 w-2 rotate-45 bg-sky-500" />{t("stip.lg.scen")}</InfoTip>}
     </div>
@@ -1113,10 +1115,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       {mapLegend}
       {totAt && tracked?.segments && tracked.segments.length > 0 && (() => {
         const tot = totAt;
-        // "为什么是今天这样"：跟总结果同方向、贡献最大的那一项；反方向更大的一项算"抵消了一部分"。
-        const sameSign = PART_KEYS.filter((k) => tot[k] * tot.total > 0);
-        const main = sameSign.length ? sameSign.reduce((a, b) => (Math.abs(tot[b]) > Math.abs(tot[a]) ? b : a)) : null;
-        const opp = PART_KEYS.filter((k) => tot[k] * tot.total < 0).sort((a, b) => Math.abs(tot[b]) - Math.abs(tot[a]))[0];
+        // 这里只当底部小柱子的图例（四项各多少）；"主要来自哪项"那句已经在上面结论框"钱从哪来"里说了，不再重复
         return (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
             <span className="font-semibold text-slate-200">
@@ -1128,12 +1127,6 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
                 {t(`som.attr_${k}`)} <span className="tabular-nums" style={{ color: pnlColor(tot[k]) }}>{fmtPnl(tot[k])}</span>
               </span>
             ))}
-            {main && Math.abs(tot.total) > 0.005 && (
-              <span className="font-semibold text-amber-200">
-                {t(tot.total > 0 ? "som.attrMainGain" : "som.attrMainLoss", { name: t(`som.attr_${main}`) })}
-                {opp && Math.abs(tot[opp]) > 0.005 && t("som.attrOffset", { name: t(`som.attr_${opp}`), v: fmtPnl(tot[opp]) })}
-              </span>
-            )}
           </div>
         );
       })()}
