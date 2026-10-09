@@ -2,7 +2,7 @@
 // "股价 vs 期权价"标签：横轴时间（开仓→最近到期日）、纵轴股价（往上是涨）、颜色是组合盈亏，
 // 叠加典型股价走势线（对立走势同图，形成喇叭口），让人直接看到"股价这样走，期权组合会怎样"。
 // 计算在lib/stockOptionMap.ts；这里只负责画图、子标签和鼠标读数。
-import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import InfoTip from "@/components/InfoTip";
 import type { Leg } from "@/lib/types";
 import { useI18n } from "@/i18n/I18nContext";
@@ -351,6 +351,19 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     };
     return { day, price: s0, src: origin.src, now, down: scan(model.sMin), up: scan(model.sMax) };
   }, [model, zoneCtx, tracked, deferredPoint, scenDay, scenPrice, spot]);
+  // 结论框高度只长不缩（见下面渲染处）；组合、起点、颜色模式变了才重新量
+  const [conclMinH, setConclMinH] = useState(0);
+  const conclResetKey = `${legs.map((l) => `${l.action}${l.type}${l.strike}${l.dte}${l.qty ?? 1}`).join(",")}|${spot}|${useToday}|${!!tracked}`;
+  useEffect(() => setConclMinH(0), [conclResetKey]);
+  const conclRo = useRef<ResizeObserver | null>(null);
+  const conclRef = useCallback((el: HTMLDivElement | null) => {
+    conclRo.current?.disconnect();
+    conclRo.current = null;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setConclMinH((m) => Math.max(m, Math.ceil(el.offsetHeight))));
+    ro.observe(el);
+    conclRo.current = ro;
+  }, []);
   const multiExpiry = new Set(legs.filter((l) => l.kind !== "stock").map((l) => l.dte)).size > 1;
 
   useEffect(() => {
@@ -1031,7 +1044,11 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
   return (
     // 结论框占了一截高度：窗口矮时整个标签往下滚，图至少留280像素
     <div className="flex h-full min-h-0 flex-col gap-1 overflow-y-auto pr-1">
-      {conclBox}
+      {conclBox && (
+        // 结论框只长不缩：鼠标在图上移动时"接下来怎么做"那格字数会变，框一变高图就被往下推，
+        // 鼠标下面的点跟着变、字又变——来回抖。换组合/换起点时重新量
+        <div ref={conclRef} className="shrink-0" style={{ minHeight: conclMinH || undefined }}>{conclBox}</div>
+      )}
       <div className="flex flex-wrap items-center gap-1">
         {!tracked && <InfoTip {...tip("group")} className="mr-0.5" />}
         {!tracked && PATH_GROUPS.map((gr) => (
