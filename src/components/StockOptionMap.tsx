@@ -4,6 +4,7 @@
 // 计算在lib/stockOptionMap.ts；这里只负责画图、子标签和鼠标读数。
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import InfoTip from "@/components/InfoTip";
+import HowToRead from "@/components/HowToRead";
 import type { Leg } from "@/lib/types";
 import { useI18n } from "@/i18n/I18nContext";
 import { PATH_GROUPS, buildMapModel, summarizePath, pathOdds, openingTerrain, type MapModel, type PathId, type HistoryPoint, type AdjustMarker, type SegmentAttribution, type PnlParts } from "@/lib/stockOptionMap";
@@ -1018,6 +1019,51 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       </div></div>
     );
   }
+  // 走势线上"第N天 → 建议"是怎么来的：一步步说清，再拿图上一个点代入真实数字（xue：只有这样才看得懂）
+  // （这里在提前return之后，不能用hook；算一次很便宜）
+  const nodeHowLines = ((): ReactNode[] => {
+    if (!model || !zoneCtx || tracked || pathNodes.length === 0) return [] as ReactNode[];
+    const usd = (v: number) => `$${Math.abs(v).toFixed(2)}`;
+    const p = zoneCtx.p;
+    const rules = [
+      Number.isFinite(p.tpLine) ? t("som.nodeRuleTp", { v: usd(p.tpLine) }) : t("som.nodeRuleTpNone"),
+      Number.isFinite(p.slLine) ? t("som.nodeRuleSl", { v: usd(p.slLine) }) : t("som.nodeRuleSlNone"),
+      p.closeAtRemaining > 0 ? t("som.nodeRuleClose", { d: p.closeAtRemaining }) : t("som.nodeRuleCloseNone"),
+    ].join(t("som.nodeSep"));
+    const pathName = (id: PathId) => t(`som.path.${id}`);
+    const lineName = (id: PathId) => {
+      const i = group.paths.indexOf(id);
+      return t(id === "flat" ? "som.lineFlat" : i % 2 === 0 ? "som.lineBlue" : "som.lineAmber");
+    };
+    // 举例优先挑变成"止损/止盈平仓"的点（最能说明问题），没有就用第一个
+    const eg = pathNodes.find((n) => n.to === "stopLoss" || n.to === "takeProfit") ?? pathNodes[0];
+    const pnl = model.pnlAt(eg.day, eg.price);
+    const why = quickAdviceWhy(zoneCtx, eg.day, eg.price, pnl);
+    const act = (a: AdviceAction) => t(`advice.act.${a}`);
+    const egText = t("som.nodeHowEg", {
+      lbl: t("som.node", { d: eg.day, a: act(eg.to) }),
+      line: lineName(eg.id),
+      path: pathName(eg.id),
+      d0: eg.day - 1,
+      p0: model.path(eg.id, eg.day - 1).toFixed(2),
+      from: act(eg.from),
+      d: eg.day,
+      p: eg.price.toFixed(2),
+      pnl: t(pnl >= 0 ? "som.nodeGain" : "som.nodeLoss", { v: usd(pnl) }),
+      why: t(`som.why.${why.key}`, why.vars),
+      to: act(eg.to),
+    });
+    return [
+      t("som.nodeHow1", { g: t(`som.group.${group.id}`), paths: group.paths.map(pathName).join(t("som.nodeSep")) }),
+      t("som.nodeHow2", { a: Math.ceil(model.start.day), b: Math.floor(model.horizon) }),
+      t("som.nodeHow3", { rules }),
+      t("som.nodeHow4"),
+      <span key="eg" className="text-amber-200">{egText}</span>,
+      t("som.nodeHow6"),
+      t("som.nodeHow7"),
+    ];
+  })();
+
   // 图上各样东西的说明（画在画布上的线/点没法直接悬停，放一排带ⓘ的图例）
   const mapLegend = tracked ? (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-slate-400">
@@ -1192,6 +1238,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
             : t("som.openNote", { iv: (model.baseIv * 100).toFixed(1) })}
         </div>
       )}
+      {nodeHowLines.length > 0 && <HowToRead lines={nodeHowLines} title={t("som.nodeHowTitle")} storageKey="optionpilot.mapNodeHow" />}
       {findings.length > 0 && (
         <div className="rounded-md border border-slate-800 bg-slate-900/50 px-2 py-1 text-[11px] leading-relaxed text-slate-300">
           <InfoTip {...tip("find")}><span className="mr-1 font-semibold text-sky-300">{t("som.findTitle")}</span></InfoTip>
