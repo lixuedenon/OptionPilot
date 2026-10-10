@@ -269,6 +269,15 @@ export async function addTrackedSnapshot(id: string, legs: Leg[], spot: number, 
 // is (re-)entered in Compare Mode (handleTrack / handleSwitchToCompare), so
 // "今日组合" doesn't default to whatever was last manually refreshed, even
 // if that was days or weeks ago.
+// 回填的起点＝开仓那一刻：开仓日、开仓价、开仓权利金，dte要还原到开仓那天（legs的dte是按legsAsOf存的）。
+// ⚠️ 不能拿legsAsOf当起点日、又配开仓价和开仓权利金——剩余天数少了，反推出的隐含波动率会虚高（LULU 52.9%被算成90%多），
+// 之后每个估算快照都按这个虚高的IV定价，盈亏拆解里波动率/时间两项就被算歪。
+export function backfillOpeningAnchor(strategy: Pick<SavedStrategy, "legs" | "spot" | "openingAt" | "legsAsOf" | "createdAt">): { dateISO: string; legs: Leg[]; spot: number } {
+  const openTs = strategy.openingAt ?? strategy.createdAt;
+  const basis = computeOpeningSimBasis(openTs, strategy.legsAsOf ?? openTs, strategy.legs, strategy.spot);
+  return { dateISO: formatDateInput(openTs), legs: basis.legs, spot: strategy.spot };
+}
+
 export async function backfillTrackedSnapshots(id: string): Promise<SavedStrategy[]> {
   const strategies = loadFromStorage();
   const idx = strategies.findIndex((s) => s.id === id);
@@ -276,11 +285,8 @@ export async function backfillTrackedSnapshots(id: string): Promise<SavedStrateg
 
   const strategy = strategies[idx];
   const existing = strategy.trackedSnapshots ?? [];
-  // `strategy.legs` is only guaranteed accurate "as of" legsAsOf (when it
-  // was last saved), not openingAt (when the position truly opened) — see
-  // SavedStrategy.legsAsOf's doc comment. Backfilling from the wrong
-  // baseline date would reprice using the wrong days-elapsed for every bar.
-  const openedISO = formatDateInput(strategy.legsAsOf ?? strategy.openingAt ?? strategy.createdAt);
+  const opening = backfillOpeningAnchor(strategy);
+  const openedISO = opening.dateISO;
   const todayIso = todayISO();
 
   let bars;
@@ -298,7 +304,7 @@ export async function backfillTrackedSnapshots(id: string): Promise<SavedStrateg
   // 隐含波动率也会跳回开仓时的值，盈亏拆解里凭空多出一笔"波动率影响"。
   const real = existing.filter((snap) => !snap.estimated);
   const anchors = [
-    { dateISO: openedISO, legs: strategy.legs, spot: strategy.spot },
+    opening,
     ...real.map((snap) => ({ dateISO: formatDateInput(snap.savedAt), legs: snap.legs, spot: snap.spot })),
   ].sort((a, b) => (a.dateISO < b.dateISO ? -1 : a.dateISO > b.dateISO ? 1 : 0));
   const realDates = new Set(real.map((snap) => formatDateInput(snap.savedAt)));
