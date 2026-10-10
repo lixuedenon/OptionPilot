@@ -13,6 +13,7 @@ import { simPnlAt } from "@/lib/winRateSim";
 import { priceCombo } from "@/lib/pricing";
 import { fetchHistoricalSeries, rangeSince, type HistoricalSeries } from "@/lib/historicalVolatility";
 import { calendarDaysBetween } from "@/lib/dateUtils";
+import { perUnitText, perUnitShort, perUnitOnly, isSingleOption } from "@/lib/perContract";
 
 interface Props {
   symbol: string;
@@ -32,7 +33,7 @@ interface Props {
   // segments/totals：今昔对比——开仓至今的盈亏逐段拆成股价/时间/波动率/调整，画在左半边底部，读数和图下方的总结都用它。
   // asOfDays：看的是以前某天的快照时，那天离今天几天（股价/总账都是那天的，结论框按那天比）。
   // ruleExit：按你的止盈止损规则，真实走过的路上第一次碰到线的那一天（今昔对比，标"这里本该下车"）。
-  tracked?: { todayDay: number; pnlOffset: number; opening?: { legs: Leg[]; spot: number }; history: HistoryPoint[]; markers: AdjustMarker[]; segments?: SegmentAttribution[]; totals?: PnlParts & { total: number }; ruleExit?: { day: number; price: number; pnl: number; kind: "tp" | "sl" | "delta" | "time" } | null; asOfDays?: number };
+  tracked?: { todayDay: number; pnlOffset: number; opening?: { legs: Leg[]; spot: number }; history: HistoryPoint[]; markers: AdjustMarker[]; segments?: SegmentAttribution[]; totals?: PnlParts & { total: number }; ruleExit?: { day: number; price: number; pnl: number; kind: "tp" | "sl" | "delta" | "time" } | null; asOfDays?: number; iv?: { open: number; now: number }; oneStepIv?: number };
   // 推演未来：底部股价/时间滑块定的情景点（画蓝色菱形）；滑块一动，鼠标钉住的点就让位给滑块。
   scenario?: { day: number; price: number } | null;
   // 推演未来：风险分区和走势上的节点用的快速版持仓建议（跟左边持仓建议同一套规则）。
@@ -938,6 +939,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     </div>
   );
   let conclBox: ReactNode = null;
+  let trackedHowLines: ReactNode[] = [];
   if (!tracked && facts.beHead) {
     const act = (a: AdviceAction) => t(`advice.act.${a}`);
     let nextBody: ReactNode = <span className="text-slate-400">{t("sconcl.nextNone")}</span>;
@@ -978,19 +980,54 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     // 走过的路：开仓那天的地形在这一点（今天，或正在看的那天快照）给的盈亏 vs 真实总账；差额 = 隐含波动率变化 + 调整
     const atDay = tracked.todayDay - (tracked.asOfDays ?? 0);
     const expected = terrainAt(atDay, spot);
-    const gap = tracked.pnlOffset - expected;
+    const actual = tracked.pnlOffset;
+    const gap = actual - expected;
     const adjusted = tracked.markers.some((mk) => mk.day <= atDay) || Math.abs(totAt?.adjust ?? 0) > 0.005;
-    const vars = { s: spot.toFixed(2), d: atDay, a: fmtPnl(expected), b: fmtPnl(tracked.pnlOffset), c: fmtPnl(gap) };
+    const small = Math.abs(gap) < 0.005;
+    const when = t((tracked.asOfDays ?? 0) > 0 ? "som.tWhenSnap" : "som.tWhenToday");
+    const vars = { s: spot.toFixed(2), d: atDay, date: dateLabel(atDay), a: fmtPnl(expected), b: fmtPnl(actual), c: fmtPnl(gap), when };
     const tot = totAt;
+    // 开仓组合（金额按每股×张数，跟全项目一样）；没调整、没有正股腿时，盈亏能换回"这张期权现在值多少"
+    const openLegs = (tracked.opening?.legs ?? []).filter((l) => !l.disabled);
+    const optLegs = openLegs.filter((l) => l.kind !== "stock");
+    const priceable = !adjusted && optLegs.length > 0 && optLegs.length === openLegs.length;
+    const netOpen = optLegs.reduce((sum, l) => sum + (l.action === "buy" ? 1 : -1) * l.premium * (l.qty ?? 1), 0); // 收=负、付=正
+    const valExp = netOpen + expected; // 这一点按开仓预期组合值多少（负=平仓要付）
+    const valAct = netOpen + actual;
+    const credit = netOpen < 0;
+    const single = isSingleOption(optLegs);
+    const name = single && optLegs[0] ? t("som.tNameOne", { k: optLegs[0].strike, ty: optLegs[0].type === "call" ? "Call" : "Put" }) : t("som.tNameCombo");
+    const pu = (v: number) => perUnitText(Math.abs(v), optLegs, t, fmtVal);
+    const puOnly = (v: number) => perUnitOnly(Math.abs(v), optLegs, t, fmtVal);
+    const puShort = (v: number) => perUnitShort(v, optLegs, t, fmtPnl);
+    const nowWord = (v: number) => t(v < 0 ? "som.tNowPay" : "som.tNowGet");
+    const calc = (v: number, r: number) =>
+      credit && v <= 0 ? t("som.tCalcCredit", { o: fmtVal(netOpen), v: fmtVal(v), r: fmtPnl(r) })
+        : !credit && v >= 0 ? t("som.tCalcDebit", { o: fmtVal(netOpen), v: fmtVal(v), r: fmtPnl(r) })
+          : t("som.tCalcPlain", { r: fmtPnl(r) });
+    // 标题：两边都亏时说"少亏/多亏"，两边都赚时说"多赚/少赚"
+    const headKey = gap > 0 ? (expected < 0 && actual <= 0.005 ? "sconcl.tHeadLessLoss" : "sconcl.tHeadMoreGain") : (expected > 0 && actual >= -0.005 ? "sconcl.tHeadLessGain" : "sconcl.tHeadMoreLoss");
+    // 同一天同一股价，期权价比预期便宜还是贵；跟平均隐含波动率的升降方向对不对得上
+    const cheaper = Math.abs(valAct) < Math.abs(valExp);
+    const priceDiff = Math.abs(Math.abs(valExp) - Math.abs(valAct));
+    const iv0 = tracked.iv?.open;
+    const iv1 = tracked.iv?.now;
+    const ivPct = (v: number) => `${(v * 100).toFixed(1)}%`;
+    const ivMoved = iv0 !== undefined && iv1 !== undefined && Math.abs(iv1 - iv0) >= 0.002;
+    const ivWhyKey = ivMoved && iv0 !== undefined && iv1 !== undefined && (iv1 < iv0) === cheaper
+      ? `som.tIv${iv1 < iv0 ? "Down" : "Up"}${credit ? "Sell" : "Buy"}`
+      : "som.tIvMixed";
+    const ivVars = { iv0: iv0 !== undefined ? ivPct(iv0) : "—", iv1: iv1 !== undefined ? ivPct(iv1) : "—" };
+
     let where: ReactNode = "—";
     if (tot) {
       const sameSign = PART_KEYS.filter((k) => tot[k] * tot.total > 0);
       const main = sameSign.length ? sameSign.reduce((a, b) => (Math.abs(tot[b]) > Math.abs(tot[a]) ? b : a)) : null;
       const opp = PART_KEYS.filter((k) => tot[k] * tot.total < 0).sort((a, b) => Math.abs(tot[b]) - Math.abs(tot[a]))[0];
-      const parts = PART_KEYS.filter((k) => Math.abs(tot[k]) >= 0.005).map((k) => `${t(`som.attr_${k}`)} ${fmtPnl(tot[k])}`).join(t("sconcl.sep2"));
+      const parts = PART_KEYS.filter((k) => Math.abs(tot[k]) >= 0.005).map((k) => `${t(`som.attr_${k}`)} ${puShort(tot[k])}`).join(t("sconcl.sep2"));
       where = (
         <>
-          {t("sconcl.tWhereBody", { v: fmtPnl(tot.total), parts: parts || "—" })}
+          {t("sconcl.tWhereBody", { v: perUnitText(tot.total, optLegs, t, fmtPnl), parts: parts || "—" })}
           {main && Math.abs(tot.total) > 0.005 && (
             <span className="text-amber-200">
               {" "}{t(tot.total > 0 ? "som.attrMainGain" : "som.attrMainLoss", { name: t(`som.attr_${main}`) })}
@@ -998,25 +1035,101 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
               {t("sconcl.end")}
             </span>
           )}
+          <span className="text-slate-400"> {t("sconcl.tWhereHow")}</span>
         </>
       );
     }
-    const small = Math.abs(gap) < 0.005;
-    const why = small
-      ? t("som.gapNone")
-      : tot
-        ? t(adjusted ? "sconcl.tWhyAdj" : "sconcl.tWhyIv", { c: fmtPnl(gap), iv: fmtPnl(tot.iv), adj: fmtPnl(tot.adjust) })
-        : t(adjusted ? "som.gapIvAdj" : "som.gapIv", vars);
+    // 逐段加起来的波动率跟两点直接比的差得多（甚至方向相反）时，在"差在哪"里点一句，图下有详细解释
+    const pathIvDiffers = !!tot && Math.abs(tot.iv) >= 0.005 && Math.abs(tot.iv - (tracked.oneStepIv ?? gap)) > Math.max(0.3, 0.25 * Math.abs(tracked.oneStepIv ?? gap));
+    let why: ReactNode;
+    if (small) why = t("som.gapNone");
+    else if (priceable) {
+      why = (
+        <>
+          {t("sconcl.tWhyPrice", { ...vars, name, dir: t(cheaper ? "som.tCheaper" : "som.tPricier"), dp: puOnly(priceDiff), ...ivVars })}
+          {" "}{t(ivWhyKey)}
+          {pathIvDiffers && tot && <span className="text-slate-400"> {t("sconcl.tWhyPathNote", { iv: fmtPnl(tot.iv) })}</span>}
+          <span className="text-slate-400"> {t("sconcl.tWhySeeBelow")}</span>
+        </>
+      );
+    } else if (tot) {
+      why = (
+        <>
+          {t(adjusted ? "sconcl.tWhyAdj" : "sconcl.tWhyIv", { c: fmtPnl(gap), iv: fmtPnl(tot.iv), adj: fmtPnl(tot.adjust), ...ivVars })}
+          <span className="text-slate-400"> {t("sconcl.tWhySeeBelow")}</span>
+        </>
+      );
+    } else why = t(adjusted ? "sconcl.tWhyAdjNoSeg" : "sconcl.tWhyIvNoSeg", vars);
+
     const re = tracked.ruleExit && tracked.ruleExit.day <= atDay ? tracked.ruleExit : null;
     const reKey = re ? (re.kind === "tp" ? "som.ruleExitTp" : re.kind === "sl" ? "som.ruleExitSl" : re.kind === "delta" ? "som.ruleExitDelta" : "som.ruleExitTime") : "";
+
+    // ———— 图下"怎么看这张图、这几个数是怎么来的"：一步步，代入这笔的真实数字 ————
+    const firstPrice = pricePath[0]?.price ?? tracked.opening?.spot ?? spot;
+    const lines: ReactNode[] = [
+      t("som.tHow1", { d0: dateLabel(0), d1: model ? dateLabel(model.horizon) : "—", d: atDay, date: dateLabel(atDay), when }),
+      t("som.tHow2", { iv: ivVars.iv0 }),
+      t("som.tHow3", { s0: firstPrice.toFixed(2), s: spot.toFixed(2), when }),
+    ];
+    if (priceable) {
+      lines.push(
+        <span key="exp" className="text-amber-200">{t("som.tHowExp", { ...vars, iv0: ivVars.iv0, name, now: nowWord(valExp), pv: pu(valExp), calc: calc(valExp, expected) })}</span>,
+        <span key="act" className="text-amber-200">{t("som.tHowAct", { ...vars, iv1: ivVars.iv1, name, now: nowWord(valAct), pv: pu(valAct), calc: calc(valAct, actual) })}</span>,
+      );
+      if (!small) {
+        lines.push(
+          <span key="gap" className="text-amber-200">
+            {t("som.tHowGap", { ...vars, name, dir: t(cheaper ? "som.tCheaper" : "som.tPricier"), dp: puOnly(priceDiff), dpAll: fmtVal(priceDiff), head: t(headKey, { c: fmtVal(gap) }), ...ivVars })} {t(ivWhyKey)}
+          </span>,
+        );
+      } else lines.push(t("som.gapNone"));
+    } else if (adjusted) {
+      const days = tracked.markers.filter((mk) => mk.day <= atDay).map((mk) => t("som.tDayDate", { d: mk.day, date: dateLabel(mk.day) }));
+      lines.push(
+        <span key="adj" className="text-amber-200">{t("som.tHowAdj", { ...vars, days: days.length ? days.join(t("sconcl.sep2")) : "—" })}</span>,
+      );
+    } else {
+      lines.push(<span key="plain" className="text-amber-200">{t("som.tHowPlain", { ...vars, iv0: ivVars.iv0, iv1: ivVars.iv1 })}</span>);
+    }
+    if (tot && tracked.segments && tracked.segments.length > 0) {
+      lines.push(t("som.tHowBars", { v: perUnitText(tot.total, optLegs, t, fmtPnl) }));
+      // 波动率一项是逐段加起来的：列出让你赚/亏的几段，说清为什么可能跟"今天比开仓时低/高"方向相反
+      const segs = tracked.segments.filter((sg) => sg.toDay <= atDay + 1e-9 && Math.abs(sg.iv) >= 0.005);
+      if (segs.length > 0) {
+        const fmtSeg = (sg: SegmentAttribution) => t("som.tSeg", { a: dateLabel(sg.fromDay), b: dateLabel(sg.toDay), v: fmtPnl(sg.iv) });
+        const ups = segs.filter((sg) => sg.iv > 0).sort((a, b) => b.iv - a.iv).slice(0, 3);
+        const downs = segs.filter((sg) => sg.iv < 0).sort((a, b) => a.iv - b.iv).slice(0, 3);
+        const ref = tracked.oneStepIv ?? (adjusted ? undefined : gap);
+        const opposite = ref !== undefined && Math.abs(ref) >= 0.005 && ref * tot.iv < 0;
+        lines.push(
+          <span key="ivpath">
+            {t("som.tHowIvPath", { iv: fmtPnl(tot.iv) })}
+            {ups.length > 0 && t("som.tHowIvUps", { list: ups.map(fmtSeg).join(t("sconcl.sep2")) })}
+            {downs.length > 0 && t("som.tHowIvDowns", { list: downs.map(fmtSeg).join(t("sconcl.sep2")) })}
+            {" "}{t("som.tHowIvWhy")}
+            {opposite && ref !== undefined && <span className="text-amber-200"> {t("som.tHowIvOpp", { iv: fmtPnl(tot.iv), ...ivVars, dir: t(ref > 0 ? "som.tHelped" : "som.tHurt") })}</span>}
+          </span>,
+        );
+      }
+      if (tracked.oneStepIv !== undefined) {
+        lines.push(t(adjusted ? "som.tHowLeftAdj" : "som.tHowLeft", { o: fmtPnl(tracked.oneStepIv), c: fmtPnl(gap), iv: fmtPnl(tot.iv) }));
+      }
+    }
+    if (re) lines.push(t("som.tHowExit", { txt: t(reKey, { d: re.day, v: fmtPnl(re.pnl) }), date: dateLabel(re.day) }));
+    lines.push(t("som.tHowFuture"));
+    trackedHowLines = lines;
+
     conclBox = (
       <div className="concl shrink-0"><div className="concl-grid overflow-hidden rounded-md border border-amber-700/70 bg-slate-900/70" style={{ ["--concl-cols" as string]: "minmax(120px,0.85fr) 1fr 1.15fr 1.15fr" }}>
         {cell("gap", t("sconcl.tGap"), "tGap", (
           <>
             <span className={`block text-[15px] font-bold leading-tight ${small ? "text-slate-200" : gap > 0 ? "text-emerald-300" : "text-rose-300"}`}>
-              {small ? t("sconcl.tSame") : t(gap > 0 ? "sconcl.tMore" : "sconcl.tLess", { c: fmtVal(gap) })}
+              {small ? t("sconcl.tSame") : t(headKey, { c: fmtVal(gap) })}
             </span>
             <span className="text-[10.5px] text-slate-400">{t("sconcl.tGapSub", vars)}</span>
+            {priceable && !small && (
+              <span className="block text-[10.5px] text-slate-400">{t("sconcl.tGapPrice", { name, e: puOnly(valExp), r: puOnly(valAct) })}</span>
+            )}
           </>
         ), "bg-slate-950/40")}
         {cell("where", t("sconcl.tWhere"), "tWhere", where)}
@@ -1214,13 +1327,12 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
           <InfoTip {...tip("zone")}><span className="text-slate-500">{t("som.zoneHint")}</span></InfoTip>
         </div>
       )}
-      <div className="text-[10px] text-slate-500">
-        {tracked
-          ? t("som.trackedHint")
-          : pinned && point
+      {!tracked && <div className="text-[10px] text-slate-500">
+        {pinned && point
             ? <span className="text-amber-300">{t("som.pinned", { date: dateLabel(point.day), price: point.price.toFixed(2) })}</span>
             : t("som.pinHint")}
-      </div>
+      </div>}
+      {trackedHowLines.length > 0 && <HowToRead lines={trackedHowLines} title={t("som.tHowTitle")} storageKey="optionpilot.trackedMapHow" />}
       <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px]">
         {summaries.length > 0 && <InfoTip {...tip("summary")} />}
         {summaries.map((s, i) => (

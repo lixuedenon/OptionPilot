@@ -26,3 +26,17 @@ export function perUnitText(v: number, legs: Leg[], t: T, fmt: (x: number) => st
   if (n <= 1) return fmt(v);
   return t(isSingleOption(legs) ? "price.perContract" : "price.perSet", { p: fmt(v / n), n, v: fmt(v) });
 }
+
+// 短写法：拆成几项一起列时用"−$0.57/张（共 −$2.85）"，免得每项都重复"5 张"
+export function perUnitShort(v: number, legs: Leg[], t: T, fmt: (x: number) => string): string {
+  const n = contractUnit(legs);
+  if (n <= 1) return fmt(v);
+  return t(isSingleOption(legs) ? "price.perContractShort" : "price.perSetShort", { p: fmt(v / n), v: fmt(v) });
+}
+
+// 只写每张（或每组）的价，不带合计
+export function perUnitOnly(v: number, legs: Leg[], t: T, fmt: (x: number) => string): string {
+  const n = contractUnit(legs);
+  if (n <= 1) return fmt(v);
+  return t(isSingleOption(legs) ? "price.perContractOnly" : "price.perSetOnly", { p: fmt(v / n) });
+}

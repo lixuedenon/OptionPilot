@@ -991,8 +991,11 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     return {
       todayDay: trackedHistory.todayDay, pnlOffset: trackedHistory.pnlNow, opening: { legs: openingDayLegs, spot },
       history: trackedHistory.points, markers: trackedHistory.markers, segments, totals, ruleExit, asOfDays: trackedAsOfDays,
+      // 结论框和"怎么看"用：开仓时/现在的平均隐含波动率（跟统计格同一组数），左边盈亏归因一步算出的波动率那一项
+      iv: sliderBaseIv > 0 && trackedVolShift !== undefined ? { open: sliderBaseIv, now: sliderBaseIv + trackedVolShift / 100 } : undefined,
+      oneStepIv: pnlAttribution?.ivEffect,
     };
-  }, [showStockOptionMap, trackedHistory, trackedTimeline, ruleExit, openingDayLegs, spot, trackedAsOfDays]);
+  }, [showStockOptionMap, trackedHistory, trackedTimeline, ruleExit, openingDayLegs, spot, trackedAsOfDays, sliderBaseIv, trackedVolShift, pnlAttribution]);
 
   const legToolbar = (
     <>
