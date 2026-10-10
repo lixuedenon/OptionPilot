@@ -24,7 +24,8 @@ type T = (k: string, v?: Record<string, string | number>) => string;
 export function perUnitParts(v: number, legs: Leg[]): { n: number; per: number; total: number } {
   const n = contractUnit(legs);
   if (n <= 1) return { n: 1, per: v, total: v };
-  const per = Math.round((v / n) * 100) / 100;
+  // 按绝对值取到分再带回符号：Math.round对负数的x.xx5会往上舍，同一个差额正着写和负着写会差一分
+  const per = (Math.sign(v) * Math.round(Math.abs(v / n) * 100)) / 100;
   return { n, per, total: Math.round(per * n * 100) / 100 };
 }
 

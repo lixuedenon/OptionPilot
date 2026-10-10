@@ -205,6 +205,7 @@ const zh: Dict = {
   "confirm.lockRollConfirm": "确定保存",
   "tracked.viewingAsOf": "正在看 {date} 的快照：股价 {spot} 和权利金都是当天的，隐含波动率和盈亏归因按那一刻算（剩余天数按今天显示）。",
   "tracked.autoRefreshFailed": "拉不到今天的报价，权利金还是 {date} 的，股价也用当天的。可以点各腿的刷新按钮再试，或手动输入今天的权利金。",
+  "tracked.autoSaved": "已自动存下今天（{date}）的真实快照：权利金是今天的市场价，股价是实时价。每天第一次进跟踪时自动存一次；你改过组合或价格看着不对时不会自动存。",
   "tracked.saveRefreshFailed": "拉不到今天的报价，没有保存快照：现在的权利金不是今天的，存下来会被当成今天的记录。请刷新或手动输入各腿今天的权利金后再保存。",
   "premiumCheck.title": "权利金看起来不对",
   "premiumCheck.desc": "按现在的股价 {spot} 算，下面的权利金不太可能是真实报价，可能是输错了。快照存下以后就是这一刻的记录，事后只能删掉。",

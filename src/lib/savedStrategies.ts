@@ -312,7 +312,7 @@ export async function backfillTrackedSnapshots(id: string): Promise<SavedStrateg
 
   const regenerated: TrackedSnapshot[] = [];
   for (const bar of bars) {
-    if (bar.dateISO < openedISO) continue; // before this strategy existed
+    if (bar.dateISO <= openedISO) continue; // 开仓那天及以前：开仓那一刻就是起点，不再补一个估算的（不然会多出一个日期早于开仓的快照）
     if (bar.dateISO >= todayIso) continue; // today — a live save's job, not an estimate's
     if (realDates.has(bar.dateISO)) continue; // a real snapshot always wins
     let base = anchors[0];

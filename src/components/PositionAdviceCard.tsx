@@ -3,7 +3,7 @@
 // 然后股价/时间/盈利/往后四行（触发建议的那一行加▶），最后是指派等提示。计算在positionAdvisor.ts。
 // 推演未来：跟着情景滑块/地形图上指的点走；今昔对比：今天的持仓、开仓以来总盈亏（含已实现）。
 // 止盈止损、平仓时间、假设波动跟胜率模拟共用一份设定（simSettings.ts）。
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@/i18n/I18nContext";
 import type { Leg } from "@/lib/types";
 import type { CustomPreset } from "@/lib/customPresets";
@@ -11,6 +11,7 @@ import { PRESET_GROUPS } from "@/lib/presets";
 import { matchStrategy } from "@/lib/matchStrategy";
 import { addCalendarDays } from "@/lib/dateUtils";
 import { comboBaseIv } from "@/lib/stockOptionMap";
+import { weightedAvgIV } from "@/lib/pricing";
 import { ncdf } from "@/lib/bs";
 import { openingBasis, isCreditCombo, prepareSim, earningsShift, capJump } from "@/lib/winRateSim";
 import { comboDelta } from "@/lib/legDelta";
@@ -80,8 +81,16 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
   const options = openingLegs.filter((l) => l.kind !== "stock");
   const hasStock = openingLegs.some((l) => l.kind === "stock") || (nowLegs ?? []).some((l) => l.kind === "stock");
   const totalTerm = options.length ? Math.max(1, Math.round(Math.min(...options.map((l) => l.dte)))) : 0;
-  const legsOpenIv = useMemo(() => comboBaseIv(openingLegs, openingSpot), [openingLegs, openingSpot]);
-  const legsNowIv = useMemo(() => (nowLegs ? comboBaseIv(nowLegs, nowSpot) : null), [nowLegs, nowSpot]);
+  // 今昔对比按权利金加权平均（跟统计格、波动率滑块、走过的路同一个数）；推演未来只用它算情景里IV变了多少，保持简单平均。
+  const legsIv = useCallback((ls: Leg[], s: number) => {
+    if (mode === "tracked") {
+      const w = weightedAvgIV(ls.filter((l) => !l.disabled), s);
+      if (w > 0) return w;
+    }
+    return comboBaseIv(ls, s);
+  }, [mode]);
+  const legsOpenIv = useMemo(() => legsIv(openingLegs, openingSpot), [legsIv, openingLegs, openingSpot]);
+  const legsNowIv = useMemo(() => (nowLegs ? legsIv(nowLegs, nowSpot) : null), [legsIv, nowLegs, nowSpot]);
   const useMarket = mode === "analysis" && marketIv != null && marketIv > 0.01;
   const openingIv = useMarket ? marketIv! : legsOpenIv;
   // 推演未来的情景IV = 平值IV + 情景里各腿IV的变化（就是波动率滑块的变化量）
@@ -148,7 +157,7 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
         adviceAt.current = at;
         setAdvice(
           adviseCombo({
-            legs: advLegs, spot: nowSpot, basis, credit, pnl: advPnl, totalTerm, rules, vol: simVol, earnings: earnSim, iv: useMarket && nowIv != null ? nowIv : undefined, skew: effSkew, halfSpread: advLegs.length === (halfSpread ?? []).length ? halfSpread : undefined,
+            legs: advLegs, spot: nowSpot, basis, credit, pnl: advPnl, totalTerm, rules, vol: simVol, earnings: earnSim, iv: (useMarket || mode === "tracked") && nowIv != null ? nowIv : undefined, skew: effSkew, halfSpread: advLegs.length === (halfSpread ?? []).length ? halfSpread : undefined,
             drift: credit ? 0 : driftPct / 100, n: mode === "tracked" ? 3000 : 1500, seed: 20261001,
           }),
         );
@@ -196,7 +205,7 @@ export default function PositionAdviceCard({ mode, symbol, openingLegs, openingS
       </div>
       <div>{t("advice.opened", { date: fmtDate(openingAt), s: openingSpot.toFixed(2), exp: fmtDate(expiryTs), d: totalTerm })}</div>
       <div>
-        {basis != null && t(credit ? "advice.premiumCredit" : "advice.premiumDebit", { v: perUnitText(basis, descLegs, t, usd) })}
+        {basis != null && t(credit ? "advice.premiumCredit" : "advice.premiumDebit", { v: perUnitText(basis, openingLegs, t, usd) })}
         {openingIv != null && (
           <>
             {basis != null && " · "}

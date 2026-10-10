@@ -11,7 +11,7 @@ import PayoffChart from "@/components/PayoffChart";
 import { useStockQuote } from "@/lib/useStockQuote";
 import { useEpsEstimate } from "@/hooks/useEpsEstimate";
 import { loadRecentSymbols, addRecentSymbol } from "@/lib/recentSymbols";
-import { serializeStrategyState, serializeTrackedLegs, computeOpeningSimBasis, saveStrategy, overwriteStrategy, STORAGE_FAIL_EVENT, type SavedStrategy, type OpeningSimBasis } from "@/lib/savedStrategies";
+import { serializeStrategyState, serializeTrackedLegs, computeOpeningSimBasis, saveStrategy, overwriteStrategy, addTrackedSnapshot, STORAGE_FAIL_EVENT, type SavedStrategy, type OpeningSimBasis } from "@/lib/savedStrategies";
 import DropdownMenu from "@/components/DropdownMenu";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
@@ -98,6 +98,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const trackedAsOfRef = useRef<number | null>(null);
   trackedAsOfRef.current = trackedAsOf;
   const [trackedPriceError, setTrackedPriceError] = useState<string | null>(null);
+  // 自动存下今天真实快照后的提示（进跟踪时自动刷新成功）
+  const [trackedNote, setTrackedNote] = useState<{ id: string; text: string } | null>(null);
   const trackedAsOfDays = trackedAsOf === null ? 0 : calendarDaysSince(trackedAsOf);
   const {
     savedStrategies,
@@ -522,6 +524,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const {
     activeLegs,
     activeTrackedLegs,
+    asOfTrackedLegs,
     isCompareMode,
     result,
     scenarioPriceById,
@@ -584,10 +587,26 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         // 刷新期间可能已经展期/平仓/改了价：只更新没动过的腿。
         const merged = mergeFreshPremiums(cur, legsNow, fresh);
         setTrackedLegs(merged);
-        // 手机上今昔对比只能看、不能存快照，刷新后不算未保存改动，免得每次离开都问。
-        if (isMobile) setTrackedBaseline(serializeTrackedLegs(merged));
         setTrackedSpot(live);
         setTrackedAsOf(null);
+        // 刷新期间没动过组合、价格看着合理、这条组合已经存成策略：直接存成今天的真实快照（每天第一次进跟踪时存一次）。
+        // 这样不用记着点"保存追踪快照"，每天都有一条真实的市场价记录；改过组合、价格可疑时不自动存，留给你自己决定。
+        const stratId = trackingStrategyId;
+        const sane = premiumSanityIssues(merged, live, { legs: openingDayLegs, spot }).length === 0;
+        if (cur === legsNow && stratId && sane) {
+          void addTrackedSnapshot(stratId, merged, live, Date.now()).then((updated) => {
+            if (cancelled || trackedLegsRef.current !== merged) return;
+            setSavedStrategies(updated);
+            const snapsNow = updated.find((x) => x.id === stratId)?.trackedSnapshots ?? [];
+            const newId = snapsNow.length > 0 ? snapsNow[snapsNow.length - 1].id : null;
+            if (newId) setActiveSnapshotId(newId);
+            setTrackedBaseline(serializeTrackedLegs(merged));
+            if (newId) setTrackedNote({ id: newId, text: t("tracked.autoSaved", { date: formatDateInput(Date.now()) }) });
+          });
+        } else if (isMobile) {
+          // 手机上今昔对比只能看、不能存快照，刷新后不算未保存改动，免得每次离开都问。
+          setTrackedBaseline(serializeTrackedLegs(merged));
+        }
       } else {
         setTrackedPriceError(t("tracked.autoRefreshFailed", { date: formatDateInput(trackedAsOf) }));
       }
@@ -950,10 +969,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     const { points, markers } = buildTrackedHistory(trackedStrategy?.trackedSnapshots ?? [], legs, spot, openingAt);
     const todayDay = Math.max(0, effectiveDaysElapsed);
     const pnlNow = trackedResult.change + realizedTrackedPnl;
-    const past = points.filter((p) => p.day <= todayDay);
+    // 看以前某天的快照时，"现在"就是那一天：那天以后的快照、调整都不算（复盘、该下车、逐段拆解都只看到那天）。
+    const viewDay = Math.max(0, todayDay - trackedAsOfDays);
+    const past = points.filter((p) => p.day <= viewDay);
     // 只有权利金是今天的才补"今天"这一点；看某天的快照时那一天已经在快照里，旧权利金不能当成今天的。
     const withToday = todayDay > 0 && trackedAsOfDays === 0 ? [...past.filter((p) => p.day < todayDay), { day: todayDay, price: effectiveTrackedSpot, pnl: pnlNow }] : past;
-    return { todayDay, pnlNow, points: past, withToday, markers: markers.filter((m) => m.day <= todayDay) };
+    return { todayDay, viewDay, pnlNow, points: past, withToday, markers: markers.filter((m) => m.day <= viewDay) };
   }, [isCompareMode, trackedResult, trackedStrategy, legs, spot, openingAt, effectiveDaysElapsed, realizedTrackedPnl, trackedAsOfDays, effectiveTrackedSpot]);
   // 规则复盘：按你现在的止盈止损/平仓规则（跟万次推演、持仓建议同一份），沿真实的路第一次该下车的那一点。
   const ruleExit = useMemo(() => {
@@ -975,12 +996,16 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     if (!trackedHistory) return null;
     const { todayDay, pnlNow } = trackedHistory;
     const byDay = new Map<number, TrackedState>([[0, { legs: openingDayLegs, spot, day: 0, pnl: 0 }]]);
+    // 终点：今天的组合；看以前某天的快照时是那张快照（dte还原到那天，跟权利金、股价同一时刻），那天以后的快照不要。
+    const endDay = trackedAsOfDays > 0 ? trackedHistory.viewDay : todayDay;
     for (const sn of [...(trackedStrategy?.trackedSnapshots ?? [])].sort((x, y) => x.savedAt - y.savedAt)) {
       const day = Math.max(0, calendarDaysBetween(openingAt, sn.savedAt));
-      if (sn.spot > 0 && day > 0 && day < todayDay) byDay.set(day, { legs: sn.legs, spot: sn.spot, day, pnl: trackedTotalPnl(legs, sn.legs, sn.spot, spot), estimated: sn.estimated });
+      if (sn.spot > 0 && day > 0 && day < endDay) byDay.set(day, { legs: sn.legs, spot: sn.spot, day, pnl: trackedTotalPnl(legs, sn.legs, sn.spot, spot), estimated: sn.estimated });
     }
-    // 只有权利金是今天的才补"今天"这一点（同trackedHistory）。
-    if (trackedLegs && todayDay > 0 && trackedAsOfDays === 0) byDay.set(todayDay, { legs: trackedLegs, spot: effectiveTrackedSpot, day: todayDay, pnl: pnlNow });
+    if (trackedLegs && endDay > 0) {
+      const endLegs = trackedAsOfDays > 0 ? trackedLegs.map((l) => (l.kind === "stock" ? l : { ...l, dte: l.dte + trackedAsOfDays })) : trackedLegs;
+      byDay.set(endDay, { legs: endLegs, spot: effectiveTrackedSpot, day: endDay, pnl: pnlNow });
+    }
     const states = [...byDay.values()].sort((x, y) => x.day - y.day);
     return { states, ...buildAttributionTimeline(states) };
   }, [trackedHistory, trackedStrategy, legs, openingDayLegs, spot, openingAt, trackedLegs, effectiveTrackedSpot, trackedAsOfDays]);
@@ -1266,6 +1291,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               effectiveTrackedSpot={effectiveTrackedSpot}
               trackedAsOf={trackedAsOf}
               priceError={trackedPriceError}
+              note={trackedNote && trackedNote.id === activeSnapshotId ? trackedNote.text : null}
               activeTrackedLegs={activeTrackedLegs}
               effectiveDaysElapsed={effectiveDaysElapsed}
               onToggleImpliedInfo={() => setShowImpliedInfo((v) => !v)}
@@ -1306,9 +1332,9 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 openingLegs={isCompareMode ? openingDayLegs : mapLegs}
                 openingSpot={isCompareMode ? spot : analyticsSpot}
                 openingAt={openingAt}
-                nowLegs={isCompareMode ? activeTrackedLegs : adviceScenarioLegs}
+                nowLegs={isCompareMode ? asOfTrackedLegs : adviceScenarioLegs}
                 nowSpot={isCompareMode ? effectiveTrackedSpot : analyticsSpot + analyticsShifts.dS}
-                nowDay={isCompareMode ? Math.max(0, effectiveDaysElapsed) : analyticsShifts.dT}
+                nowDay={isCompareMode ? Math.max(0, effectiveDaysElapsed - trackedAsOfDays) : analyticsShifts.dT}
                 pnl={isCompareMode ? (trackedResult ? trackedResult.change + realizedTrackedPnl : 0) : result.change}
                 adjusted={isCompareMode && (trackedLegs ?? []).some((l) => l.derivedFrom || l.closedPnl != null)}
                 customPresets={customPresets}
@@ -1432,7 +1458,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   legs={openingDayLegs}
                   spot={spot}
                   openingAt={openingAt}
-                  todayDay={Math.max(0, effectiveDaysElapsed)}
+                  todayDay={trackedHistory?.viewDay ?? Math.max(0, effectiveDaysElapsed)}
                   nowSpot={effectiveTrackedSpot}
                   pnlNow={trackedHistory?.pnlNow ?? 0}
                   history={trackedHistory?.withToday ?? []}
@@ -1440,7 +1466,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   ivChange={trackedVolShift}
                   ivOpen={sliderBaseIv}
                   journey={trackedTimeline}
-                  todayLegs={activeTrackedLegs ?? []}
+                  oneStep={pnlAttribution ? { price: pnlAttribution.priceEffect, time: pnlAttribution.timeEffect, iv: pnlAttribution.ivEffect, adjust: pnlAttribution.residual, total: pnlAttribution.totalChange } : null}
+                  todayLegs={asOfTrackedLegs ?? []}
                   adjusted={(trackedLegs ?? []).some((l) => l.derivedFrom || l.closedPnl != null)}
                   markers={trackedHistory?.markers ?? []}
                   emptyText={needSymbol ? t("chart.noSpot") : activeLegs.length === 0 ? t("chart.addLegs") : null}

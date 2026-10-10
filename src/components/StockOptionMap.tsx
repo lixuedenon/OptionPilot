@@ -12,7 +12,7 @@ import { quickAdvice, quickAdviceWhy, type QuickAdviceCtx, type AdviceAction } f
 import { simPnlAt } from "@/lib/winRateSim";
 import { priceCombo } from "@/lib/pricing";
 import { fetchHistoricalSeries, rangeSince, type HistoricalSeries } from "@/lib/historicalVolatility";
-import { calendarDaysBetween } from "@/lib/dateUtils";
+import { addCalendarDays, calendarDaysBetween } from "@/lib/dateUtils";
 import { perUnitText, contractUnit, isSingleOption } from "@/lib/perContract";
 
 interface Props {
@@ -50,7 +50,6 @@ const EMIT_INTERVAL_MS = 70; // 限制向上汇报的频率，避免整个App每
 const M = { l: 46, r: 62, t: 20, b: 34 };
 const PATH_COLORS = ["#38bdf8", "#fbbf24"];
 const FLAT_COLOR = "#e2e8f0";
-const DAY_MS = 86400000;
 
 const PART_KEYS = ["price", "time", "iv", "adjust"] as const;
 const PART_COLORS: Record<(typeof PART_KEYS)[number], string> = { price: "#38bdf8", time: "#a3e635", iv: "#c084fc", adjust: "#fbbf24" };
@@ -365,9 +364,9 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     };
     return { day, price: s0, src: origin.src, now, down: scan(model.sMin), up: scan(model.sMax) };
   }, [model, zoneCtx, tracked, deferredPoint, scenDay, scenPrice, spot]);
-  // 结论框高度只长不缩（见下面渲染处）；组合、起点、颜色模式变了才重新量
+  // 结论框高度只长不缩（见下面渲染处）；组合、起点、颜色模式、看的快照、窗口宽度变了才重新量（框按自己的宽度排1/2/4列）
   const [conclMinH, setConclMinH] = useState(0);
-  const conclResetKey = `${legs.map((l) => `${l.action}${l.type}${l.strike}${l.dte}${l.qty ?? 1}`).join(",")}|${spot}|${useToday}|${!!tracked}`;
+  const conclResetKey = `${legs.map((l) => `${l.action}${l.type}${l.strike}${l.dte}${l.qty ?? 1}`).join(",")}|${spot}|${useToday}|${!!tracked}|${tracked?.asOfDays ?? 0}|${colorMode}|${Math.round(size.w / 40)}`;
   useEffect(() => setConclMinH(0), [conclResetKey]);
   const conclRo = useRef<ResizeObserver | null>(null);
   const conclRef = useCallback((el: HTMLDivElement | null) => {
@@ -396,7 +395,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
 
   const pathColor = (id: PathId, i: number) => (id === "flat" ? FLAT_COLOR : PATH_COLORS[i % PATH_COLORS.length]);
   const dateLabel = (day: number) => {
-    const d = new Date(openingAt + day * DAY_MS);
+    const d = new Date(addCalendarDays(openingAt, day)); // 按日历日加，夏令时切换那天不会差一天
     return `${d.getMonth() + 1}/${d.getDate()}`;
   };
 
@@ -991,7 +990,6 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     const actual = tracked.pnlOffset;
     const gap = actual - expected;
     const adjusted = tracked.markers.some((mk) => mk.day <= atDay) || Math.abs(totAt?.adjust ?? 0) > 0.005;
-    const small = Math.abs(gap) < 0.005;
     const when = t((tracked.asOfDays ?? 0) > 0 ? "som.tWhenSnap" : "som.tWhenToday");
     const tot = totAt;
     // 开仓组合（金额按每股×张数，跟全项目一样）；没调整、没有正股腿时，盈亏能换回"这张期权现在值多少"
@@ -1016,6 +1014,8 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     const expU = valExpU - netOpenU;
     const actU = valActU - netOpenU;
     const gapU = actU - expU;
+    // 能折成每张的价时按每张判断：合计差几分、每张取到分后是0，就别写"多赚 $0.00"
+    const small = priceable ? Math.abs(gapU) < 0.005 : Math.abs(gap) < 0.005;
     const vars = {
       s: spot.toFixed(2), d: atDay, date: dateLabel(atDay), when,
       a: priceable ? fromPer(expU, fmtPnl) : money(expected),

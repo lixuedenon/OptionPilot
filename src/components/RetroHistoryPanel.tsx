@@ -50,7 +50,7 @@ const sameRules = (a: SimRules, b: SimRules) =>
 
 export default function RetroHistoryPanel(props: Props) {
   const { symbol, legs, spot, openingAt, todayDay, nowSpot, pnlNow, history, markers, adjusted, rules, credit, basis, horizon, sec, onSummary } = props;
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [series, setSeries] = useState<{ key: string; s: Series | null; status: "loading" | "ok" | "error" }>({ key: "", s: null, status: "loading" });
   const [view, setView] = useState<"once" | "hist">("once");
   useEffect(() => {
@@ -247,7 +247,7 @@ export default function RetroHistoryPanel(props: Props) {
         <div className="grid grid-cols-4 gap-2">
           {cell("rh.r2Win", `${eq.winPct.toFixed(0)}%`)}
           {cell("rh.r2Fair", per(eq.fair), "text-slate-100", tot(eq.fair))}
-          {cell(credit ? "rh.r2PaidCredit" : "rh.r2PaidDebit", `${per(eq.basis)}（${edgePct >= 0 ? "+" : "−"}${Math.abs(edgePct).toFixed(0)}%）`, good ? "text-emerald-300" : "text-rose-300", tot(eq.basis))}
+          {cell(credit ? "rh.r2PaidCredit" : "rh.r2PaidDebit", `${per(eq.basis)}${lang === "zh" ? "（" : " ("}${edgePct >= 0 ? "+" : "−"}${Math.abs(edgePct).toFixed(0)}%${lang === "zh" ? "）" : ")"}`, good ? "text-emerald-300" : "text-rose-300", tot(eq.basis))}
           {cell("rh.r2Dist", eq.shortDist == null ? "—" : `${(eq.shortDist * 100).toFixed(1)}%`, near ? "text-amber-300" : "text-slate-100")}
         </div>
         <div>{lbl("rh.mean")}{t(meanKey, { w: eq.winPct.toFixed(0), f: perUnitText(eq.fair, legs, t, usd), b: perUnitText(eq.basis, legs, t, usd), e: Math.abs(edgePct).toFixed(0), dist: eq.shortDist == null ? "—" : (eq.shortDist * 100).toFixed(1), n: eq.n })}</div>

@@ -182,15 +182,8 @@ export function useComboAnalytics(params: {
     return m;
   }, [trackedResult]);
 
-  // Sum of `closedPnl` across ALL trackedLegs (not just activeTrackedLegs —
-  // a closed leg is by definition disabled, so it would never show up in
-  // that filtered list) — the P&L already booked from legs the person has
-  // 平仓'd or rolled away from (see types.ts's `closedPnl` and
-  // TrackedComboSection.tsx's realizedPnl prop). Deliberately NOT folded
-  // into `trackedResult.change` above: that field also feeds PayoffChart's
-  // tracked curve (via App.tsx's `netChange` prop) and pnlAttribution's
-  // price/time/IV decomposition, and xue chose to update the P&L summary
-  // numbers only, not reshape the chart — see CLAUDE.md's "四、3.6".
+  // 已平仓/展期掉的腿落袋的钱（closedPnl之和，平掉的腿是disabled，所以要看全部trackedLegs）。
+  // 不并进trackedResult.change：那个数还喂PayoffChart的今日曲线（只画还开着的腿）。总账=change+这个；左边盈亏归因把它算在"调整"里。
   const realizedTrackedPnl = useMemo(() => {
     if (!trackedLegs) return 0;
     return trackedLegs.reduce((sum, l) => sum + (l.closedPnl ?? 0), 0);
@@ -228,17 +221,19 @@ export function useComboAnalytics(params: {
   // 换过合约、新开或平掉的腿算"调整"（residual）。跟地形图逐段拆解是同一个函数，只是一步到位。
   const pnlAttribution = useMemo<PnlAttribution | null>(() => {
     if (!isCompareMode || !trackedResult || !asOfTrackedLegs || openingDayLegs.length === 0 || spot <= 0) return null;
-    const total = trackedResult.change;
+    // 含已平仓/展期落袋的钱（跟统计格的持仓盈亏、右边的开仓至今同一个总账），这部分落在"调整"里。
+    const total = trackedResult.change + realizedTrackedPnl;
     const p = attributeSegment(
       { legs: openingDayLegs, spot, day: 0, pnl: 0 },
       { legs: asOfTrackedLegs, spot: effectiveTrackedSpot, day: Math.max(0, effectiveDaysElapsed - trackedAsOfDays), pnl: total },
     );
     return { priceEffect: p.price, timeEffect: p.time, ivEffect: p.iv, residual: p.adjust, totalChange: total };
-  }, [isCompareMode, trackedResult, asOfTrackedLegs, openingDayLegs, spot, effectiveTrackedSpot, effectiveDaysElapsed, trackedAsOfDays]);
+  }, [isCompareMode, trackedResult, realizedTrackedPnl, asOfTrackedLegs, openingDayLegs, spot, effectiveTrackedSpot, effectiveDaysElapsed, trackedAsOfDays]);
 
   return {
     activeLegs,
     activeTrackedLegs,
+    asOfTrackedLegs,
     isCompareMode,
     result,
     scenarioPriceById,

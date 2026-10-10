@@ -37,6 +37,8 @@ interface Props {
   ivChange: number | undefined; // 开仓以来隐含波动率变化（百分点）
   ivOpen: number; // 开仓时的平均隐含波动率（跟滑块小字同一个数）
   journey: { states: { day: number; spot: number; pnl: number }[]; segments: SegmentAttribution[]; totals: PnlParts & { total: number } } | null;
+  // 开仓那一刻→现在一步拆（=左边盈亏归因同一组数）。「经历了什么」、结论框和"拿掉波动率/调整"都用它，跟左边对得上；逐段表格仍用journey.segments。
+  oneStep?: (PnlParts & { total: number }) | null;
   todayLegs: Leg[]; // 今日组合（算到期关键价位）
   adjusted: boolean; // 中途做过调整（换合约/平掉部分腿）
   // 第5组：每次展期/保护/对冲第一次出现的那天（buildTrackedHistory的markers）
@@ -78,7 +80,7 @@ interface RetroRun {
   bands: Band[]; // 平面图的股价范围带（开仓到今天，全部走势）
 }
 
-export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowSpot, pnlNow, history, ruleExit, ivChange, ivOpen, journey, todayLegs, adjusted, markers = [], emptyText }: Props) {
+export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowSpot, pnlNow, history, ruleExit, ivChange, ivOpen, journey, oneStep, todayLegs, adjusted, markers = [], emptyText }: Props) {
   const { t } = useI18n();
   const { rules: rulesBySide } = useSimSettings(symbol);
   const [view, setView] = useState<"plane" | "3d">(loadView);
@@ -413,7 +415,7 @@ export default function RetroSim({ symbol, legs, spot, openingAt, todayDay, nowS
   sections.push(sec("now", t("future.nowTitle"), <NowCells spot0={spot} spot1={nowSpot} day={days} horizon={horizon} ivA={ivA} ivB={ivB} />));
 
   // ② 这几天，组合的价值经历了什么（股价/时间/隐含波动率/调整各让你赚亏多少）
-  const totals = journey?.totals ?? null;
+  const totals = oneStep ?? journey?.totals ?? null;
   if (totals) {
     sections.push(
       sec("journey", t("future.jTitle", { d: days }), (

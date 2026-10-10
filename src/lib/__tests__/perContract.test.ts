@@ -1,6 +1,6 @@
 // src/lib/__tests__/perContract.test.ts
 import { describe, it, expect } from "vitest";
-import { contractUnit, perUnitText } from "@/lib/perContract";
+import { contractUnit, perUnitParts, perUnitText } from "@/lib/perContract";
 import type { Leg } from "@/lib/types";
 
 const leg = (qty: number, kind: Leg["kind"] = "option"): Leg => ({ id: String(Math.random()), kind, action: "sell", type: "put", strike: 90, dte: 30, premium: 0.35, qty } as Leg);
@@ -21,5 +21,10 @@ describe("perContract", () => {
   });
   it("合计=取到分的每张×张数，括号里的乘法对得上", () => {
     expect(perUnitText(4.99, [leg(5)], t, usd)).toBe("price.perContract:$1.00|5|$5.00");
+  });
+  it("正负对称取整：同一个差额正着写、负着写差不出一分", () => {
+    expect(perUnitParts(0.625, [leg(5)]).per).toBe(0.13);
+    expect(perUnitParts(-0.625, [leg(5)]).per).toBe(-0.13);
+    expect(perUnitParts(-3.24, [leg(5)])).toEqual({ n: 5, per: -0.65, total: -3.25 });
   });
 });

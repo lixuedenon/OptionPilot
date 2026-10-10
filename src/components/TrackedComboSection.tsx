@@ -45,6 +45,8 @@ interface Props {
   trackedAsOf: number | null;
   // 拉不到今天报价时的提示（App.tsx的trackedPriceError）。
   priceError: string | null;
+  // 自动存下今天真实快照的提示
+  note?: string | null;
   effectiveDaysElapsed: number;
   onToggleImpliedInfo: () => void;
 
@@ -94,6 +96,7 @@ export default function TrackedComboSection({
   activeTrackedLegs,
   trackedAsOf,
   priceError,
+  note,
   effectiveDaysElapsed,
   onToggleImpliedInfo,
   symbol,
@@ -174,6 +177,9 @@ export default function TrackedComboSection({
           </button>
         </div>}
       </div>
+      {note && !priceError && (
+        <div className="mb-1 rounded border border-emerald-500/30 bg-emerald-950/20 px-2 py-1 text-[10px] leading-relaxed text-emerald-200">{note}</div>
+      )}
       {priceError ? (
         <div className="mb-1 rounded border border-amber-500/30 bg-amber-950/20 px-2 py-1 text-[10px] leading-relaxed text-amber-200">{priceError}</div>
       ) : trackedAsOf !== null && calendarDaysSince(trackedAsOf) > 0 ? (

@@ -203,6 +203,7 @@ const en: Dict = {
   "confirm.lockRollConfirm": "Save Anyway",
   "tracked.viewingAsOf": "Viewing the {date} snapshot: the stock price {spot} and the premiums are both from that day, and implied vol and P/L attribution are worked out for that moment (days left are shown as of today).",
   "tracked.autoRefreshFailed": "Couldn't get today's quotes, so the premiums are still from {date} and so is the stock price. Try each leg's refresh button, or type in today's premiums.",
+  "tracked.autoSaved": "Today's ({date}) real snapshot was saved automatically: premiums are today's market prices, the stock price is live. This happens once a day, the first time you open tracking; it's skipped if you changed the combo or a price looks off.",
   "tracked.saveRefreshFailed": "Couldn't get today's quotes, so the snapshot wasn't saved: the current premiums aren't today's and would be recorded as if they were. Refresh or type in today's premiums for each leg, then save.",
   "premiumCheck.title": "This premium looks off",
   "premiumCheck.desc": "At the current stock price of {spot}, the premiums below are unlikely to be real quotes, so they may be typos. Once saved, a snapshot is a record of this moment and can only be deleted later.",
