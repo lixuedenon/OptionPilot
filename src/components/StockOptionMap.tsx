@@ -13,7 +13,7 @@ import { simPnlAt } from "@/lib/winRateSim";
 import { priceCombo } from "@/lib/pricing";
 import { fetchHistoricalSeries, rangeSince, type HistoricalSeries } from "@/lib/historicalVolatility";
 import { calendarDaysBetween } from "@/lib/dateUtils";
-import { perUnitText, perUnitShort, perUnitOnly, isSingleOption } from "@/lib/perContract";
+import { perUnitText, contractUnit, isSingleOption } from "@/lib/perContract";
 
 interface Props {
   symbol: string;
@@ -122,6 +122,14 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
   const [startMode, setStartMode] = useState<"open" | "today">("open");
   const fmtPnl = (v: number) => fmtPnlRaw(v);
   const fmtVal = (v: number) => `$${Math.abs(v).toFixed(2)}`;
+  // 走过的路：金额都按一张说，不止一张时括号里写"×张数 = 合计"（含正股腿时按合计）
+  const unitLegs = (() => {
+    if (!tracked) return null;
+    const ol = (tracked.opening?.legs ?? []).filter((l) => !l.disabled);
+    return ol.length > 0 && ol.every((l) => l.kind !== "stock") ? ol : null;
+  })();
+  const money = (v: number) => (unitLegs ? perUnitText(v, unitLegs, t, fmtPnl) : fmtPnl(v));
+  const moneyAbs = (v: number) => (unitLegs ? perUnitText(Math.abs(v), unitLegs, t, fmtVal) : fmtVal(v));
 
   // 节流汇报选中点：最多每EMIT_INTERVAL_MS一次，并保证最后一次一定送达。
   const emitRef = useRef<{ last: number; timer: ReturnType<typeof setTimeout> | null }>({ last: 0, timer: null });
@@ -760,7 +768,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       g.beginPath();
       g.arc(x, y, 7, 0, Math.PI * 2);
       g.stroke();
-      const lbl = t(re.kind === "tp" ? "som.ruleExitTp" : re.kind === "sl" ? "som.ruleExitSl" : re.kind === "delta" ? "som.ruleExitDelta" : "som.ruleExitTime", { d: re.day, v: fmtPnl(re.pnl) });
+      const lbl = t(re.kind === "tp" ? "som.ruleExitTp" : re.kind === "sl" ? "som.ruleExitSl" : re.kind === "delta" ? "som.ruleExitDelta" : "som.ruleExitTime", { d: re.day, v: money(re.pnl) });
       g.font = "bold 10px ui-sans-serif, system-ui, sans-serif";
       const lw = g.measureText(lbl).width;
       const lx = Math.min(M.l + pw - lw - 6, Math.max(M.l + 2, x - lw / 2));
@@ -799,7 +807,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       // 深色底框，避免文字压在红/绿背景上看不清
       g.font = "bold 11px ui-sans-serif, system-ui, sans-serif";
       g.textAlign = "left";
-      const lbl = `${t("som.totalNow")} ${fmtPnl(tracked.pnlOffset)}`;
+      const lbl = `${t("som.totalNow")} ${money(tracked.pnlOffset)}`;
       const lw = g.measureText(lbl).width;
       const lx = tx(m.start.day) + 8;
       const ly = ty(m.start.price) - 22;
@@ -863,18 +871,18 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       const net = legVals.reduce((a, b) => a + b, 0);
       const seg = inPast && tracked?.segments ? tracked.segments.find((sg) => day > sg.fromDay - 1e-9 && day <= sg.toDay + 1e-9 && sg.toDay > sg.fromDay) : undefined;
       const segLines: { text: string; color: string }[] = seg ? [
-        { text: `${dateLabel(seg.fromDay)} → ${dateLabel(seg.toDay)}  ${t("som.attrChange")} ${fmtPnl(seg.total)}`, color: pnlColor(seg.total) },
-        ...PART_KEYS.map((k) => ({ text: `  ${t(`som.attr_${k}`)} ${fmtPnl(seg[k])}`, color: PART_COLORS[k] })),
+        { text: `${dateLabel(seg.fromDay)} → ${dateLabel(seg.toDay)}  ${t("som.attrChange")} ${money(seg.total)}`, color: pnlColor(seg.total) },
+        ...PART_KEYS.map((k) => ({ text: `  ${t(`som.attr_${k}`)} ${money(seg[k])}`, color: PART_COLORS[k] })),
         ...(seg.estimated ? [{ text: t("som.attrSegEst"), color: "#94a3b8" }] : []),
       ] : [];
       const pastLines: { text: string; color: string }[] = [
         { text: `${dateLabel(day)} · ${t("som.day", { n: day })}${snap?.estimated ? ` · ${t("som.estimated")}` : ""}`, color: "#e2e8f0" },
         { text: `${t(closeByDay.has(day) ? "som.tipClose" : "som.tipPrice")} ${Number.isFinite(pastPrice) ? pastPrice.toFixed(2) : "—"}`, color: "#e2e8f0" },
-        ...(Number.isFinite(expected) ? [{ text: `${t("som.tipExpected")} ${fmtPnl(expected)}`, color: pnlColor(expected) }] : []),
+        ...(Number.isFinite(expected) ? [{ text: `${t("som.tipExpected")} ${money(expected)}`, color: pnlColor(expected) }] : []),
         ...(snap
           ? [
-            { text: `${t("som.tipTotal")} ${fmtPnl(snap.pnl)}`, color: pnlColor(snap.pnl) },
-            ...(Number.isFinite(expected) ? [{ text: `${t("som.tipGap")} ${fmtPnl(snap.pnl - expected)}`, color: "#fbbf24" }] : []),
+            { text: `${t("som.tipTotal")} ${money(snap.pnl)}`, color: pnlColor(snap.pnl) },
+            ...(Number.isFinite(expected) ? [{ text: `${t("som.tipGap")} ${money(snap.pnl - expected)}`, color: "#fbbf24" }] : []),
           ]
           : [{ text: t("som.tipNoSnap"), color: "#94a3b8" }]),
       ];
@@ -890,13 +898,13 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
         ...zoneLines,
         { text: `${dateLabel(day)} · ${t("som.day", { n: day })}`, color: "#e2e8f0" },
         { text: `${t("som.tipPrice")} ${price.toFixed(2)}`, color: "#e2e8f0" },
-        { text: `${tracked ? t("som.tipTotal") : t("som.tipPnl")} ${fmtPnl(v)}`, color: pnlColor(v) },
-        { text: `${t("som.tipNet")} ${net >= 0 ? t("chart.netReceive") : t("chart.netPay")} ${fmtVal(net)}`, color: "#e2e8f0" },
+        { text: `${tracked ? t("som.tipTotal") : t("som.tipPnl")} ${tracked ? money(v) : fmtPnl(v)}`, color: pnlColor(v) },
+        { text: `${t("som.tipNet")} ${net >= 0 ? t("chart.netReceive") : t("chart.netPay")} ${tracked ? moneyAbs(net) : fmtVal(net)}`, color: "#e2e8f0" },
         ...legs.map((l, i) => {
           const act = l.action === "buy" ? t("saveStrategy.buy") : t("saveStrategy.sell");
           const kind = l.kind === "stock" ? t("som.stockLeg") : `${l.type === "call" ? "C" : "P"}${l.strike}`;
           const qty = l.kind !== "stock" && (l.qty ?? 1) > 1 ? ` ×${l.qty}` : "";
-          const val = l.kind === "stock" ? fmtPnl(legVals[i]) : fmtVal(legVals[i]);
+          const val = l.kind === "stock" ? fmtPnl(legVals[i]) : tracked ? perUnitText(Math.abs(legVals[i]), [l], t, fmtVal) : fmtVal(legVals[i]);
           return { text: `  ${act} ${kind}${qty}  ${val}`, color: l.action === "buy" ? "#6ee7b7" : "#fda4af" };
         }),
       ];
@@ -985,7 +993,6 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     const adjusted = tracked.markers.some((mk) => mk.day <= atDay) || Math.abs(totAt?.adjust ?? 0) > 0.005;
     const small = Math.abs(gap) < 0.005;
     const when = t((tracked.asOfDays ?? 0) > 0 ? "som.tWhenSnap" : "som.tWhenToday");
-    const vars = { s: spot.toFixed(2), d: atDay, date: dateLabel(atDay), a: fmtPnl(expected), b: fmtPnl(actual), c: fmtPnl(gap), when };
     const tot = totAt;
     // 开仓组合（金额按每股×张数，跟全项目一样）；没调整、没有正股腿时，盈亏能换回"这张期权现在值多少"
     const openLegs = (tracked.opening?.legs ?? []).filter((l) => !l.disabled);
@@ -997,19 +1004,36 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     const credit = netOpen < 0;
     const single = isSingleOption(optLegs);
     const name = single && optLegs[0] ? t("som.tNameOne", { k: optLegs[0].strike, ty: optLegs[0].type === "call" ? "Call" : "Put" }) : t("som.tNameCombo");
-    const pu = (v: number) => perUnitText(Math.abs(v), optLegs, t, fmtVal);
-    const puOnly = (v: number) => perUnitOnly(Math.abs(v), optLegs, t, fmtVal);
-    const puShort = (v: number) => perUnitShort(v, optLegs, t, fmtPnl);
+    // 能换成期权价时，先把开仓价、预期价、实际价都取到每张（到分），盈亏和差额都从这几个数减出来，括号里的乘法才对得上
+    const n = priceable ? contractUnit(optLegs) : 1;
+    const r2 = (x: number) => Math.round(x * 100) / 100;
+    const fromPer = (x: number, fmt: (y: number) => string) =>
+      n > 1 ? t(single ? "price.perContract" : "price.perSet", { p: fmt(x), n, v: fmt(r2(x * n)) }) : fmt(x);
+    const perOnly = (x: number) => (n > 1 ? t(single ? "price.perContractOnly" : "price.perSetOnly", { p: fmtVal(x) }) : fmtVal(x));
+    const netOpenU = r2(netOpen / n);
+    const valExpU = r2(valExp / n);
+    const valActU = r2(valAct / n);
+    const expU = valExpU - netOpenU;
+    const actU = valActU - netOpenU;
+    const gapU = actU - expU;
+    const vars = {
+      s: spot.toFixed(2), d: atDay, date: dateLabel(atDay), when,
+      a: priceable ? fromPer(expU, fmtPnl) : money(expected),
+      b: priceable ? fromPer(actU, fmtPnl) : money(actual),
+      c: priceable ? fromPer(gapU, fmtPnl) : money(gap),
+    };
+    const gapAbs = priceable ? fromPer(Math.abs(gapU), fmtVal) : moneyAbs(gap);
+    const pu = (vU: number) => fromPer(Math.abs(vU), fmtVal);
     const nowWord = (v: number) => t(v < 0 ? "som.tNowPay" : "som.tNowGet");
-    const calc = (v: number, r: number) =>
-      credit && v <= 0 ? t("som.tCalcCredit", { o: fmtVal(netOpen), v: fmtVal(v), r: fmtPnl(r) })
-        : !credit && v >= 0 ? t("som.tCalcDebit", { o: fmtVal(netOpen), v: fmtVal(v), r: fmtPnl(r) })
-          : t("som.tCalcPlain", { r: fmtPnl(r) });
+    const calc = (vU: number, rU: number) =>
+      credit && vU <= 0 ? t("som.tCalcCredit", { o: fmtVal(netOpenU), v: fmtVal(vU), r: fromPer(rU, fmtPnl) })
+        : !credit && vU >= 0 ? t("som.tCalcDebit", { o: fmtVal(netOpenU), v: fmtVal(vU), r: fromPer(rU, fmtPnl) })
+          : t("som.tCalcPlain", { r: fromPer(rU, fmtPnl) });
     // 标题：两边都亏时说"少亏/多亏"，两边都赚时说"多赚/少赚"
     const headKey = gap > 0 ? (expected < 0 && actual <= 0.005 ? "sconcl.tHeadLessLoss" : "sconcl.tHeadMoreGain") : (expected > 0 && actual >= -0.005 ? "sconcl.tHeadLessGain" : "sconcl.tHeadMoreLoss");
     // 同一天同一股价，期权价比预期便宜还是贵；跟平均隐含波动率的升降方向对不对得上
     const cheaper = Math.abs(valAct) < Math.abs(valExp);
-    const priceDiff = Math.abs(Math.abs(valExp) - Math.abs(valAct));
+    const priceDiffU = Math.abs(Math.abs(valExpU) - Math.abs(valActU));
     const iv0 = tracked.iv?.open;
     const iv1 = tracked.iv?.now;
     const ivPct = (v: number) => `${(v * 100).toFixed(1)}%`;
@@ -1024,14 +1048,14 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       const sameSign = PART_KEYS.filter((k) => tot[k] * tot.total > 0);
       const main = sameSign.length ? sameSign.reduce((a, b) => (Math.abs(tot[b]) > Math.abs(tot[a]) ? b : a)) : null;
       const opp = PART_KEYS.filter((k) => tot[k] * tot.total < 0).sort((a, b) => Math.abs(tot[b]) - Math.abs(tot[a]))[0];
-      const parts = PART_KEYS.filter((k) => Math.abs(tot[k]) >= 0.005).map((k) => `${t(`som.attr_${k}`)} ${puShort(tot[k])}`).join(t("sconcl.sep2"));
+      const parts = PART_KEYS.filter((k) => Math.abs(tot[k]) >= 0.005).map((k) => `${t(`som.attr_${k}`)} ${money(tot[k])}`).join(t("sconcl.sep2"));
       where = (
         <>
-          {t("sconcl.tWhereBody", { v: perUnitText(tot.total, optLegs, t, fmtPnl), parts: parts || "—" })}
+          {t("sconcl.tWhereBody", { v: money(tot.total), parts: parts || "—" })}
           {main && Math.abs(tot.total) > 0.005 && (
             <span className="text-amber-200">
               {" "}{t(tot.total > 0 ? "som.attrMainGain" : "som.attrMainLoss", { name: t(`som.attr_${main}`) })}
-              {opp && Math.abs(tot[opp]) > 0.005 && t("som.attrOffset", { name: t(`som.attr_${opp}`), v: fmtPnl(tot[opp]) })}
+              {opp && Math.abs(tot[opp]) > 0.005 && t("som.attrOffset", { name: t(`som.attr_${opp}`), v: money(tot[opp]) })}
               {t("sconcl.end")}
             </span>
           )}
@@ -1046,16 +1070,16 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     else if (priceable) {
       why = (
         <>
-          {t("sconcl.tWhyPrice", { ...vars, name, dir: t(cheaper ? "som.tCheaper" : "som.tPricier"), dp: puOnly(priceDiff), ...ivVars })}
+          {t("sconcl.tWhyPrice", { ...vars, name, dir: t(cheaper ? "som.tCheaper" : "som.tPricier"), dp: fromPer(priceDiffU, fmtVal), ...ivVars })}
           {" "}{t(ivWhyKey)}
-          {pathIvDiffers && tot && <span className="text-slate-400"> {t("sconcl.tWhyPathNote", { iv: fmtPnl(tot.iv) })}</span>}
+          {pathIvDiffers && tot && <span className="text-slate-400"> {t("sconcl.tWhyPathNote", { iv: money(tot.iv) })}</span>}
           <span className="text-slate-400"> {t("sconcl.tWhySeeBelow")}</span>
         </>
       );
     } else if (tot) {
       why = (
         <>
-          {t(adjusted ? "sconcl.tWhyAdj" : "sconcl.tWhyIv", { c: fmtPnl(gap), iv: fmtPnl(tot.iv), adj: fmtPnl(tot.adjust), ...ivVars })}
+          {t(adjusted ? "sconcl.tWhyAdj" : "sconcl.tWhyIv", { c: vars.c, iv: money(tot.iv), adj: money(tot.adjust), ...ivVars })}
           <span className="text-slate-400"> {t("sconcl.tWhySeeBelow")}</span>
         </>
       );
@@ -1073,13 +1097,13 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
     ];
     if (priceable) {
       lines.push(
-        <span key="exp" className="text-amber-200">{t("som.tHowExp", { ...vars, iv0: ivVars.iv0, name, now: nowWord(valExp), pv: pu(valExp), calc: calc(valExp, expected) })}</span>,
-        <span key="act" className="text-amber-200">{t("som.tHowAct", { ...vars, iv1: ivVars.iv1, name, now: nowWord(valAct), pv: pu(valAct), calc: calc(valAct, actual) })}</span>,
+        <span key="exp" className="text-amber-200">{t("som.tHowExp", { ...vars, iv0: ivVars.iv0, name, now: nowWord(valExp), pv: pu(valExpU), calc: calc(valExpU, expU) })}</span>,
+        <span key="act" className="text-amber-200">{t("som.tHowAct", { ...vars, iv1: ivVars.iv1, name, now: nowWord(valAct), pv: pu(valActU), calc: calc(valActU, actU) })}</span>,
       );
       if (!small) {
         lines.push(
           <span key="gap" className="text-amber-200">
-            {t("som.tHowGap", { ...vars, name, dir: t(cheaper ? "som.tCheaper" : "som.tPricier"), dp: puOnly(priceDiff), dpAll: fmtVal(priceDiff), head: t(headKey, { c: fmtVal(gap) }), ...ivVars })} {t(ivWhyKey)}
+            {t("som.tHowGap", { ...vars, name, dir: t(cheaper ? "som.tCheaper" : "som.tPricier"), dp: fromPer(priceDiffU, fmtVal), head: t(headKey, { c: gapAbs }), ...ivVars })} {t(ivWhyKey)}
           </span>,
         );
       } else lines.push(t("som.gapNone"));
@@ -1092,30 +1116,30 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
       lines.push(<span key="plain" className="text-amber-200">{t("som.tHowPlain", { ...vars, iv0: ivVars.iv0, iv1: ivVars.iv1 })}</span>);
     }
     if (tot && tracked.segments && tracked.segments.length > 0) {
-      lines.push(t("som.tHowBars", { v: perUnitText(tot.total, optLegs, t, fmtPnl) }));
+      lines.push(t("som.tHowBars", { v: money(tot.total) }));
       // 波动率一项是逐段加起来的：列出让你赚/亏的几段，说清为什么可能跟"今天比开仓时低/高"方向相反
       const segs = tracked.segments.filter((sg) => sg.toDay <= atDay + 1e-9 && Math.abs(sg.iv) >= 0.005);
       if (segs.length > 0) {
-        const fmtSeg = (sg: SegmentAttribution) => t("som.tSeg", { a: dateLabel(sg.fromDay), b: dateLabel(sg.toDay), v: fmtPnl(sg.iv) });
+        const fmtSeg = (sg: SegmentAttribution) => t("som.tSeg", { a: dateLabel(sg.fromDay), b: dateLabel(sg.toDay), v: money(sg.iv) });
         const ups = segs.filter((sg) => sg.iv > 0).sort((a, b) => b.iv - a.iv).slice(0, 3);
         const downs = segs.filter((sg) => sg.iv < 0).sort((a, b) => a.iv - b.iv).slice(0, 3);
         const ref = tracked.oneStepIv ?? (adjusted ? undefined : gap);
         const opposite = ref !== undefined && Math.abs(ref) >= 0.005 && ref * tot.iv < 0;
         lines.push(
           <span key="ivpath">
-            {t("som.tHowIvPath", { iv: fmtPnl(tot.iv) })}
+            {t("som.tHowIvPath", { iv: money(tot.iv) })}
             {ups.length > 0 && t("som.tHowIvUps", { list: ups.map(fmtSeg).join(t("sconcl.sep2")) })}
             {downs.length > 0 && t("som.tHowIvDowns", { list: downs.map(fmtSeg).join(t("sconcl.sep2")) })}
             {" "}{t("som.tHowIvWhy")}
-            {opposite && ref !== undefined && <span className="text-amber-200"> {t("som.tHowIvOpp", { iv: fmtPnl(tot.iv), ...ivVars, dir: t(ref > 0 ? "som.tHelped" : "som.tHurt") })}</span>}
+            {opposite && ref !== undefined && <span className="text-amber-200"> {t("som.tHowIvOpp", { iv: money(tot.iv), ...ivVars, dir: t(ref > 0 ? "som.tHelped" : "som.tHurt") })}</span>}
           </span>,
         );
       }
       if (tracked.oneStepIv !== undefined) {
-        lines.push(t(adjusted ? "som.tHowLeftAdj" : "som.tHowLeft", { o: fmtPnl(tracked.oneStepIv), c: fmtPnl(gap), iv: fmtPnl(tot.iv) }));
+        lines.push(t(adjusted ? "som.tHowLeftAdj" : "som.tHowLeft", { o: money(tracked.oneStepIv), c: vars.c, iv: money(tot.iv) }));
       }
     }
-    if (re) lines.push(t("som.tHowExit", { txt: t(reKey, { d: re.day, v: fmtPnl(re.pnl) }), date: dateLabel(re.day) }));
+    if (re) lines.push(t("som.tHowExit", { txt: t(reKey, { d: re.day, v: money(re.pnl) }), date: dateLabel(re.day) }));
     lines.push(t("som.tHowFuture"));
     trackedHowLines = lines;
 
@@ -1124,11 +1148,11 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
         {cell("gap", t("sconcl.tGap"), "tGap", (
           <>
             <span className={`block text-[15px] font-bold leading-tight ${small ? "text-slate-200" : gap > 0 ? "text-emerald-300" : "text-rose-300"}`}>
-              {small ? t("sconcl.tSame") : t(headKey, { c: fmtVal(gap) })}
+              {small ? t("sconcl.tSame") : t(headKey, { c: gapAbs })}
             </span>
             <span className="text-[10.5px] text-slate-400">{t("sconcl.tGapSub", vars)}</span>
             {priceable && !small && (
-              <span className="block text-[10.5px] text-slate-400">{t("sconcl.tGapPrice", { name, e: puOnly(valExp), r: puOnly(valAct) })}</span>
+              <span className="block text-[10.5px] text-slate-400">{t("sconcl.tGapPrice", { name, e: perOnly(valExpU), r: perOnly(valActU) })}</span>
             )}
           </>
         ), "bg-slate-950/40")}
@@ -1136,7 +1160,7 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
         {cell("why", t("sconcl.tWhy"), "tWhy", why)}
         {cell("next", t("future.concl.next"), "tNext", (
           <>
-            {re ? `${t(reKey, { d: re.day, v: fmtPnl(re.pnl) })}${t("sconcl.end")}` : t("sconcl.tNoExit")} {t("sconcl.tNextBody")}
+            {re ? `${t(reKey, { d: re.day, v: money(re.pnl) })}${t("sconcl.end")}` : t("sconcl.tNoExit")} {t("sconcl.tNextBody")}
           </>
         ))}
       </div></div>
@@ -1305,12 +1329,12 @@ export default function StockOptionMap({ symbol, legs, spot, dV, openingAt, days
         return (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
             <span className="font-semibold text-slate-200">
-              {t("som.attrTitle")} <span className="tabular-nums" style={{ color: pnlColor(tot.total) }}>{fmtPnl(tot.total)}</span> =
+              {t("som.attrTitle")} <span className="tabular-nums" style={{ color: pnlColor(tot.total) }}>{money(tot.total)}</span> =
             </span>
             {PART_KEYS.map((k) => (
               <span key={k} className="flex items-center gap-1 text-slate-400">
                 <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: PART_COLORS[k] }} />
-                {t(`som.attr_${k}`)} <span className="tabular-nums" style={{ color: pnlColor(tot[k]) }}>{fmtPnl(tot[k])}</span>
+                {t(`som.attr_${k}`)} <span className="tabular-nums" style={{ color: pnlColor(tot[k]) }}>{money(tot[k])}</span>
               </span>
             ))}
           </div>

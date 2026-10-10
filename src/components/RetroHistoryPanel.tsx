@@ -14,7 +14,7 @@ import { useEarningsDates, earningsReactions } from "@/lib/earnings";
 import { formatDateInput } from "@/lib/dateUtils";
 import { regime, biggestDay, openBarSec, spansEarnings, entryQuality, adjustOdds, rulesOnce, rulesHistory, dailyPathSince, type Series } from "@/lib/retroHistory";
 import { priceNearDay } from "@/lib/adjustReview";
-import { contractUnit, isSingleOption, perUnitText } from "@/lib/perContract";
+import { perUnitOnly, perUnitText, perUnitTotal } from "@/lib/perContract";
 
 interface Props {
   symbol: string;
@@ -239,9 +239,8 @@ export default function RetroHistoryPanel(props: Props) {
       <div className="flex min-w-0 flex-col"><span className="text-[10px] text-slate-400">{t(k)}</span><span className={`text-[14px] font-bold tabular-nums ${cls}`}>{v}</span>{sub && <span className="text-[10px] text-slate-500">{sub}</span>}</div>
     );
     // 多张时格子里写每张（跟报价同一个数），下面小字写合计
-    const unit = contractUnit(legs);
-    const per = (v: number) => usd(v / unit);
-    const tot = (v: number) => (unit > 1 ? t(isSingleOption(legs) ? "price.totalContracts" : "price.totalSets", { n: unit, v: usd(v) }) : undefined);
+    const per = (v: number) => perUnitOnly(v, legs, t, usd);
+    const tot = (v: number) => perUnitTotal(v, legs, t, usd);
     parts.push(
       <div key="r2" className="flex flex-col gap-1 border-t border-slate-800/70 pt-1.5">
         <div className="text-[11px] font-semibold text-slate-200">{t("rh.r2Title")}</div>

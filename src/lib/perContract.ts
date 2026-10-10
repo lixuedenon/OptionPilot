@@ -20,23 +20,31 @@ export function isSingleOption(legs: Leg[]): boolean {
 
 type T = (k: string, v?: Record<string, string | number>) => string;
 
-// fmt：把一个金额格式化成文字（usd不带符号、money带正负号），合计和每张用同一种
-export function perUnitText(v: number, legs: Leg[], t: T, fmt: (x: number) => string): string {
+// 每张的价按报价取到分；合计 = 每张 × 张数（不用原始合计），括号里的乘法才对得上：$1.00（×5 张 = $5.00）
+export function perUnitParts(v: number, legs: Leg[]): { n: number; per: number; total: number } {
   const n = contractUnit(legs);
-  if (n <= 1) return fmt(v);
-  return t(isSingleOption(legs) ? "price.perContract" : "price.perSet", { p: fmt(v / n), n, v: fmt(v) });
+  if (n <= 1) return { n: 1, per: v, total: v };
+  const per = Math.round((v / n) * 100) / 100;
+  return { n, per, total: Math.round(per * n * 100) / 100 };
 }
 
-// 短写法：拆成几项一起列时用"−$0.57/张（共 −$2.85）"，免得每项都重复"5 张"
-export function perUnitShort(v: number, legs: Leg[], t: T, fmt: (x: number) => string): string {
-  const n = contractUnit(legs);
+// 金额都按一张说；不止一张时括号里写"×张数 = 合计"。fmt：把一个金额格式化成文字（usd不带符号、money带正负号）
+export function perUnitText(v: number, legs: Leg[], t: T, fmt: (x: number) => string): string {
+  const { n, per, total } = perUnitParts(v, legs);
   if (n <= 1) return fmt(v);
-  return t(isSingleOption(legs) ? "price.perContractShort" : "price.perSetShort", { p: fmt(v / n), v: fmt(v) });
+  return t(isSingleOption(legs) ? "price.perContract" : "price.perSet", { p: fmt(per), n, v: fmt(total) });
+}
+
+// 括号里那部分（单独放在一行小字里用）
+export function perUnitTotal(v: number, legs: Leg[], t: T, fmt: (x: number) => string): string | undefined {
+  const { n, total } = perUnitParts(v, legs);
+  if (n <= 1) return undefined;
+  return t(isSingleOption(legs) ? "price.totalContracts" : "price.totalSets", { n, v: fmt(total) });
 }
 
 // 只写每张（或每组）的价，不带合计
 export function perUnitOnly(v: number, legs: Leg[], t: T, fmt: (x: number) => string): string {
-  const n = contractUnit(legs);
+  const { n, per } = perUnitParts(v, legs);
   if (n <= 1) return fmt(v);
-  return t(isSingleOption(legs) ? "price.perContractOnly" : "price.perSetOnly", { p: fmt(v / n) });
+  return t(isSingleOption(legs) ? "price.perContractOnly" : "price.perSetOnly", { p: fmt(per) });
 }

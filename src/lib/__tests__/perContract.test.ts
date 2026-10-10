@@ -19,4 +19,7 @@ describe("perContract", () => {
     expect(perUnitText(1.75, [leg(5)], t, usd)).toBe("price.perContract:$0.35|5|$1.75");
     expect(perUnitText(3, [leg(5), leg(5)], t, usd)).toBe("price.perSet:$0.60|5|$3.00");
   });
+  it("合计=取到分的每张×张数，括号里的乘法对得上", () => {
+    expect(perUnitText(4.99, [leg(5)], t, usd)).toBe("price.perContract:$1.00|5|$5.00");
+  });
 });
