@@ -36,7 +36,10 @@ interface Props {
   expired?: boolean;
   // 多方案对比的B/C曲线，只在分析模式传入。计算方式必须跟主曲线（calcPnL）一致、跟随spot/shifts，
   // 拖滑块时三条曲线一起变化；不能用payoffCurvePoints（那个只算到期payoff，不跟随shifts）。
-  compareCurves?: { id: string; label: string; color: string; legs: Leg[] }[];
+  // ivSpot/dayOffset：这条曲线的腿是哪个现价、哪一天建的（方案B/C按今天建；A的开仓日在过去时，滑块的第几天要减去dayOffset）
+  compareCurves?: { id: string; label: string; color: string; legs: Leg[]; ivSpot?: number; dayOffset?: number }[];
+  // 主曲线的名字（多方案对比时图例用；A的腿都屏蔽了、改由B当主曲线时是"方案B"）
+  mainLabel?: string;
   // 手机精简版：不显示各腿明细、时间衰减/实时价开关、缩放提示和底部图例。
   compact?: boolean;
   // 电脑版分析模式下盈亏头部（日期/盈亏/净值）挪到图表标签那一行（PnlHeadline），这里不再重复显示。
@@ -140,7 +143,7 @@ function calcTrackedPnLAtTime(trackedLegs: Leg[], openingLegs: Leg[], spot: numb
 
 const FAN_COLORS = ["#fbbf24", "#f59e0b", "#a3a3a3", "#475569"];
 
-export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, liveSpot, expired, openingAt, compareCurves, compact, hideHeadline }: Props) {
+export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButton, breakevens, trackedLegs, trackedSpot, openingLegs, compareMode, perLegValues, netValue, netChange, liveSpot, expired, openingAt, compareCurves, mainLabel, compact, hideHeadline }: Props) {
   const { t } = useI18n();
   // 固定用mm/dd/yyyy（xue指定），不用toLocaleDateString（中文环境会变成yyyy/mm/dd）。
   const scenarioDateTs = !compareMode && openingAt !== undefined
@@ -320,7 +323,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
       const pts: { s: number; pnl: number }[] = [];
       for (let i = 0; i <= POINTS; i++) {
         const s = sMin + (i / POINTS) * (sMax - sMin);
-        pts.push({ s, pnl: calcPnL(c.legs, spot, shifts, s) });
+        pts.push({ s, pnl: calcPnL(c.legs, c.ivSpot ?? spot, { ...shifts, dT: Math.max(0, shifts.dT - (c.dayOffset ?? 0)) }, s) });
       }
       return { ...c, points: pts };
     });
@@ -573,7 +576,7 @@ export default function PayoffChart({ legs, spot, shifts, symbol, modeSwitchButt
           <div className="pointer-events-none absolute left-0 top-0 z-10 flex items-center gap-2 rounded border border-slate-700/60 bg-slate-900/80 px-1.5 py-0.5 text-[9px] font-semibold">
             <span className="flex items-center gap-1 text-emerald-400">
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
-              {t("compare.slotA")}
+              {mainLabel ?? t("compare.slotA")}
             </span>
             {comparePointSets.map((set) => (
               <span key={set.id} className="flex items-center gap-1" style={{ color: set.color }}>

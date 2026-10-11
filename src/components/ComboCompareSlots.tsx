@@ -21,9 +21,10 @@ interface Props {
   mainLegs: Leg[]; // 方案A，即App.tsx的`legs`
   slots: CompareSlot[];
   locked?: boolean; // 滑块离开原点时为true，只透传给LegRow暂停自动拉价；界面锁定由App.tsx的LockedOverlay统一负责
-  // 每个方案的盈亏归因要跟随情景滑块，所以用analyticsSpot/analyticsShifts（spot是给到期结果类指标用的，不跟滑块）。
-  analyticsSpot: number;
-  analyticsShifts: Shifts;
+  // 方案B/C的盈亏归因、情景估值跟随情景滑块；它们是按今天的实时价、今天的剩余天数建的，所以用实时价和换算过的滑块（见App.tsx的slotBase/slotShifts）。
+  // spot是A的开仓价，只给A的到期结果类指标用。
+  slotSpot: number;
+  slotShifts: Shifts;
   // 当前激活的combo（0=A，1=B，2=C），用于高亮；点击槽位容器调用onActivate(i+1)。
   activeComboIndex: number;
   onActivate: (comboIndex: number) => void;
@@ -79,7 +80,7 @@ function useComboAttribution(legs: Leg[], analyticsSpot: number, analyticsShifts
   }, [legs, analyticsSpot, analyticsShifts]);
 }
 
-export default function ComboCompareSlots({ spot, symbol, customPresets, mainLegs, slots, locked, analyticsSpot, analyticsShifts, activeComboIndex, onActivate, slotBatchOps, onSaveSlot, onAddSlot, onRemoveSlot, onUpdateLeg, onDeleteLeg, onToggleLeg }: Props) {
+export default function ComboCompareSlots({ spot, symbol, customPresets, mainLegs, slots, locked, slotSpot, slotShifts, activeComboIndex, onActivate, slotBatchOps, onSaveSlot, onAddSlot, onRemoveSlot, onUpdateLeg, onDeleteLeg, onToggleLeg }: Props) {
   const { t } = useI18n();
   const slotLabels = [t("compare.slotB"), t("compare.slotC")];
 
@@ -87,22 +88,22 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
   // Hooks can't be called inside .map with a variable count, so the two
   // (MAX_COMPARE_SLOTS) possible slot stats are computed with fixed calls
   // and then filtered against however many slots actually exist below.
-  const statsSlot0 = useComboStats(slots[0]?.legs ?? [], spot, customPresets);
-  const statsSlot1 = useComboStats(slots[1]?.legs ?? [], spot, customPresets);
+  const statsSlot0 = useComboStats(slots[0]?.legs ?? [], slotSpot, customPresets);
+  const statsSlot1 = useComboStats(slots[1]?.legs ?? [], slotSpot, customPresets);
   const slotStats = [statsSlot0, statsSlot1];
 
   // 同样的"固定调用数量"限制，归因也是两份固定hook调用，见上面slotStats
   // 的注释。maxAbs复用各自slot自己的maxProfit/maxLoss（跟主combo
   // attributionMaxAbs同一个算法，见PnlAttributionPanel.tsx对这个参数的
   // 注释——需要一把不随滑块移动的固定尺子）。
-  const attrSlot0 = useComboAttribution(slots[0]?.legs ?? [], analyticsSpot, analyticsShifts);
-  const attrSlot1 = useComboAttribution(slots[1]?.legs ?? [], analyticsSpot, analyticsShifts);
+  const attrSlot0 = useComboAttribution(slots[0]?.legs ?? [], slotSpot, slotShifts);
+  const attrSlot1 = useComboAttribution(slots[1]?.legs ?? [], slotSpot, slotShifts);
   const slotAttributions = [attrSlot0, attrSlot1];
 
   // 同样的"固定调用数量"限制，情景估值也是两份固定hook调用，见上面
   // slotStats的注释。
-  const scenarioSlot0 = useSlotScenarioPriceById(slots[0]?.legs ?? [], analyticsSpot, analyticsShifts);
-  const scenarioSlot1 = useSlotScenarioPriceById(slots[1]?.legs ?? [], analyticsSpot, analyticsShifts);
+  const scenarioSlot0 = useSlotScenarioPriceById(slots[0]?.legs ?? [], slotSpot, slotShifts);
+  const scenarioSlot1 = useSlotScenarioPriceById(slots[1]?.legs ?? [], slotSpot, slotShifts);
   const slotScenarioPriceById = [scenarioSlot0, scenarioSlot1];
 
   // 根容器不加横向padding，保证卡片内LegRow的缩进跟方案A一致（"..."菜单对齐）；标题行/提示文字自己加px-2。
@@ -252,7 +253,7 @@ export default function ComboCompareSlots({ spot, symbol, customPresets, mainLeg
                   leg={leg}
                   index={idx}
                   symbol={symbol}
-                  spot={spot}
+                  spot={slotSpot}
                   locked={locked}
                   scenarioPrice={slotScenarioPriceById[i].get(leg.id)}
                   onChange={(patch) => onUpdateLeg(slot.id, leg.id, patch)}

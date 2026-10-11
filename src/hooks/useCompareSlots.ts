@@ -114,10 +114,9 @@ export function useCompareSlots() {
     ));
   }, []);
 
-  // 清空所有对比槽位——换标的代码时用（跟主combo一样，换了symbol旧行权
-  // 价就没意义了），见App.tsx的symbol-change effect。
-  const clearCompareSlots = useCallback(() => {
-    setCompareSlots([]);
+  // 换标的代码时把每个槽位的腿按同一个办法重算行权价（跟主combo一样，见App.tsx的rescaleForNewSymbol），不清空、不改基准。
+  const mapAllSlotLegs = useCallback((fn: (legs: Leg[]) => Leg[]) => {
+    setCompareSlots((prev) => prev.map((s) => (s.legs.length > 0 ? { ...s, legs: fn(s.legs) } : s)));
   }, []);
 
   // 2026-09-22新增，配合"批量选择/全选/统一数量-行权价-到期日对A/B/C完
@@ -192,11 +191,12 @@ export function useCompareSlots() {
   // 用`estimateRescaledPremium`给一个权利金占位估算值，命中不了期权链缓
   // 存时不像`applyPresetToSlot`那样直接置0）——两个函数如果硬共用一份实
   // 现，其中一个的语义就会被另一个的约定悄悄污染，所以保持独立。
-  const applyStrategyToSlot = useCallback((slotId: string, rawLegs: Leg[], fromSpot: number, toSpot: number, symbol: string) => {
+  // keepStrikes：同一只股票时行权价原样保留，查不到报价时权利金置0交给自动填价（旧的开仓价不是今天的价）
+  const applyStrategyToSlot = useCallback((slotId: string, rawLegs: Leg[], fromSpot: number, toSpot: number, symbol: string, keepStrikes = false) => {
     setCompareSlots((prev) => prev.map((s) => {
       if (s.id !== slotId) return s;
       const capped = rawLegs.slice(0, MAX_COMPARE_SLOT_LEGS);
-      const ratio = fromSpot > 0 ? toSpot / fromSpot : 1;
+      const ratio = keepStrikes ? 1 : fromSpot > 0 ? toSpot / fromSpot : 1;
       const scaled = capped.map((l) => {
         if (l.kind === "stock") {
           return { ...l, id: uid(), strike: Math.round(toSpot * 100) / 100, shares: l.shares ?? 100 };
@@ -204,7 +204,7 @@ export function useCompareSlots() {
         const targetDte = nearestFridayDte(l.dte);
         const targetStrike = Math.round(l.strike * ratio * 2) / 2;
         const resolved = symbol.trim() ? resolveFromCache(symbol.trim(), l.type, targetStrike, targetDte) : null;
-        const estimatedPremium = fromSpot > 0 && l.premium > 0
+        const estimatedPremium = !keepStrikes && fromSpot > 0 && l.premium > 0
           ? Math.max(0, estimateRescaledPremium(fromSpot, l, toSpot, targetStrike))
           : 0;
         return {
@@ -241,7 +241,7 @@ export function useCompareSlots() {
     applyPresetToSlot,
     applyStrategyToSlot,
     setCompareSlotLegs,
-    clearCompareSlots,
+    mapAllSlotLegs,
     markSlotSaved,
   };
 }

@@ -29,8 +29,8 @@ import { useEarningsContext } from "@/lib/earnings";
 import { useStrategyOrchestration } from "@/hooks/useStrategyOrchestration";
 import { nearestFridayDte, formatDateInput, parseDateInput, addCalendarDays, calendarDaysBetween, calendarDaysSince } from "@/lib/dateUtils";
 import { uid, PRESET_DTE_SET } from "@/lib/legFactory";
-import { getOptionChain, resolveFromCache, refreshContractPremiums, mergeFreshPremiums } from "@/lib/optionChain";
-import { estimateRescaledPremium, premiumSanityIssues, type PremiumIssue, weightedAvgIV } from "@/lib/pricing";
+import { getOptionChain, resolveFromCache, refreshContractPremiums, mergeFreshPremiums, peekResolvedChain, nearestStrikeToSpot } from "@/lib/optionChain";
+import { estimateRescaledPremium, premiumSanityIssues, type PremiumIssue, weightedAvgIV, priceCombo, probabilityOfProfit } from "@/lib/pricing";
 import { NUMBER_RULES, clampToRule, blockInvalidNumberKey } from "@/lib/numberInput";
 import { useI18n } from "@/i18n/I18nContext";
 import AppHeader from "@/components/AppHeader";
@@ -129,7 +129,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const trackedDirty = trackedLegs !== null && serializeTrackedLegs(trackedLegs) !== trackedBaseline;
   const [confirmSaveTrackedOpen, setConfirmSaveTrackedOpen] = useState(false);
   // 多方案对比（方案B/C）的state，分析模式才显示。
-  // ⚠️ 必须声明在rescaleForNewSymbol之前（它用到clearCompareSlots），否则TDZ。
+  // ⚠️ 必须声明在rescaleForNewSymbol之前（它用到mapAllSlotLegs），否则TDZ。
   const {
     compareSlots,
     addCompareSlot,
@@ -141,7 +141,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     applyPresetToSlot,
     applyStrategyToSlot,
     setCompareSlotLegs,
-    clearCompareSlots,
+    mapAllSlotLegs,
     markSlotSaved,
   } = useCompareSlots();
   // 当前激活的combo：0=A(legs)，1/2=compareSlots[0]/[1]。点容器切换；
@@ -152,6 +152,18 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   useEffect(() => {
     if (activeComboIndex > compareSlots.length) setActiveComboIndex(0);
   }, [activeComboIndex, compareSlots.length]);
+  // 换标的那个effect只在报价变化时跑，用ref读槽位（不让它因为槽位改动重跑）
+  const compareSlotsRef = useRef(compareSlots);
+  compareSlotsRef.current = compareSlots;
+  // 删掉一个槽位：有没保存的改动先问；激活的那个跟着换（删的是激活的→回到A；删的在激活的前面→激活序号减一）
+  const handleRemoveCompareSlot = (slotId: string) => {
+    const idx = compareSlots.findIndex((sl) => sl.id === slotId) + 1;
+    if (idx <= 0) return;
+    if (isSlotDirty(compareSlots[idx - 1]) && !window.confirm(t("compare.removeDirtyConfirm", { name: idx === 1 ? t("compare.slotB") : t("compare.slotC") }))) return;
+    removeCompareSlot(slotId);
+    if (activeComboIndex === idx) setActiveComboIndex(0);
+    else if (activeComboIndex > idx) setActiveComboIndex(activeComboIndex - 1);
+  };
   // 新建B/C后直接激活它。到达上限时addCompareSlot不生效，所以先判上限。
   const handleAddCompareSlotAndActivate = () => {
     if (compareSlots.length >= MAX_COMPARE_SLOTS) return;
@@ -164,8 +176,9 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   // 量会触发App.tsx这个文件已知的TDZ风险（CLAUDE.md"五、5"），语义上跟
   // isCompareModeNow（同样出于这个原因手写的等价判断）一致。
   useEffect(() => {
-    if (trackedLegs !== null || simOrigin) setActiveComboIndex(0);
-  }, [trackedLegs, simOrigin]);
+    // 手机上看不到方案B/C：激活回A，免得预设、"+"加到看不见的槽位里
+    if (trackedLegs !== null || simOrigin || isMobile) setActiveComboIndex(0);
+  }, [trackedLegs, simOrigin, isMobile]);
   // B/C的批量操作复用useLegBatchOps，固定调用两次（hooks不能在循环里调用）；B/C批量删除不弹确认。
   const compareSlotB = compareSlots[0];
   const compareSlotC = compareSlots[1];
@@ -329,12 +342,9 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     legBaseSpot.current = newSpot;
     legBaseSymbol.current = newSymbol;
     spotManuallySet.current = false;
-    // 换标的后旧行权价没有意义了（跟主combo/今日组合一样），对比槽位
-    // （方案B/C）直接清空，而不是尝试按比例重映射——那套重映射逻辑是为
-    // 已经过审的、有真实持仓语义的legs设计的，对比槽位只是临时候选方
-    // 案，换标的时清空重来更简单也更不容易踩坑。
-    clearCompareSlots();
-  }, [clearCompareSlots]);
+    // 对比槽位（方案B/C）跟A一样按新旧现价比例重算，原来是直接清空，槽位里没保存的组合会被悄悄丢掉。
+    mapAllSlotLegs(rescale);
+  }, [mapAllSlotLegs]);
 
 
   const { quote, loading: quoteLoading, error: quoteError, refetch } = useStockQuote(symbol);
@@ -420,7 +430,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     // different underlying entirely, where the old strikes/spot are
     // meaningless regardless of whether spot was ever hand-edited. So this
     // check bypasses spotManuallySet on purpose.
-    const comboNotEmpty = legs.length > 0 || (trackedLegsRef.current !== null && trackedLegsRef.current.length > 0);
+    const comboNotEmpty = legs.length > 0 || (trackedLegsRef.current !== null && trackedLegsRef.current.length > 0) || compareSlotsRef.current.some((sl) => sl.legs.length > 0);
     const symbolChanged = legBaseSpot.current > 0 && comboNotEmpty && symbol !== legBaseSymbol.current;
 
     if (trackedLegsRef.current !== null) {
@@ -618,15 +628,27 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCompareMode, trackedAsOf, activeSnapshotId, trackingStrategyId, trackedStrategy, quoteReady]);
 
+  // 方案B/C的腿按今天的现价、今天的剩余天数建：算价时反推隐含波动率用实时价，滑块的"第几天"（从A的开仓日算）要减去开仓至今的天数。
+  // A的开仓日是今天时两者跟A完全一样。
+  const slotBase = useMemo(
+    () => ({ spot: quote && quote.price > 0 ? quote.price : spot, offset: openingSimBasis && !isExpiredOpening ? openingSimBasis.daysSinceOpen : 0 }),
+    [quote, spot, openingSimBasis, isExpiredOpening],
+  );
+  const slotShifts = useMemo<Shifts>(
+    () => ({ dS: analyticsSpot + analyticsShifts.dS - slotBase.spot, dT: Math.max(0, analyticsShifts.dT - slotBase.offset), dV: analyticsShifts.dV }),
+    [analyticsSpot, analyticsShifts, slotBase],
+  );
   // 图表用的B/C曲线（需要t，所以放在这里）。
   const compareCurves = useMemo(
     () => compareSlots.map((s, i) => ({
       id: s.id,
       label: i === 0 ? t("compare.slotB") : t("compare.slotC"),
       color: COMPARE_SLOT_COLORS[i],
-      legs: s.legs.filter((l) => !l.disabled),
+      legs: s.legs.filter((l) => !l.disabled && (l.kind === "stock" || l.strike > 0)),
+      ivSpot: slotBase.spot,
+      dayOffset: slotBase.offset,
     })),
-    [compareSlots, t],
+    [compareSlots, t, slotBase],
   );
 
   useEffect(() => {
@@ -719,8 +741,18 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const activeSlot = activeComboIndex > 0 ? compareSlots[activeComboIndex - 1] : undefined;
   const activeToolbarLegsCount = activeSlot ? activeSlot.legs.length : legs.length;
   const activeToolbarLegCap = activeSlot ? MAX_COMPARE_SLOT_LEGS : 10;
+  // 方案B/C的腿是按今天的现价、今天的期权链建的（没有自己的开仓价/开仓日）：给它们算价、存策略、加模拟账户都用实时价
+  const slotSpot = slotBase.spot;
   const handleToolbarAddLeg = () => {
-    if (activeSlot) { addCompareSlotLeg(activeSlot.id); return; }
+    if (activeSlot) {
+      // 跟A的"+"一样给一个平值附近的行权价，原来是行权价0、权利金0的空腿，直接画进图里会把纵轴撑得很大
+      let hint = slotSpot > 0 ? Math.round(slotSpot * 2) / 2 : 0;
+      const cached = slotSpot > 0 && symbol.trim() ? peekResolvedChain(symbol.trim(), nearestFridayDte(30)) : null;
+      const atm = cached ? nearestStrikeToSpot(cached.calls, slotSpot) : null;
+      if (atm !== null) hint = atm;
+      addCompareSlotLeg(activeSlot.id, hint);
+      return;
+    }
     addLeg();
   };
   const handleToolbarClear = () => {
@@ -732,7 +764,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const handleToolbarAddToSim = () => {
     const slot = activeSlot;
     requestLeave(() => {
-      if (slot) void handleAddToSimAccount({ legs: slot.legs, spot, symbol, openingAt: Date.now() });
+      if (slot) void handleAddToSimAccount({ legs: slot.legs, spot: slotSpot, symbol, openingAt: Date.now() });
       else void handleAddToSimAccount();
     });
   };
@@ -794,7 +826,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   };
   const handleSaveStrategyForActive = async (filename: string) => {
     if (activeSlot) {
-      const updated = await saveStrategy({ filename, symbol, spot, legs: activeSlot.legs, shifts: { dS: 0, dT: 0, dV: 0 }, openingAt: Date.now() });
+      const updated = await saveStrategy({ filename, symbol, spot: slotSpot, legs: activeSlot.legs, shifts: { dS: 0, dT: 0, dV: 0 }, openingAt: Date.now() });
       setSavedStrategies(updated);
       setSaveStrategyOpen(false);
       // 保存后刷新该槽位baseline；如果是退出流程里的"先保存"，推进确认队列。
@@ -810,7 +842,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   };
   const handleOverwriteStrategyForActive = async (id: string, filename: string) => {
     if (activeSlot) {
-      const updated = await overwriteStrategy(id, { filename, symbol, spot, legs: activeSlot.legs, shifts: { dS: 0, dT: 0, dV: 0 }, openingAt: Date.now() });
+      const updated = await overwriteStrategy(id, { filename, symbol, spot: slotSpot, legs: activeSlot.legs, shifts: { dS: 0, dT: 0, dV: 0 }, openingAt: Date.now() });
       setSavedStrategies(updated);
       setSaveStrategyOpen(false);
       markSlotSaved(activeSlot.id);
@@ -911,6 +943,18 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const showWinRate = showChartTabs && chartView === "winRate";
   // 地形图用开仓基准的腿位（第0天=开仓日），跟图表头部盈亏/归因用的是同一份数据。
   const mapLegs = useMemo(() => analyticsLegs.filter((l) => !l.disabled), [analyticsLegs]);
+  // A的腿都屏蔽或删掉了、B/C还有腿：盈亏图、盈亏头部和滑块改由第一个有腿的方案当主曲线（原来提示"请添加腿位"，滑块也锁住）
+  const chartPrimary = useMemo(() => {
+    if (isCompareMode || isMobile || mapLegs.length > 0) return null;
+    const c = compareCurves.find((x) => x.legs.length > 0);
+    if (!c || !(slotBase.spot > 0)) return null;
+    return { id: c.id, label: c.label, legs: c.legs, result: priceCombo(c.legs, slotShifts, slotBase.spot), breakevens: probabilityOfProfit(c.legs, slotBase.spot).breakevens };
+  }, [isCompareMode, isMobile, mapLegs, compareCurves, slotShifts, slotBase]);
+  // 滑块上界也要放得下B/C（它们的腿按今天算剩余天数，加上开仓至今的天数换成从A的开仓日算）
+  const slotMaxDte = useMemo(() => {
+    const ds = compareCurves.flatMap((c) => c.legs.filter((l) => l.kind !== "stock").map((l) => l.dte + slotBase.offset));
+    return ds.length ? Math.max(...ds) : 0;
+  }, [compareCurves, slotBase]);
   // 第1组「波动率口径统一」：推演未来时，地形图喇叭口、万次推演的"隐含"选项、持仓建议、波动率滑块小字都用同一个数——
   // 最近到期日平值期权的隐含波动率（lib/atmIv.ts）。只在开仓日是今天时用（期权链是今天的报价，开仓在过去时对不上），
   // 取不到就退回各腿隐含波动率平均。今昔对比不变：拿不到开仓那天的期权链，仍按各腿加权平均（跟trackedVolShift同一种平均法）。
@@ -1094,7 +1138,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           // 激活B/C时预设直接填进该槽位，不走A的未保存确认。
           if (activeComboIndex > 0) {
             const slot = compareSlots[activeComboIndex - 1];
-            if (slot) applyPresetToSlot(slot.id, rawLegs, spot, symbol);
+            if (slot) applyPresetToSlot(slot.id, rawLegs, slotSpot, symbol);
             return;
           }
           if (compareUnsaved) {
@@ -1364,14 +1408,14 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               mainLegs={legs}
               slots={compareSlots}
               locked={isExploring}
-              analyticsSpot={analyticsSpot}
-              analyticsShifts={analyticsShifts}
+              slotSpot={slotBase.spot}
+              slotShifts={slotShifts}
               activeComboIndex={activeComboIndex}
               onActivate={setActiveComboIndex}
               slotBatchOps={[batchOpsB, batchOpsC]}
               onSaveSlot={() => setSaveStrategyOpen(true)}
               onAddSlot={handleAddCompareSlotAndActivate}
-              onRemoveSlot={removeCompareSlot}
+              onRemoveSlot={handleRemoveCompareSlot}
               onUpdateLeg={updateCompareSlotLeg}
               onDeleteLeg={deleteCompareSlotLeg}
               onToggleLeg={toggleCompareSlotLeg}
@@ -1419,13 +1463,13 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                 {/* 右端：分析模式的盈亏头部 + 分析↔对比模式切换（两种模式、三个标签下都在这里）。 */}
                 {/* 窄窗口/英文放不下时，头部和切换按钮在这一格里换行，不被裁掉 */}
                 <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-0.5 self-center pb-1">
-                {!isCompareMode && activeLegs.length > 0 && (
+                {!isCompareMode && (activeLegs.length > 0 || chartPrimary) && (
                   <PnlHeadline
                     dateTs={addCalendarDays(openingAt, analyticsShifts.dT)}
-                    pnl={result.change}
-                    netValue={result.shiftedValue}
-                    netChange={result.change}
-                    hasStock={activeLegs.some((l) => l.kind === "stock")}
+                    pnl={chartPrimary ? chartPrimary.result.change : result.change}
+                    netValue={chartPrimary ? chartPrimary.result.shiftedValue : result.shiftedValue}
+                    netChange={chartPrimary ? chartPrimary.result.change : result.change}
+                    hasStock={(chartPrimary ? chartPrimary.legs : activeLegs).some((l) => l.kind === "stock")}
                   />
                 )}
                 {modeSwitchButton}
@@ -1448,7 +1492,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   halfSpread={legSpreads}
                   earnings={earnState.ctx}
                   leftAdvice={isCompareMode ? null : scenarioAdvice}
-                  emptyText={needSymbol ? t("chart.noSpot") : activeLegs.length === 0 ? t("chart.addLegs") : null}
+                  emptyText={needSymbol ? t("chart.noSpot") : activeLegs.length === 0 ? t(chartPrimary ? "chart.aEmptyOtherTabs" : "chart.addLegs") : null}
                 />
               </div>
               ) : showWinRate ? (
@@ -1489,7 +1533,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
                   todayIv={isCompareMode || todayMarket.source !== "atm" ? null : todayMarket.iv}
                   openingAt={openingAt}
                   daysSinceOpen={openingSimBasis && !isExpiredOpening ? openingSimBasis.daysSinceOpen : undefined}
-                  emptyText={needSymbol ? t("chart.noSpot") : t("chart.addLegs")}
+                  emptyText={needSymbol ? t("chart.noSpot") : t(chartPrimary ? "chart.aEmptyOtherTabs" : "chart.addLegs")}
                 />
               </div>
               ) : (
@@ -1497,23 +1541,24 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               <PayoffChart
                 // 分析模式用开仓基准腿位（第0天=开仓日），跟滑块的dT、头部盈亏、归因、地形图同一份数据；
                 // 用实时腿位的话，开仓日在过去时"已过去的天数"会被重复扣一次。
-                legs={isCompareMode ? activeLegs : mapLegs}
-                spot={analyticsSpot}
-                shifts={analyticsShifts}
+                legs={chartPrimary ? chartPrimary.legs : isCompareMode ? activeLegs : mapLegs}
+                spot={chartPrimary ? slotBase.spot : analyticsSpot}
+                shifts={chartPrimary ? slotShifts : analyticsShifts}
                 symbol={symbol}
                 compact={isMobile}
-                breakevens={breakevens}
+                breakevens={chartPrimary ? chartPrimary.breakevens : breakevens}
                 trackedLegs={activeTrackedLegs ?? undefined}
                 openingLegs={isCompareMode ? activeLegs : undefined}
                 compareMode={isCompareMode}
-                perLegValues={isCompareMode && trackedResult ? trackedResult.perLeg : result.perLeg}
-                netValue={isCompareMode && trackedResult ? trackedResult.shiftedValue : result.shiftedValue}
-                netChange={isCompareMode && trackedResult ? trackedResult.change : result.change}
+                perLegValues={isCompareMode && trackedResult ? trackedResult.perLeg : chartPrimary ? chartPrimary.result.perLeg : result.perLeg}
+                netValue={isCompareMode && trackedResult ? trackedResult.shiftedValue : chartPrimary ? chartPrimary.result.shiftedValue : result.shiftedValue}
+                netChange={isCompareMode && trackedResult ? trackedResult.change : chartPrimary ? chartPrimary.result.change : result.change}
                 trackedSpot={isCompareMode ? effectiveTrackedSpot : undefined}
                 liveSpot={isCompareMode && liveTrackedSpot !== null ? liveTrackedSpot : undefined}
-                expired={isExpiredOpening}
-                openingAt={openingAt}
-                compareCurves={!isCompareMode ? compareCurves : undefined}
+                expired={chartPrimary ? false : isExpiredOpening}
+                openingAt={chartPrimary ? addCalendarDays(openingAt, slotBase.offset) : openingAt}
+                compareCurves={isCompareMode || isMobile ? undefined : chartPrimary ? compareCurves.filter((c) => c.id !== chartPrimary.id) : compareCurves}
+                mainLabel={compareSlots.length > 0 ? (chartPrimary ? chartPrimary.label : t("compare.slotA")) : undefined}
                 hideHeadline={showChartTabs && !isCompareMode}
               />
               </div>
@@ -1528,7 +1573,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             <ShiftSliders
               shifts={shifts}
               spot={spot}
-              maxDte={sliderMaxDte}
+              maxDte={isCompareMode ? sliderMaxDte : Math.max(chartPrimary ? 0 : sliderMaxDte, slotMaxDte, 1)}
               // "今天"参考点=离开仓(day0)过了几天。
               todayDte={!isCompareMode && openingSimBasis && !isExpiredOpening ? openingSimBasis.daysSinceOpen : undefined}
               onChange={(patch) => setShifts((s) => ({ ...s, ...patch }))}
@@ -1537,9 +1582,9 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               trackedSpot={isCompareMode ? effectiveTrackedSpot : undefined}
               trackedDays={isCompareMode ? effectiveDaysElapsed : undefined}
               trackedVolShift={trackedVolShift}
-              baseIv={sliderBaseIv > 0 ? sliderBaseIv : undefined}
+              baseIv={chartPrimary ? (weightedAvgIV(chartPrimary.legs, slotBase.spot) || undefined) : sliderBaseIv > 0 ? sliderBaseIv : undefined}
               // 分析模式下没有腿位时滑块也锁住；frozen只看isCompareMode，避免标题误显示成"情景偏移对比"。
-              disabled={isCompareMode || activeLegs.length === 0 || needSymbol}
+              disabled={isCompareMode || (activeLegs.length === 0 && !chartPrimary) || needSymbol}
               frozen={isCompareMode}
               guideBadge={showGuide5 && !showChartTabs ? <StepBadge n={5} title={t("guide.step5")} /> : undefined}
               hideTitle={showChartTabs}
@@ -1709,7 +1754,8 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
           // 那个槽位（activeSlot由activeComboIndex决定，见下面
           // handleSaveStrategyForActive/onSaveStrategy的接线）。
           const target = leaveQueue[0];
-          if (target !== undefined && target > 0) setActiveComboIndex(target);
+          // 队首是A（0）时也要切回A，否则保存对话框存的是当前激活的B/C
+          if (target !== undefined) setActiveComboIndex(target);
           setConfirmLeaveOpen(false);
           setSaveStrategyOpen(true);
           // 保存成功后的队列推进在handleSaveStrategyForActive/handleOverwriteStrategyForActive里；
@@ -1788,7 +1834,12 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         onOpenStrategy={(s) => guardLibrary(() => {
           if (activeComboIndex > 0) {
             const slot = compareSlots[activeComboIndex - 1];
-            if (slot) applyStrategyToSlot(slot.id, s.legs, s.spot, spot, symbol);
+            if (slot) {
+              // 剩余天数按这条策略存下以后过去的天数扣掉；同一只股票不按现价缩放行权价（原样打开）
+              const passed = calendarDaysSince(s.legsAsOf ?? s.openingAt ?? s.createdAt);
+              const aged = s.legs.map((l) => (l.kind === "stock" ? l : { ...l, dte: Math.max(1, l.dte - passed) }));
+              applyStrategyToSlot(slot.id, aged, s.spot, slotSpot, symbol, s.symbol === symbol);
+            }
             setManageStrategyOpen(false);
             return;
           }
