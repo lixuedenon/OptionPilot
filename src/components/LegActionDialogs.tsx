@@ -2,6 +2,7 @@
 import type { Leg, Shifts } from "@/lib/types";
 import SavePresetDialog from "@/components/SavePresetDialog";
 import RollDialog from "@/components/RollDialog";
+import type { CompareOption } from "@/components/AdjustCompareButton";
 import ProtectDialog from "@/components/ProtectDialog";
 import HedgeDialog from "@/components/HedgeDialog";
 import DecisionCompareDialog from "@/components/DecisionCompareDialog";
@@ -15,6 +16,10 @@ import { ConfirmBulkDeleteDialog, ConfirmClearDialog, ConfirmSaveTrackedDialog, 
 // Split out of App.tsx purely to shrink that file; every prop here maps
 // 1:1 to what was already wired inline, no behavior change.
 interface Props {
+  // 分析模式才有：展期/保护/对冲的"放到对比方案里比"（见AdjustCompareButton.tsx）。
+  rollCompare?: CompareOption;
+  protectCompare?: CompareOption;
+  hedgeCompare?: CompareOption;
   saveDialogOpen: boolean;
   onCloseSaveDialog: () => void;
   onSaveCustomPreset: (data: { name: string; desc: string; market: string; stocks: string; direction: string }) => void;
@@ -76,7 +81,7 @@ export default function LegActionDialogs({
   confirmClearOpen, onConfirmClear, onCancelClear,
   confirmBulkDeleteOpen, selectedCount, onConfirmBulkDelete, onCancelBulkDelete,
   confirmSaveTrackedOpen, onDontSaveTracked, onSaveTrackedThenClear,
-  rollTarget, rollTargetSource, onCloseRoll, onConfirmRoll,
+  rollTarget, rollTargetSource, onCloseRoll, onConfirmRoll, rollCompare, protectCompare, hedgeCompare,
   protectTarget, protectTargetSource, onCloseProtect, onConfirmProtect,
   hedgeOpen, hedgeTargetSource, legs, trackedLegsForDialogs, trackedSpotForDialogs, onCloseHedge, onConfirmHedge,
   compareTargetId, shifts, onCloseCompare,
@@ -122,6 +127,7 @@ export default function LegActionDialogs({
           allLegs={rollTargetSource === "tracked" ? trackedLegsForDialogs : legs}
           onClose={onCloseRoll}
           onConfirm={onConfirmRoll}
+          compare={rollCompare}
         />
       )}
       {protectTarget && (
@@ -131,6 +137,7 @@ export default function LegActionDialogs({
           symbol={symbol}
           onClose={onCloseProtect}
           onConfirm={onConfirmProtect}
+          compare={protectCompare}
         />
       )}
       {hedgeOpen && (
@@ -140,6 +147,7 @@ export default function LegActionDialogs({
           symbol={symbol}
           onClose={onCloseHedge}
           onConfirm={onConfirmHedge}
+          compare={hedgeCompare}
         />
       )}
 

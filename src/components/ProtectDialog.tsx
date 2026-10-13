@@ -6,6 +6,7 @@ import { dateFromDte, dteFromDate, todayISO, nearestFridayDte } from "@/lib/date
 import { blackScholes } from "@/lib/bs";
 import { impliedVol } from "@/lib/pricing";
 import { fetchLegPremium } from "@/lib/optionChain";
+import { AdjustCompareButton, type CompareOption } from "@/components/AdjustCompareButton";
 import { useI18n } from "@/i18n/I18nContext";
 import { NUMBER_RULES, blockInvalidNumberKey, useClampedNumberField } from "@/lib/numberInput";
 
@@ -20,9 +21,10 @@ interface Props {
   symbol?: string;
   onClose: () => void;
   onConfirm: (protectLeg: Leg) => void;
+  compare?: CompareOption;
 }
 
-export default function ProtectDialog({ leg, spot, symbol, onClose, onConfirm }: Props) {
+export default function ProtectDialog({ leg, spot, symbol, onClose, onConfirm, compare }: Props) {
   const { t, lang } = useI18n();
   const sym = symbol?.trim() ?? "";
   // Protection logic:
@@ -118,7 +120,7 @@ export default function ProtectDialog({ leg, spot, symbol, onClose, onConfirm }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sym, strike, dte, protectType, premiumTouched]);
 
-  const handleConfirm = () => {
+  const buildLeg = (): Leg => {
     const protectLeg: Leg = {
       id: `leg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       action: protectAction as "buy" | "sell",
@@ -127,8 +129,9 @@ export default function ProtectDialog({ leg, spot, symbol, onClose, onConfirm }:
       dte,
       premium,
     };
-    onConfirm(protectLeg);
+    return protectLeg;
   };
+  const handleConfirm = () => onConfirm(buildLeg());
 
   const description = isShort
     ? `${t("protect.descShort")} ${leg.type === "call" ? "Call" : "Put"} ${t("protect.descShortSuffix")}`
@@ -259,6 +262,7 @@ export default function ProtectDialog({ leg, spot, symbol, onClose, onConfirm }:
           >
             {t("protect.cancel")}
           </button>
+          <AdjustCompareButton option={compare} busy={liveFetching} onClick={() => compare?.onConfirm(buildLeg())} />
           <button
             onClick={handleConfirm}
             disabled={liveFetching}

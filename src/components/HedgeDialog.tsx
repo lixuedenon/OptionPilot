@@ -6,6 +6,7 @@ import { dateFromDte, dteFromDate, todayISO, nearestFridayDte } from "@/lib/date
 import { blackScholes } from "@/lib/bs";
 import { impliedVol } from "@/lib/pricing";
 import { fetchLegPremium } from "@/lib/optionChain";
+import { AdjustCompareButton, type CompareOption } from "@/components/AdjustCompareButton";
 import { useI18n } from "@/i18n/I18nContext";
 import { NUMBER_RULES, blockInvalidNumberKey, useClampedNumberField } from "@/lib/numberInput";
 
@@ -20,9 +21,10 @@ interface Props {
   symbol?: string;
   onClose: () => void;
   onConfirm: (hedgeLeg: Leg) => void;
+  compare?: CompareOption;
 }
 
-export default function HedgeDialog({ legs, spot, symbol, onClose, onConfirm }: Props) {
+export default function HedgeDialog({ legs, spot, symbol, onClose, onConfirm, compare }: Props) {
   const { t, lang } = useI18n();
   const sym = symbol?.trim() ?? "";
   // Calculate total portfolio delta
@@ -132,7 +134,7 @@ export default function HedgeDialog({ legs, spot, symbol, onClose, onConfirm }: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sym, method, strike, dte, optType, premiumTouched]);
 
-  const handleConfirm = () => {
+  const buildLeg = (): Leg => {
     if (method === "stock") {
       const hedgeLeg: Leg = {
         id: `leg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -144,7 +146,7 @@ export default function HedgeDialog({ legs, spot, symbol, onClose, onConfirm }: 
         kind: "stock",
         shares: hedgeShares,
       };
-      onConfirm(hedgeLeg);
+      return hedgeLeg;
     } else {
       const hedgeLeg: Leg = {
         id: `leg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -154,9 +156,10 @@ export default function HedgeDialog({ legs, spot, symbol, onClose, onConfirm }: 
         dte,
         premium,
       };
-      onConfirm(hedgeLeg);
+      return hedgeLeg;
     }
   };
+  const handleConfirm = () => onConfirm(buildLeg());
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
@@ -338,6 +341,7 @@ export default function HedgeDialog({ legs, spot, symbol, onClose, onConfirm }: 
           >
             {t("hedge.cancel")}
           </button>
+          <AdjustCompareButton option={compare} busy={method === "option" && liveFetching} onClick={() => compare?.onConfirm(buildLeg())} />
           <button
             onClick={handleConfirm}
             disabled={method === "option" && liveFetching}

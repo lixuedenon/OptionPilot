@@ -37,6 +37,8 @@ import AppHeader from "@/components/AppHeader";
 import LockedOverlay, { type LockReason } from "@/components/LockedOverlay";
 import StepBadge from "@/components/StepBadge";
 import PnlHeadline from "@/components/PnlHeadline";
+import type { CompareOption } from "@/components/AdjustCompareButton";
+import { adjustedCopy, adjustedLegs, hasRollChild, MAX_COMBO_LEGS, type AdjustKind } from "@/lib/adjustLinks";
 import StockOptionMap from "@/components/StockOptionMap";
 import RetroSim from "@/components/RetroSim";
 import FutureSim from "@/components/FutureSim";
@@ -133,6 +135,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
   const {
     compareSlots,
     addCompareSlot,
+    addSlotWithLegs,
     removeCompareSlot,
     addCompareSlotLeg,
     updateCompareSlotLeg,
@@ -1121,6 +1124,44 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
     </>
   );
 
+  // 展期/保护/对冲的"放到对比方案里比"（只在分析模式、对方案A的腿操作时）：A不动，调整后的副本放进新的对比方案并激活它。
+  const slotsFull = compareSlots.length >= MAX_COMPARE_SLOTS;
+  const makeCompareOption = (kind: AdjustKind, close: () => void, targetId?: string, only?: boolean): CompareOption | undefined => {
+    if (isCompareMode || isMobile || simOrigin) return undefined;
+    const probe = adjustedLegs(legs, kind, { id: "_probe", action: "buy", type: "call", strike: 0, dte: 0, premium: 0 }, targetId);
+    const disabledReason = slotsFull ? t("adjust.slotsFull") : probe.length > MAX_COMBO_LEGS ? t("adjust.tooManyLegs") : undefined;
+    return {
+      only,
+      disabledReason,
+      onConfirm: (leg) => {
+        if (compareSlotsRef.current.length >= MAX_COMPARE_SLOTS) return;
+        const newIndex = compareSlotsRef.current.length + 1;
+        addSlotWithLegs(adjustedCopy(legs, kind, leg, targetId));
+        setActiveComboIndex(newIndex);
+        close();
+      },
+    };
+  };
+  const rollCompare = rollTarget && rollTargetSource === "legs"
+    ? makeCompareOption("roll", () => setRollTarget(null), rollTarget.id, hasRollChild(legs, rollTarget.id))
+    : undefined;
+  const protectCompare = protectTarget && protectTargetSource === "legs"
+    ? makeCompareOption("protect", () => setProtectTarget(null), protectTarget.id)
+    : undefined;
+  const hedgeCompare = hedgeOpen && hedgeTargetSource === "legs" ? makeCompareOption("hedge", () => setHedgeOpen(false)) : undefined;
+  // 已经展期出去的原腿重新取消屏蔽：会跟展期出来的腿一起算，仓位变多，先问一句。
+  const guardedToggleLeg = (id: string) => {
+    const l = legs.find((x) => x.id === id);
+    if (l?.disabled && hasRollChild(legs, id) && !window.confirm(t("adjust.unblockRolledConfirm"))) return;
+    toggleLeg(id);
+  };
+  const guardedToggleTrackedLeg = (id: string) => {
+    const tl = trackedLegs ?? [];
+    const l = tl.find((x) => x.id === id);
+    if (l?.disabled && hasRollChild(tl, id) && !window.confirm(t("adjust.unblockRolledConfirm"))) return;
+    toggleTrackedLeg(id);
+  };
+
   return (
     // 手机（useIsMobile）：左右两栏改上下排列、整页滚动；电脑/iPad布局不变。
     <div className={isMobile ? "op-mobile flex min-h-screen flex-col bg-slate-950 text-slate-200" : "flex h-screen flex-col overflow-hidden bg-slate-950 text-slate-200"}>
@@ -1301,7 +1342,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
             scenarioPriceById={scenarioPriceById}
             symbol={symbol}
             onChangeLeg={updateLeg}
-            onToggleLeg={toggleLeg}
+            onToggleLeg={guardedToggleLeg}
             onDeleteLeg={deleteLeg}
             onAddToPreset={() => { setPresetSaveSource("legs"); setSaveDialogOpen(true); }}
             onRoll={handleRoll}
@@ -1343,7 +1384,7 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
               trackedLegPnlById={trackedLegPnlById}
               trackedLegRolesById={trackedLegRolesById}
               onChangeTrackedLeg={updateTrackedLeg}
-              onToggleTrackedLeg={toggleTrackedLeg}
+              onToggleTrackedLeg={guardedToggleTrackedLeg}
               onCloseTrackedLeg={closeTrackedLeg}
               onAddTrackedLegToPreset={() => { setPresetSaveSource("tracked"); setSaveDialogOpen(true); }}
               // 明确指定作用于今日组合（这几个handler默认作用于开仓组合）。
@@ -1691,6 +1732,9 @@ export default function App({ onBackHome, autoOpenManage, simOrigin, onConfirmSi
         // from `trackedLegPnlById` (already computed for the leg list).
         // The opening combo ("legs") has no realized-P&L concept, so its
         // branch inside handleRollConfirm never uses this value.
+        rollCompare={rollCompare}
+        protectCompare={protectCompare}
+        hedgeCompare={hedgeCompare}
         onConfirmRoll={(newLeg) =>
           handleRollConfirm(newLeg, rollTargetSource === "tracked" && rollTarget ? trackedLegPnlById.get(rollTarget.id) : undefined)
         }

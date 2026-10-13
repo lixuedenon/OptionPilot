@@ -272,6 +272,10 @@ export default function TrackedComboSection({
             onRoll={() => onRoll(leg.id)}
             onHedge={() => onHedge()}
             onProtect={() => onProtect(leg.id)}
+            adjustLockedTitle={leg.disabled ? (() => {
+              const child = trackedLegs.findIndex((x) => x.derivedFrom?.via === "roll" && x.derivedFrom.legId === leg.id);
+              return child >= 0 ? t("adjust.trackedRolled", { index: child + 1 }) : t("adjust.trackedClosed");
+            })() : undefined}
             onMoveUp={() => onMoveTrackedLeg(i, -1)}
             onMoveDown={() => onMoveTrackedLeg(i, 1)}
             canMoveUp={i > 0}

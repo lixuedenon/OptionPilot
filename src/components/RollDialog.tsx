@@ -7,6 +7,8 @@ import { blackScholes } from "@/lib/bs";
 import { impliedVol } from "@/lib/pricing";
 import { fetchLegPremium } from "@/lib/optionChain";
 import { useI18n } from "@/i18n/I18nContext";
+import { AdjustCompareButton, AdjustCompareNote, type CompareOption } from "@/components/AdjustCompareButton";
+import { adjustedLegs } from "@/lib/adjustLinks";
 import RollComparisonChart from "@/components/RollComparisonChart";
 import { NUMBER_RULES, blockInvalidNumberKey, useClampedNumberField } from "@/lib/numberInput";
 
@@ -22,9 +24,10 @@ interface Props {
   allLegs: Leg[]; // the full combo `leg` belongs to (opening combo or "today's" combo, whichever is being rolled) — used only to draw the before/after risk comparison, not for anything else in this dialog
   onClose: () => void;
   onConfirm: (newLeg: Leg) => void;
+  compare?: CompareOption;
 }
 
-export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConfirm }: Props) {
+export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConfirm, compare }: Props) {
   const { t, lang } = useI18n();
   const oldDte = Math.max(0, Math.round(leg.dte));
   const oldDate = dateFromDte(oldDte);
@@ -119,7 +122,7 @@ export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConf
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sym, newStrike, newDte, leg.type, premiumTouched]);
 
-  const handleConfirm = () => {
+  const buildLeg = (): Leg => {
     const newLeg: Leg = {
       id: `leg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       action: leg.action,
@@ -128,8 +131,9 @@ export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConf
       dte: newDte,
       premium: newPremium,
     };
-    onConfirm(newLeg);
+    return newLeg;
   };
+  const handleConfirm = () => onConfirm(buildLeg());
 
   // Before/after combo for the risk comparison chart — "before" is the real
   // combo minus any already-rolled ghost legs (pnlAtExpiry doesn't filter
@@ -161,9 +165,10 @@ export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConf
     // keeps both curves on the same evaluation basis so the chart isolates
     // what a roll-comparison should show: how the NEW strike/premium
     // reshapes risk, not an artifact of the multi-expiry pricing branch.
-    const draftLeg: Leg = { ...leg, strike: newStrike, dte: leg.dte, premium: newPremium };
-    return beforeLegs.map((l) => (l.id === leg.id ? draftLeg : l));
-  }, [beforeLegs, leg, newStrike, newPremium]);
+    // 原腿已经展期过（被屏蔽）时，"展期后"=去掉上一次展期出来的腿、换上这次的（跟放进对比方案的那份一样）。
+    const draftLeg: Leg = { ...leg, strike: newStrike, dte: leg.dte, premium: newPremium, disabled: false };
+    return adjustedLegs(allLegs, "roll", draftLeg, leg.id);
+  }, [allLegs, leg, newStrike, newPremium]);
 
   const setExpiryPreset = (days: number) => {
     setPremiumTouched(false);
@@ -358,6 +363,7 @@ export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConf
           <RollComparisonChart beforeLegs={beforeLegs} afterLegs={afterLegs} spot={spot} />
         </div>
 
+        <AdjustCompareNote option={compare} onlyKey="adjust.rollOnlyCompare" />
         <div className="mt-5 flex justify-end gap-2">
           <button
             onClick={onClose}
@@ -365,13 +371,16 @@ export default function RollDialog({ leg, spot, symbol, allLegs, onClose, onConf
           >
             {t("roll.cancel")}
           </button>
-          <button
-            onClick={handleConfirm}
-            disabled={liveFetching}
-            className="rounded-md bg-sky-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {t("roll.confirm")}
-          </button>
+          <AdjustCompareButton option={compare} busy={liveFetching} onClick={() => compare?.onConfirm(buildLeg())} />
+          {!compare?.only && (
+            <button
+              onClick={handleConfirm}
+              disabled={liveFetching}
+              className="rounded-md bg-sky-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {t("roll.confirm")}
+            </button>
+          )}
         </div>
       </div>
     </div>

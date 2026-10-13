@@ -63,6 +63,8 @@ interface Props {
   onRoll?: () => void;
   onHedge?: () => void;
   onProtect?: () => void;
+  // 有值时"展期/保护"变灰，悬停显示这句（今日组合里已经展期/平掉的腿）。
+  adjustLockedTitle?: string;
   onCompare?: () => void;
   // "delete" (default) renders 删除/Trash2/rose; "close" renders 平仓/
   // LogOut/sky — used by TrackedComboSection's "今日组合" rows, where
@@ -314,6 +316,7 @@ function LegMenu({
   onRoll,
   onHedge,
   onProtect,
+  adjustLockedTitle,
   onCompare,
   onMoveUp,
   onMoveDown,
@@ -336,6 +339,7 @@ function LegMenu({
   onRoll?: () => void;
   onHedge?: () => void;
   onProtect?: () => void;
+  adjustLockedTitle?: string;
   onCompare?: () => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
@@ -399,9 +403,9 @@ function LegMenu({
             <MenuItem icon={deleteConfig.icon} label={deleteConfig.label} hint={deleteConfig.hint ?? t("leg.single")} title={deleteConfig.title} onClick={() => onDelete && run(onDelete)} tone={deleteConfig.tone} disabled={deleteConfig.disabled} />
           )}
           {showRollGroup && <div className="my-0.5 border-t border-slate-800" />}
-          {onRoll && <MenuItem icon={<CalendarClock size={12} />} label={t("leg.roll")} hint={t("leg.single")} onClick={() => onRoll && run(onRoll)} tone="sky" />}
+          {onRoll && <MenuItem icon={<CalendarClock size={12} />} label={t("leg.roll")} hint={t("leg.single")} onClick={() => onRoll && run(onRoll)} tone="sky" disabled={!!adjustLockedTitle} title={adjustLockedTitle} />}
           {onHedge && <MenuItem icon={<Layers size={12} />} label={t("leg.hedge")} hint={t("leg.combo")} onClick={() => onHedge && run(onHedge)} tone="violet" />}
-          {onProtect && <MenuItem icon={<Shield size={12} />} label={t("leg.protect")} hint={t("leg.single")} onClick={() => onProtect && run(onProtect)} tone="sky" />}
+          {onProtect && <MenuItem icon={<Shield size={12} />} label={t("leg.protect")} hint={t("leg.single")} onClick={() => onProtect && run(onProtect)} tone="sky" disabled={!!adjustLockedTitle} title={adjustLockedTitle} />}
           {onCompare && (
             <>
               <div className="my-0.5 border-t border-slate-800" />
@@ -444,6 +448,7 @@ export default function LegRow({
   onRoll,
   onHedge,
   onProtect,
+  adjustLockedTitle,
   onCompare,
   deleteVariant = "delete",
   onMoveUp,
@@ -785,6 +790,7 @@ export default function LegRow({
       onRoll={isMobile ? undefined : onRoll}
       onHedge={isMobile ? undefined : onHedge}
       onProtect={isMobile ? undefined : onProtect}
+      adjustLockedTitle={adjustLockedTitle}
       onCompare={isMobile ? undefined : onCompare}
       onMoveUp={isMobile ? undefined : onMoveUp}
       onMoveDown={isMobile ? undefined : onMoveDown}

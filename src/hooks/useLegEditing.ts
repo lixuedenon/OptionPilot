@@ -1,5 +1,6 @@
 // src/hooks/useLegEditing.ts
 import { useState } from "react";
+import { restoreRollSource } from "@/lib/adjustLinks";
 import type { Leg } from "@/lib/types";
 import { useLegBatchOps } from "@/hooks/useLegBatchOps";
 
@@ -103,10 +104,7 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
     setLegs((prev) => {
       const target = prev.find((l) => l.id === id);
       const filtered = prev.filter((l) => l.id !== id);
-      if (target?.derivedFrom?.via === "roll" && target.derivedFrom.legId) {
-        const sourceId = target.derivedFrom.legId;
-        return filtered.map((l) => (l.id === sourceId ? { ...l, disabled: false } : l));
-      }
+      if (target?.derivedFrom?.via === "roll" && target.derivedFrom.legId) return restoreRollSource(filtered, target.derivedFrom.legId);
       return filtered;
     });
   };
@@ -123,7 +121,8 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
   const handleRoll = (legId: string, source: LegTarget = "legs") => {
     const pool = source === "tracked" ? (trackedLegs ?? []) : legs;
     const leg = pool.find((l) => l.id === legId);
-    if (leg) {
+    // 真实持仓里已经展期/平掉的腿不能再展期（菜单里也是灰的）；分析模式可以，会放进对比方案。
+    if (leg && !(source === "tracked" && leg.disabled)) {
       setRollTarget(leg);
       setRollTargetSource(source);
     }
@@ -152,7 +151,7 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
   const handleProtect = (legId: string, source: LegTarget = "legs") => {
     const pool = source === "tracked" ? (trackedLegs ?? []) : legs;
     const leg = pool.find((l) => l.id === legId);
-    if (leg) {
+    if (leg && !(source === "tracked" && leg.disabled)) {
       setProtectTarget(leg);
       setProtectTargetSource(source);
     }
@@ -229,10 +228,7 @@ export function useLegEditing({ legs, setLegs, trackedLegs, setTrackedLegs }: Us
       if (!target) return prev;
       if (target.derivedFrom) {
         const filtered = prev.filter((l) => l.id !== id);
-        if (target.derivedFrom.via === "roll" && target.derivedFrom.legId) {
-          const sourceId = target.derivedFrom.legId;
-          return filtered.map((l) => (l.id === sourceId ? { ...l, disabled: false, closedPnl: undefined } : l));
-        }
+        if (target.derivedFrom.via === "roll" && target.derivedFrom.legId) return restoreRollSource(filtered, target.derivedFrom.legId, { closedPnl: undefined });
         return filtered;
       }
       // Already closed (e.g. a stray second click) — nothing to do; in

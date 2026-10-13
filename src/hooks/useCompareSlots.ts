@@ -86,6 +86,12 @@ export function useCompareSlots() {
     setCompareSlots((prev) => (prev.length >= MAX_COMPARE_SLOTS ? prev : [...prev, { id: uid(), legs: [], baseline: serializeSlotLegs([]) }]));
   }, []);
 
+  // 展期/保护/对冲选"放到对比方案里比"时：新开一个槽位放调整后的副本。基准是空的，所以算未保存（离开时会问）。
+  // 腿数可以超过MAX_COMPARE_SLOT_LEGS（那个上限只管往槽位里手动加腿）。
+  const addSlotWithLegs = useCallback((legs: Leg[]) => {
+    setCompareSlots((prev) => (prev.length >= MAX_COMPARE_SLOTS ? prev : [...prev, { id: uid(), legs, baseline: serializeSlotLegs([]) }]));
+  }, []);
+
   const removeCompareSlot = useCallback((slotId: string) => {
     setCompareSlots((prev) => prev.filter((s) => s.id !== slotId));
   }, []);
@@ -233,6 +239,7 @@ export function useCompareSlots() {
   return {
     compareSlots,
     addCompareSlot,
+    addSlotWithLegs,
     removeCompareSlot,
     addCompareSlotLeg,
     updateCompareSlotLeg,
